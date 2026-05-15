@@ -1,0 +1,55 @@
+name: fieldtrip361
+description: "A new Flutter project."
+publish_to: 'none'
+
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.9.2
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # Firebase
+  firebase_core: ^3.8.1
+  firebase_auth: ^5.3.3
+  cloud_firestore: ^5.6.12
+  firebase_storage: ^12.3.8
+
+  # Maps & Location
+  google_maps_flutter: ^2.5.0
+  flutter_polyline_points: ^2.0.1 # Added for routing
+  dio: ^5.0.0
+  flutter_map: ^8.2.2             # Note: You have both Google Maps and Flutter Map installed
+  latlong2: ^0.9.1
+
+  # Utilities & UI
+  http: ^1.6.0
+  cupertino_icons: ^1.0.8
+  google_fonts: ^8.0.0
+  cloud_functions: ^5.6.2
+  geolocator: ^14.0.2
+  mobile_scanner: ^7.2.0
+  qr_flutter: ^4.1.0
+  battery_plus: ^7.0.0
+  connectivity_plus: ^7.0.0
+  flutter_ringtone_player: ^4.0.0+4
+  image_picker: ^1.1.2
+  file_picker: ^10.0.0
+  audioplayers: ^6.1.0
+  firebase_messaging: ^15.1.4
+  flutter_background_service: ^5.0.10
+  flutter_local_notifications: ^17.2.4
+  shared_preferences: ^2.3.2
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+
+flutter:
+  uses-material-design: true
+
+  assets:
+    - assets/audio/alarm.mp3

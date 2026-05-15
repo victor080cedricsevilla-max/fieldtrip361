@@ -1,0 +1,115 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ── Helper functions ────────────────────────────────────────────────────
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function myRole() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && myRole() == 'admin';
+    }
+
+    function isTeacher() {
+      return isSignedIn() && myRole() == 'teacher';
+    }
+
+    function isTeacherOrAdmin() {
+      return isSignedIn() && myRole() in ['teacher', 'admin'];
+    }
+
+    // ── Users ────────────────────────────────────────────────────────────────
+    // A user can read/write their own doc.
+    // Admins can read any user doc (for dashboards).
+    // No one can change another user's role from the client.
+
+    match /users/{userId} {
+      allow read: if isSignedIn() && (request.auth.uid == userId || isAdmin());
+      allow create: if isSignedIn() && request.auth.uid == userId;
+      allow update: if isSignedIn() && request.auth.uid == userId
+                    && !('role' in request.resource.data.diff(resource.data).affectedKeys());
+
+      // Per-user notification inbox — only the owner can read/write.
+      match /notifications/{notifId} {
+        allow read, write: if isSignedIn() && request.auth.uid == userId;
+      }
+    }
+
+    // ── Trips ────────────────────────────────────────────────────────────────
+    // Any signed-in user can read trips (they need to see their own trip info).
+    // Only admins can create or delete trips.
+    // Teachers can update a trip (mark active stop, complete, etc.).
+
+    match /trips/{tripId} {
+      allow read: if isSignedIn();
+      allow create, delete: if isAdmin();
+      allow update: if isTeacherOrAdmin();
+
+      // Geofence alerts: any authenticated user can create (background service
+      // runs under the signed-in user's credentials). Teachers and admins
+      // can update (acknowledge/dismiss).
+      match /alerts/{alertId} {
+        allow read: if isSignedIn();
+        allow create: if isSignedIn()
+                      && request.resource.data.studentId is string
+                      && request.resource.data.studentId.size() <= 128
+                      && request.resource.data.distance is number;
+        allow update: if isTeacherOrAdmin();
+      }
+    }
+
+    // ── Chats ────────────────────────────────────────────────────────────────
+    // Only members of a chat can read the chat doc or its messages.
+    // Only members can post messages; text must be ≤ 2000 chars and the
+    // senderId must match the authenticated caller.
+
+    match /chats/{chatId} {
+      allow read: if isSignedIn()
+                  && request.auth.uid in resource.data.memberIds;
+      // Cloud Function writes chat docs — clients never write the top-level doc.
+      allow write: if false;
+
+      match /messages/{messageId} {
+        allow read: if isSignedIn()
+                    && request.auth.uid in
+                       get(/databases/$(database)/documents/chats/$(chatId)).data.memberIds;
+        allow create: if isSignedIn()
+                      && request.auth.uid in
+                         get(/databases/$(database)/documents/chats/$(chatId)).data.memberIds
+                      && request.resource.data.senderId == request.auth.uid
+                      && request.resource.data.text is string
+                      && request.resource.data.text.size() <= 2000;
+        allow update, delete: if false;
+      }
+    }
+
+    // ── Emergencies ──────────────────────────────────────────────────────────
+    // Students can create their own emergency docs.
+    // Teachers and admins can update (accept / dismiss / resolve).
+
+    match /emergencies/{emergencyId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn()
+                    && request.resource.data.studentId == request.auth.uid;
+      allow update: if isTeacherOrAdmin()
+                    || (isSignedIn()
+                        && resource.data.studentId == request.auth.uid
+                        && request.resource.data.status == 'resolved');
+      allow delete: if isAdmin();
+    }
+
+    // ── Rate-limit scratch space ─────────────────────────────────────────────
+    // Written only by Cloud Functions (server-side); clients have no access.
+
+    match /_rateLimits/{docId} {
+      allow read, write: if false;
+    }
+  }
+}

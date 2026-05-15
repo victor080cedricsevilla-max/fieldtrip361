@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "197198612147",
+    "project_id": "pildtrip360",
+    "storage_bucket": "pildtrip360.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:197198612147:android:16744156dcf12a8092d2c6",
+        "android_client_info": {
+          "package_name": "com.example.fieldtrip361"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDVTfAcYiKSqOKSHiTZRDP-YFTCRDVhOv4"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

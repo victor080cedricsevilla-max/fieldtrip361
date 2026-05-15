@@ -1,0 +1,39 @@
+{
+  "flutter": {
+    "platforms": {
+      "android": {
+        "default": {
+          "projectId": "pildtrip360",
+          "appId": "1:197198612147:android:16744156dcf12a8092d2c6",
+          "fileOutput": "android/app/google-services.json"
+        }
+      },
+      "dart": {
+        "lib/firebase_options.dart": {
+          "projectId": "pildtrip360",
+          "configurations": {
+            "android": "1:197198612147:android:16744156dcf12a8092d2c6",
+            "ios": "1:197198612147:ios:c0f757cbee127ca492d2c6",
+            "macos": "1:197198612147:ios:c0f757cbee127ca492d2c6",
+            "web": "1:197198612147:web:2a572de51c7f646392d2c6",
+            "windows": "1:197198612147:web:87d0d8761b285d0a92d2c6"
+          }
+        }
+      }
+    }
+  },
+  "functions": [
+    {
+      "source": "functions",
+      "codebase": "default",
+      "disallowLegacyRuntimeConfig": true,
+      "ignore": [
+        "node_modules",
+        ".git",
+        "firebase-debug.log",
+        "firebase-debug.*.log",
+        "*.local"
+      ]
+    }
+  ]
+}
