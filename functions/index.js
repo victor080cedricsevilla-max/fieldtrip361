@@ -538,26 +538,38 @@ exports.redeemAttendanceToken = onCall(async (request) => {
   const tripSnap = await tripRef.get();
   if (!tripSnap.exists) throw new HttpsError("not-found", "Trip not found.");
 
-  const buses = tripSnap.data().buses || [];
-  let updated = false;
+  // Deep-copy buses so we can mutate safely.
+  const buses = JSON.parse(JSON.stringify(tripSnap.data().buses || []));
+  let studentName = null;
+  let alreadyScanned = false;
+
+  outer:
   for (let bi = 0; bi < buses.length; bi++) {
     const passengers = buses[bi].passengers || [];
     for (let pi = 0; pi < passengers.length; pi++) {
       if (passengers[pi].id === studentId) {
-        const alreadyMarked = (passengers[pi].attendance || {})[`stop_${stopIndex}`] === true;
-        if (alreadyMarked) return { success: true, alreadyScanned: true, studentName: passengers[pi].name };
-        await tripRef.update({
-          [`buses.${bi}.passengers.${pi}.attendance.stop_${stopIndex}`]: true,
-          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-        });
-        updated = true;
-        return { success: true, alreadyScanned: false, studentName: passengers[pi].name };
+        studentName = passengers[pi].name || "Student";
+        const attendance = passengers[pi].attendance || {};
+        if (attendance[`stop_${stopIndex}`] === true) {
+          alreadyScanned = true;
+        } else {
+          attendance[`stop_${stopIndex}`] = true;
+          passengers[pi].attendance = attendance;
+          buses[bi].passengers = passengers;
+          // Write back the full array — dot-notation on array indices converts
+          // arrays to maps in Firestore, which breaks all downstream reads.
+          await tripRef.update({
+            buses,
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          });
+        }
+        break outer;
       }
     }
-    if (updated) break;
   }
 
-  throw new HttpsError("not-found", "Student not found in this trip.");
+  if (!studentName) throw new HttpsError("not-found", "Student not found in this trip.");
+  return { success: true, alreadyScanned, studentName };
 });
 
 /**
