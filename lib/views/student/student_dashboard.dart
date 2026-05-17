@@ -1,6 +1,6 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:ui' as ui;
+import 'package:cloud_functions/cloud_functions.dart';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -214,12 +214,99 @@ class _StudentDashboardState extends State<StudentDashboard> {
     );
   }
 
+  Widget _buildLinkRequestBanner() {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) return const SizedBox.shrink();
+    return StreamBuilder<QuerySnapshot>(
+      stream: FirebaseFirestore.instance
+          .collection('linkRequests')
+          .where('studentId', isEqualTo: uid)
+          .where('status', isEqualTo: 'pending')
+          .snapshots(),
+      builder: (context, snap) {
+        if (!snap.hasData || snap.data!.docs.isEmpty) return const SizedBox.shrink();
+        final doc = snap.data!.docs.first;
+        final parentName = (doc['parentName'] ?? 'A parent').toString();
+        return SafeArea(
+          bottom: false,
+          child: Container(
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+            color: AppTheme.primaryColor,
+            child: Row(
+              children: [
+                const Icon(Icons.family_restroom, color: Colors.white, size: 20),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    "$parentName wants to link as your parent.",
+                    style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600, fontSize: 13),
+                  ),
+                ),
+                TextButton(
+                  onPressed: () => _handleLinkRequest(doc.id, false),
+                  style: TextButton.styleFrom(foregroundColor: Colors.white70, padding: EdgeInsets.zero, minimumSize: Size.zero, tapTargetSize: MaterialTapTargetSize.shrinkWrap),
+                  child: const Text("Deny", style: TextStyle(fontSize: 12)),
+                ),
+                const SizedBox(width: 8),
+                ElevatedButton(
+                  onPressed: () => _handleLinkRequest(doc.id, true),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.white,
+                    foregroundColor: AppTheme.primaryColor,
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                    minimumSize: Size.zero,
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    textStyle: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+                  ),
+                  child: const Text("Approve"),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Future<void> _handleLinkRequest(String requestId, bool approve) async {
+    try {
+      if (approve) {
+        await FirebaseFunctions.instance
+            .httpsCallable('approveLinkRequest')
+            .call({'requestId': requestId});
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Parent linked successfully.'), backgroundColor: Colors.green),
+          );
+        }
+      } else {
+        await FirebaseFirestore.instance
+            .collection('linkRequests')
+            .doc(requestId)
+            .update({'status': 'rejected'});
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Request denied.'), backgroundColor: Colors.orange),
+          );
+        }
+      }
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Something went wrong. Try again.'), backgroundColor: Colors.red),
+        );
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       body: Column(
         children: [
           _buildEmergencyBanner(),
+          _buildLinkRequestBanner(),
           Expanded(child: _pages[_selectedIndex]),
         ],
       ),
@@ -1130,10 +1217,11 @@ class _StudentQRTabState extends State<StudentQRTab> {
           }
 
           Map<String, dynamic>? myActiveTrip;
-          
+          String? myActiveTripId;
+
           for (var doc in snapshot.data!.docs) {
             final data = doc.data() as Map<String, dynamic>;
-            
+
             bool isMyTrip = false;
             List buses = data['buses'] ?? [];
             for (var bus in buses) {
@@ -1151,19 +1239,21 @@ class _StudentQRTabState extends State<StudentQRTab> {
               int currentActive = data['activeStopIndex'] ?? -1;
               if (currentActive != -1) {
                 myActiveTrip = data;
-                break; 
+                myActiveTripId = doc.id;
+                break;
               } else {
                 myActiveTrip ??= data;
+                myActiveTripId ??= doc.id;
               }
             }
           }
 
-          if (myActiveTrip == null) {
+          if (myActiveTrip == null || myActiveTripId == null) {
             return const _LockedQRView(message: "You are not assigned to any currently active trip.");
           }
 
           int activeStopIndex = myActiveTrip['activeStopIndex'] ?? -1;
-          
+
           if (activeStopIndex == -1) {
             return const _LockedQRView(message: "Your teacher hasn't started the destination yet.");
           }
@@ -1181,7 +1271,7 @@ class _StudentQRTabState extends State<StudentQRTab> {
             );
           }
 
-          return _ActiveQRView(myUid: myUid);
+          return _ActiveQRView(tripId: myActiveTripId, stopIndex: activeStopIndex);
         },
       ),
     );
@@ -1189,8 +1279,9 @@ class _StudentQRTabState extends State<StudentQRTab> {
 }
 
 class _ActiveQRView extends StatefulWidget {
-  final String myUid;
-  const _ActiveQRView({required this.myUid});
+  final String tripId;
+  final int stopIndex;
+  const _ActiveQRView({required this.tripId, required this.stopIndex});
 
   @override
   State<_ActiveQRView> createState() => _ActiveQRViewState();
@@ -1198,8 +1289,9 @@ class _ActiveQRView extends StatefulWidget {
 
 class _ActiveQRViewState extends State<_ActiveQRView> {
   String qrData = "";
+  bool _isGenerating = false;
   Timer? _timer;
-  static const int _qrInterval = 12;
+  static const int _qrInterval = 25;
   int _secondsLeft = _qrInterval;
 
   @override
@@ -1207,26 +1299,31 @@ class _ActiveQRViewState extends State<_ActiveQRView> {
     super.initState();
     _generateQR();
     _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
-      if (mounted) {
-        setState(() {
-          _secondsLeft--;
-          if (_secondsLeft <= 0) {
-            _generateQR();
-            _secondsLeft = _qrInterval;
-          }
-        });
-      }
+      if (!mounted) return;
+      setState(() {
+        _secondsLeft--;
+        if (_secondsLeft <= 0) {
+          _secondsLeft = _qrInterval;
+          _generateQR();
+        }
+      });
     });
   }
 
-  void _generateQR() {
-    if (mounted) {
-      setState(() {
-        qrData = jsonEncode({
-          "uid": widget.myUid,
-          "timestamp": DateTime.now().millisecondsSinceEpoch,
-        });
-      });
+  Future<void> _generateQR() async {
+    if (_isGenerating || !mounted) return;
+    setState(() => _isGenerating = true);
+    try {
+      final result = await FirebaseFunctions.instance
+          .httpsCallable('generateAttendanceToken')
+          .call({'tripId': widget.tripId, 'stopIndex': widget.stopIndex});
+      if (mounted) {
+        setState(() => qrData = (result.data['tokenId'] as String?) ?? '');
+      }
+    } catch (_) {
+      // Keep showing the last token until the next cycle.
+    } finally {
+      if (mounted) setState(() => _isGenerating = false);
     }
   }
 
@@ -1270,7 +1367,9 @@ class _ActiveQRViewState extends State<_ActiveQRView> {
                       border: Border.all(color: AppTheme.primaryColor.withValues(alpha: 0.2), width: 2),
                       borderRadius: BorderRadius.circular(16),
                     ),
-                    child: QrImageView(data: qrData, version: QrVersions.auto, size: 220),
+                    child: qrData.isEmpty
+                        ? const SizedBox(width: 220, height: 220, child: Center(child: CircularProgressIndicator()))
+                        : QrImageView(data: qrData, version: QrVersions.auto, size: 220),
                   ),
                   const SizedBox(height: 20),
                   Row(

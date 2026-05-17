@@ -78,7 +78,8 @@ class _RegisterViewState extends State<RegisterView> {
   final _authController = AuthController();
 
   String _selectedRole = 'student';
-  final List<String> _roles = ['student', 'teacher', 'parent'];
+  // Teachers are created/approved by admin only — not self-registered.
+  final List<String> _roles = ['student', 'parent'];
 
   bool _isLoading = false;
   String? _errorMessage;

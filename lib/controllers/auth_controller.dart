@@ -39,6 +39,9 @@ class AuthController {
         if (surname != null) 'surname': surname,
         'email': email,
         'role': role,
+        // Teachers registered via admin panel start as 'pending' until an
+        // admin approves. All other self-registered roles are immediately active.
+        'status': role == 'teacher' ? 'pending' : 'approved',
         'createdAt': FieldValue.serverTimestamp(),
       };
 
@@ -138,7 +141,7 @@ class AuthController {
     } on FirebaseAuthException catch (e) {
       return e.message;
     } catch (e) {
-      return "System Error: $e"; 
+      return "An unexpected error occurred. Please try again.";
     }
   }
 

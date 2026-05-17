@@ -1,5 +1,5 @@
-import 'dart:convert';
 import 'dart:async';
+import 'package:cloud_functions/cloud_functions.dart';
 import 'dart:ui' as ui;
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
@@ -782,48 +782,29 @@ class _TeacherTripDetailsState extends State<TeacherTripDetails> {
 
   Future<void> _processScannedQR(BuildContext ctx, String rawData, int stopIndex, int myBusIndex) async {
     try {
-      Map<String, dynamic> qrData = jsonDecode(rawData);
-      String studentUid = qrData['uid'];
-      int timestamp = qrData['timestamp'];
-      int now = DateTime.now().millisecondsSinceEpoch;
-
-      if (now - timestamp > 15000) {
-        await _showResultDialog(ctx, "QR Expired", "QR code expired. Ask student to refresh.", Colors.red, Icons.timer_off);
-        return;
+      final result = await FirebaseFunctions.instance
+          .httpsCallable('redeemAttendanceToken')
+          .call({'tokenId': rawData.trim()});
+      final data = result.data as Map<String, dynamic>;
+      final studentName = (data['studentName'] ?? 'Student').toString();
+      if (!ctx.mounted) return;
+      if (data['alreadyScanned'] == true) {
+        await _showResultDialog(ctx, "Already Scanned", "$studentName already scanned for this stop.", Colors.orange, Icons.info_outline);
+      } else {
+        await _showResultDialog(ctx, "Success", "Attendance recorded for $studentName!", Colors.green, Icons.check_circle);
       }
-
-      DocumentSnapshot tripDoc = await FirebaseFirestore.instance.collection('trips').doc(widget.tripId).get();
-      List<dynamic> currentBuses = List.from(tripDoc['buses'] ?? []);
-      Map<String, dynamic> myBus = Map<String, dynamic>.from(currentBuses[myBusIndex]);
-      List<dynamic> passengers = List.from(myBus['passengers'] ?? []);
-
-      bool found = false;
-      for (int p = 0; p < passengers.length; p++) {
-        Map<String, dynamic> student = Map<String, dynamic>.from(passengers[p]);
-        if (student['id'] == studentUid) {
-          found = true;
-          Map<String, dynamic> attendance = Map<String, dynamic>.from(student['attendance'] ?? {});
-          
-          if (attendance['stop_$stopIndex'] == true) {
-            await _showResultDialog(ctx, "Already Scanned", "${student['name']} already scanned for this stop.", Colors.orange, Icons.info_outline);
-            return;
-          }
-          
-          attendance['stop_$stopIndex'] = true;
-          student['attendance'] = attendance;
-          passengers[p] = student;
-          myBus['passengers'] = passengers;
-          currentBuses[myBusIndex] = myBus;
-          
-          await FirebaseFirestore.instance.collection('trips').doc(widget.tripId).update({'buses': currentBuses});
-          await _showResultDialog(ctx, "Success", "Attendance recorded for ${student['name']}!", Colors.green, Icons.check_circle);
-          break;
-        }
-      }
-
-      if (!found) await _showResultDialog(ctx, "Not Found", "Student not found in your bus.", Colors.red, Icons.error_outline);
+    } on FirebaseFunctionsException catch (e) {
+      if (!ctx.mounted) return;
+      final msg = switch (e.code) {
+        'deadline-exceeded' => "QR code expired. Ask student to refresh.",
+        'not-found'         => "Invalid QR code or student not in this trip.",
+        'already-exists'    => "QR code already used.",
+        _                   => e.message ?? "An error occurred.",
+      };
+      await _showResultDialog(ctx, "Scan Failed", msg, Colors.red, Icons.qr_code_scanner);
     } catch (e) {
-      await _showResultDialog(ctx, "Invalid QR", "Invalid QR Code format.", Colors.red, Icons.qr_code_scanner);
+      if (!ctx.mounted) return;
+      await _showResultDialog(ctx, "Invalid QR", "Could not read QR code.", Colors.red, Icons.qr_code_scanner);
     }
   }
 

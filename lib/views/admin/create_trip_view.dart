@@ -1608,7 +1608,7 @@ class __AdminStudentSelectorState extends State<_AdminStudentSelector> {
 
   Future<void> _fetchStudents() async {
     try {
-      final snapshot = await FirebaseFirestore.instance.collection('users').get();
+      final snapshot = await FirebaseFirestore.instance.collection('users').where('role', isEqualTo: 'student').get();
       final students = snapshot.docs.where((doc) {
         final role = (doc.data()['role'] ?? '').toString().toLowerCase().trim();
         return role == 'student';

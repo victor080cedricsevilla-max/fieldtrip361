@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:cloud_functions/cloud_functions.dart';
 import '../../config/theme.dart';
 import '../../controllers/auth_controller.dart';
 import '../auth/login_view.dart';
@@ -26,6 +27,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
     const CreateTripView(),
     const ManageTripsView(),
     const LogsView(),
+    const PendingTeachersView(),
     const SettingsView(allowEmergencySoundUpload: false),
   ];
 
@@ -124,7 +126,8 @@ class _AdminDashboardState extends State<AdminDashboard> {
           _buildMenuItem(1, "Create Trip", Icons.add_circle_outline),
           _buildMenuItem(2, "Manage Trips", Icons.map_outlined),
           _buildMenuItem(3, "Activity Logs", Icons.history),
-          _buildMenuItem(4, "Settings", Icons.settings_outlined),
+          _buildMenuItem(4, "Pending Teachers", Icons.person_add_outlined),
+          _buildMenuItem(5, "Settings", Icons.settings_outlined),
 
           const Spacer(),
 
@@ -216,7 +219,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
             ),
           ),
           _AdminProfileChip(
-            onSettings: () => setState(() => _selectedIndex = 4),
+            onSettings: () => setState(() => _selectedIndex = 5),
             onLogout: _handleLogout,
           ),
         ],
@@ -235,6 +238,8 @@ class _AdminDashboardState extends State<AdminDashboard> {
       case 3:
         return "Activity Logs";
       case 4:
+        return "Pending Teachers";
+      case 5:
         return "Settings";
       default:
         return "Admin";
@@ -333,6 +338,148 @@ class _AdminProfileChip extends StatelessWidget {
                   size: 18, color: isDark ? Colors.grey.shade400 : Colors.grey.shade600),
             ],
           ),
+        );
+      },
+    );
+  }
+}
+
+class PendingTeachersView extends StatefulWidget {
+  const PendingTeachersView({super.key});
+
+  @override
+  State<PendingTeachersView> createState() => _PendingTeachersViewState();
+}
+
+class _PendingTeachersViewState extends State<PendingTeachersView> {
+  final Set<String> _loadingIds = {};
+
+  Future<void> _approve(String uid) async {
+    setState(() => _loadingIds.add(uid));
+    try {
+      await FirebaseFunctions.instance.httpsCallable('approveTeacher').call({'uid': uid});
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Teacher approved.'), backgroundColor: Colors.green),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error: $e'), backgroundColor: AppTheme.errorColor),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _loadingIds.remove(uid));
+    }
+  }
+
+  Future<void> _reject(String uid, String name) async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Text("Reject teacher?"),
+        content: Text("This will permanently delete $name's account."),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text("Cancel")),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text("Reject & Delete", style: TextStyle(color: AppTheme.errorColor)),
+          ),
+        ],
+      ),
+    );
+    if (confirm != true) return;
+    setState(() => _loadingIds.add(uid));
+    try {
+      await FirebaseFunctions.instance.httpsCallable('rejectTeacher').call({'uid': uid});
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Teacher rejected and removed.'), backgroundColor: Colors.orange),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error: $e'), backgroundColor: AppTheme.errorColor),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _loadingIds.remove(uid));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+      stream: FirebaseFirestore.instance
+          .collection('users')
+          .where('role', isEqualTo: 'teacher')
+          .where('status', isEqualTo: 'pending')
+          .snapshots(),
+      builder: (context, snap) {
+        if (snap.connectionState == ConnectionState.waiting) {
+          return const Center(child: CircularProgressIndicator());
+        }
+        final docs = snap.data?.docs ?? [];
+        if (docs.isEmpty) {
+          return Center(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.check_circle_outline, size: 64, color: Colors.green.shade300),
+                const SizedBox(height: 16),
+                const Text(
+                  "No pending teacher requests",
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.w500, color: Colors.grey),
+                ),
+              ],
+            ),
+          );
+        }
+        return ListView.separated(
+          itemCount: docs.length,
+          separatorBuilder: (_, __) => const Divider(height: 1),
+          itemBuilder: (context, i) {
+            final data = docs[i].data();
+            final uid = docs[i].id;
+            final name = (data['name'] ?? 'Unknown').toString();
+            final email = (data['email'] ?? '').toString();
+            final isLoading = _loadingIds.contains(uid);
+            return ListTile(
+              contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+              leading: CircleAvatar(
+                backgroundColor: AppTheme.primaryColor.withValues(alpha: 0.15),
+                child: Text(
+                  name.isNotEmpty ? name[0].toUpperCase() : 'T',
+                  style: const TextStyle(color: AppTheme.primaryColor, fontWeight: FontWeight.bold),
+                ),
+              ),
+              title: Text(name, style: TextStyle(fontWeight: FontWeight.bold, color: isDark ? AppTheme.darkText2 : const Color(0xFF1F2937))),
+              subtitle: Text(email, style: TextStyle(color: isDark ? Colors.grey.shade400 : Colors.grey)),
+              trailing: isLoading
+                  ? const SizedBox(width: 24, height: 24, child: CircularProgressIndicator(strokeWidth: 2))
+                  : Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        OutlinedButton(
+                          onPressed: () => _reject(uid, name),
+                          style: OutlinedButton.styleFrom(foregroundColor: AppTheme.errorColor, side: const BorderSide(color: AppTheme.errorColor)),
+                          child: const Text("Reject"),
+                        ),
+                        const SizedBox(width: 10),
+                        ElevatedButton(
+                          onPressed: () => _approve(uid),
+                          style: ElevatedButton.styleFrom(backgroundColor: Colors.green, foregroundColor: Colors.white),
+                          child: const Text("Approve"),
+                        ),
+                      ],
+                    ),
+            );
+          },
         );
       },
     );

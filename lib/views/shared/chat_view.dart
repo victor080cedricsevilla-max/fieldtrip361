@@ -245,13 +245,8 @@ class _ChatRoomViewState extends State<ChatRoomView> {
         'text': text,
         'createdAt': FieldValue.serverTimestamp(),
       });
-      // Best-effort mirror onto the chat doc in case the Cloud Function isn't deployed.
-      await FirebaseFirestore.instance.collection('chats').doc(widget.chatId).set({
-        'lastMessage': text.length > 200 ? text.substring(0, 200) : text,
-        'lastMessageAt': FieldValue.serverTimestamp(),
-        'lastSenderId': uid,
-        'lastSenderName': _me!['name'] ?? '',
-      }, SetOptions(merge: true));
+      // lastMessage preview is updated by the onChatMessageCreated Cloud
+      // Function with sanitized text — no client-side write needed here.
       _textCtrl.clear();
     } catch (e) {
       if (!mounted) return;

@@ -700,25 +700,47 @@ class _ParentProfileTabState extends State<ParentProfileTab> {
     setState(() => _isSearching = true);
 
     try {
-      QuerySnapshot snapshot = await FirebaseFirestore.instance.collection('users')
+      final snapshot = await FirebaseFirestore.instance.collection('users')
           .where('role', isEqualTo: 'student').where('lrn', isEqualTo: lrn).limit(1).get();
 
       if (snapshot.docs.isEmpty) {
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Student not found"), backgroundColor: Colors.red));
-      } else {
-        String studentId = snapshot.docs.first.id;
-        String parentId = FirebaseAuth.instance.currentUser!.uid;
+        return;
+      }
 
-        await FirebaseFirestore.instance.collection('users').doc(parentId).update({
-          'children': FieldValue.arrayUnion([studentId])
-        });
+      final studentId = snapshot.docs.first.id;
+      final parentUser = FirebaseAuth.instance.currentUser!;
+      final parentDoc = await FirebaseFirestore.instance.collection('users').doc(parentUser.uid).get();
+      final parentName = (parentDoc.data()?['name'] ?? parentUser.displayName ?? 'Parent').toString();
 
+      // Check if a pending request already exists
+      final existing = await FirebaseFirestore.instance.collection('linkRequests')
+          .where('parentId', isEqualTo: parentUser.uid)
+          .where('studentId', isEqualTo: studentId)
+          .where('status', isEqualTo: 'pending')
+          .limit(1)
+          .get();
+
+      if (existing.docs.isNotEmpty) {
         if (!mounted) return;
         Navigator.pop(context);
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Student linked successfully!"), backgroundColor: Colors.green));
-        _lrnController.clear();
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Request already sent. Waiting for student approval."), backgroundColor: Colors.orange));
+        return;
       }
+
+      await FirebaseFirestore.instance.collection('linkRequests').add({
+        'parentId': parentUser.uid,
+        'parentName': parentName,
+        'studentId': studentId,
+        'status': 'pending',
+        'createdAt': FieldValue.serverTimestamp(),
+      });
+
+      if (!mounted) return;
+      Navigator.pop(context);
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Request sent! Waiting for student to approve."), backgroundColor: Colors.green));
+      _lrnController.clear();
     } finally {
       if (mounted) setState(() => _isSearching = false);
     }
