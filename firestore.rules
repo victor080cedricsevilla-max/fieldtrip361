@@ -88,7 +88,7 @@ service cloud.firestore {
     match /chats/{chatId} {
       allow read: if isSignedIn()
                   && (isAdmin() || request.auth.uid in resource.data.memberIds);
-      allow write: if false;
+      allow write: if isAdmin();
 
       match /messages/{messageId} {
         allow read: if isSignedIn()
@@ -139,6 +139,14 @@ service cloud.firestore {
                        .hasOnly(['status'])
                     && request.resource.data.status in ['approved', 'rejected'];
       allow delete: if isAdmin();
+    }
+
+    // ── Activity logs — admin read/write ────────────────────────────────────
+
+    match /activity_logs/{logId} {
+      allow read: if isAdmin();
+      allow create: if isSignedIn();
+      allow update, delete: if isAdmin();
     }
 
     // ── QR attendance tokens — Cloud Functions only ──────────────────────────
