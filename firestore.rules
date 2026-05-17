@@ -28,7 +28,7 @@ service cloud.firestore {
     // ── Users ────────────────────────────────────────────────────────────────
 
     match /users/{userId} {
-      allow read: if isSignedIn() && (request.auth.uid == userId || isTeacherOrAdmin());
+      allow read: if isSignedIn();
       allow create: if isSignedIn() && request.auth.uid == userId;
       allow update: if isSignedIn() && request.auth.uid == userId
                     // Clients can never change role or approval status.
