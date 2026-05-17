@@ -18,9 +18,7 @@ service cloud.firestore {
     }
 
     function isTeacher() {
-      let doc = get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
-      return isSignedIn() && doc.role == 'teacher'
-          && (doc.get('status', 'approved') == 'approved');
+      return isSignedIn() && myRole() == 'teacher';
     }
 
     function isTeacherOrAdmin() {
@@ -30,7 +28,7 @@ service cloud.firestore {
     // ── Users ────────────────────────────────────────────────────────────────
 
     match /users/{userId} {
-      allow read: if isSignedIn() && (request.auth.uid == userId || isAdmin());
+      allow read: if isSignedIn() && (request.auth.uid == userId || isTeacherOrAdmin());
       allow create: if isSignedIn() && request.auth.uid == userId;
       allow update: if isSignedIn() && request.auth.uid == userId
                     // Clients can never change role or approval status.
@@ -62,7 +60,8 @@ service cloud.firestore {
 
     match /trips/{tripId} {
       allow read: if isSignedIn() && (
-        isAdmin() ||
+        isTeacherOrAdmin() ||
+        (!('allMemberIds' in resource.data)) ||
         request.auth.uid in resource.data.allMemberIds ||
         (myRole() == 'parent' &&
           resource.data.allMemberIds.hasAny(

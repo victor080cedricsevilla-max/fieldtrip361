@@ -20,12 +20,7 @@ class AdminOverview extends StatelessWidget {
         children: [
           Text(
             "Here's what's going on with field trips right now",
-            style: TextStyle(
-              fontSize: 13,
-              color: Theme.of(context).brightness == Brightness.dark
-                  ? Colors.grey.shade400
-                  : Colors.grey.shade600,
-            ),
+            style: TextStyle(fontSize: 13, color: Colors.grey.shade600),
           ),
           const SizedBox(height: 22),
           const _KpiRow(),
@@ -99,14 +94,13 @@ class _Card extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
     return Container(
       decoration: BoxDecoration(
-        color: isDark ? AppTheme.darkSurface : Colors.white,
+        color: Colors.white,
         borderRadius: BorderRadius.circular(16),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withValues(alpha: isDark ? 0.25 : 0.04),
+            color: Colors.black.withValues(alpha: 0.04),
             blurRadius: 12,
             offset: const Offset(0, 4),
           ),
@@ -118,15 +112,9 @@ class _Card extends StatelessWidget {
   }
 }
 
-Color _mutedText(BuildContext context) =>
-    Theme.of(context).brightness == Brightness.dark
-        ? Colors.grey.shade400
-        : Colors.grey.shade600;
+Color _mutedText(BuildContext context) => Colors.grey.shade600;
 
-Color _strongText(BuildContext context) =>
-    Theme.of(context).brightness == Brightness.dark
-        ? AppTheme.darkText2
-        : AppTheme.secondaryColor;
+Color _strongText(BuildContext context) => AppTheme.secondaryColor;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // KPI cards
@@ -342,9 +330,7 @@ class _TripsBarChartCard extends StatelessWidget {
                         counts: counts,
                         labels: labels,
                         barColor: AppTheme.primaryColor,
-                        gridColor: Theme.of(context).brightness == Brightness.dark
-                            ? const Color(0xFF374151)
-                            : Colors.grey.shade200,
+                        gridColor: Colors.grey.shade200,
                         textColor: _mutedText(context),
                       ),
                       child: const SizedBox.expand(),
@@ -483,10 +469,7 @@ class _StatusDonutCard extends StatelessWidget {
                               AppTheme.primaryColor,
                               AppTheme.accentColor,
                             ],
-                            trackColor:
-                                Theme.of(context).brightness == Brightness.dark
-                                    ? const Color(0xFF1F2A35)
-                                    : Colors.grey.shade100,
+                            trackColor: Colors.grey.shade100,
                           ),
                           child: Center(
                             child: Column(
@@ -650,10 +633,7 @@ class _UsersLineChartCard extends StatelessWidget {
                         labels: labels,
                         lineColor: AppTheme.primaryColor,
                         fillColor: AppTheme.primaryColor.withValues(alpha: 0.15),
-                        gridColor:
-                            Theme.of(context).brightness == Brightness.dark
-                                ? const Color(0xFF374151)
-                                : Colors.grey.shade200,
+                        gridColor: Colors.grey.shade200,
                         textColor: _mutedText(context),
                       ),
                       child: const SizedBox.expand(),
@@ -796,10 +776,7 @@ class _CompletedGaugeCard extends StatelessWidget {
                       painter: _GaugePainter(
                         value: pct,
                         color: AppTheme.primaryColor,
-                        trackColor:
-                            Theme.of(context).brightness == Brightness.dark
-                                ? const Color(0xFF1F2A35)
-                                : Colors.grey.shade100,
+                        trackColor: Colors.grey.shade100,
                       ),
                       child: Center(
                         child: Padding(
@@ -913,11 +890,7 @@ class _LatestTripsCard extends StatelessWidget {
                   for (int i = 0; i < docs.length; i++) ...[
                     _tripRow(context, docs[i].data()),
                     if (i < docs.length - 1)
-                      Divider(
-                          color: Theme.of(context).brightness == Brightness.dark
-                              ? const Color(0xFF1F2A35)
-                              : Colors.grey.shade100,
-                          height: 1),
+                      Divider(color: Colors.grey.shade100, height: 1),
                   ],
                 ],
               );

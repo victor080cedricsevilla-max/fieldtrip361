@@ -328,9 +328,7 @@ class EditTripDialog extends StatelessWidget {
               decoration: BoxDecoration(
                 border: Border(
                   bottom: BorderSide(
-                    color: Theme.of(context).brightness == Brightness.dark
-                        ? const Color(0xFF1F2A35)
-                        : Colors.grey.shade100,
+                    color: Colors.grey.shade100,
                   ),
                 ),
               ),

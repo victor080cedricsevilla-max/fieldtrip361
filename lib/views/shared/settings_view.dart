@@ -419,65 +419,6 @@ class _SettingsViewState extends State<SettingsView> {
                 ],
               ),
             ),
-            const SizedBox(height: 22),
-            _section("Appearance"),
-            const SizedBox(height: 12),
-            _card(
-              child: ValueListenableBuilder<ThemeMode>(
-                valueListenable: AppTheme.mode,
-                builder: (context, mode, _) {
-                  final bool isDark = mode == ThemeMode.dark;
-                  return Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 4),
-                    child: Row(
-                      children: [
-                        Container(
-                          width: 36,
-                          height: 36,
-                          decoration: BoxDecoration(
-                            color: AppTheme.primaryColor.withValues(alpha: 0.1),
-                            borderRadius: BorderRadius.circular(10),
-                          ),
-                          child: Icon(
-                            isDark ? Icons.dark_mode_rounded : Icons.light_mode_rounded,
-                            size: 18,
-                            color: AppTheme.primaryColor,
-                          ),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text("Dark Mode",
-                                  style: TextStyle(
-                                      fontSize: 11,
-                                      color: Colors.grey.shade500,
-                                      fontWeight: FontWeight.w500)),
-                              const SizedBox(height: 2),
-                              Text(
-                                isDark ? "Enabled" : "Off",
-                                style: const TextStyle(
-                                    fontSize: 13,
-                                    fontWeight: FontWeight.w600,
-                                    color: AppTheme.secondaryColor),
-                              ),
-                            ],
-                          ),
-                        ),
-                        Switch.adaptive(
-                          value: isDark,
-                          activeThumbColor: AppTheme.primaryColor,
-                          onChanged: (v) => AppTheme.setMode(
-                            v ? ThemeMode.dark : ThemeMode.light,
-                          ),
-                        ),
-                      ],
-                    ),
-                  );
-                },
-              ),
-            ),
             if (widget.allowEmergencySoundUpload) ...[
               const SizedBox(height: 22),
               _section("Emergency Sound"),

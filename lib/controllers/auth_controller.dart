@@ -39,9 +39,7 @@ class AuthController {
         if (surname != null) 'surname': surname,
         'email': email,
         'role': role,
-        // Teachers registered via admin panel start as 'pending' until an
-        // admin approves. All other self-registered roles are immediately active.
-        'status': role == 'teacher' ? 'pending' : 'approved',
+        'status': 'approved',
         'createdAt': FieldValue.serverTimestamp(),
       };
 

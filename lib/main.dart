@@ -125,24 +125,17 @@ class FieldTrip360App extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return ValueListenableBuilder<ThemeMode>(
-      valueListenable: AppTheme.mode,
-      builder: (context, mode, _) {
-        return MaterialApp(
-          title: 'FieldTrip360',
-          debugShowCheckedModeBanner: false,
-          theme: AppTheme.lightTheme,
-          darkTheme: AppTheme.darkTheme,
-          themeMode: mode,
-          home: kIsWeb ? const LoginView() : const MobileLoginView(),
-          routes: {
-            '/admin-login': (context) => const LoginView(),
-            '/mobile-login': (context) => const MobileLoginView(),
-            '/admin/dashboard': (context) => const AdminDashboard(),
-            '/teacher/dashboard': (context) => const TeacherDashboard(),
-            '/student/dashboard': (context) => const StudentDashboard(),
-          },
-        );
+    return MaterialApp(
+      title: 'FieldTrip360',
+      debugShowCheckedModeBanner: false,
+      theme: AppTheme.lightTheme,
+      home: kIsWeb ? const LoginView() : const MobileLoginView(),
+      routes: {
+        '/admin-login': (context) => const LoginView(),
+        '/mobile-login': (context) => const MobileLoginView(),
+        '/admin/dashboard': (context) => const AdminDashboard(),
+        '/teacher/dashboard': (context) => const TeacherDashboard(),
+        '/student/dashboard': (context) => const StudentDashboard(),
       },
     );
   }
