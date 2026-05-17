@@ -11,6 +11,7 @@ import '../auth/mobile_login_view.dart';
 import '../../repositories/directions_repository.dart';
 import '../../models/directions_model.dart';
 import '../../utils/live_tracker.dart';
+import '../../utils/firestore_utils.dart';
 import '../shared/settings_view.dart';
 import '../shared/notification_panel.dart';
 
@@ -135,9 +136,9 @@ class ParentTripsTab extends StatelessWidget {
 
               final myTrips = snapshot.data!.docs.where((doc) {
                 final data = doc.data() as Map<String, dynamic>;
-                final buses = data['buses'] as List<dynamic>? ?? [];
+                final buses = asList(data['buses']);
                 for (var bus in buses) {
-                  List passengers = bus['passengers'] ?? [];
+                  final List passengers = asList(bus['passengers']);
                   for (var p in passengers) {
                     if (childrenIds.contains(p['id'])) return true;
                   }

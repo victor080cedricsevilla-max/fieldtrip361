@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:ui';
+import 'firestore_utils.dart';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -214,7 +215,7 @@ Future<void> _onStart(ServiceInstance service) async {
     activeTripId = null;
     for (final doc in snap.docs) {
       final data = doc.data();
-      final buses = (data['buses'] as List?) ?? const [];
+      final buses = asList(data['buses']);
       bool inTrip = false;
       for (final b in buses) {
         if (b is Map) {

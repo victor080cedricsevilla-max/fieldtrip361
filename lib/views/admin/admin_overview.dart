@@ -2,6 +2,7 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import '../../config/theme.dart';
+import '../../utils/firestore_utils.dart';
 
 /// Admin dashboard landing page.
 /// Layout (analytics-style, follows the system color theme):
@@ -913,10 +914,10 @@ class _LatestTripsCard extends StatelessWidget {
         : status == 'completed'
             ? 'Completed'
             : 'Pending';
-    final buses = (data['buses'] as List?) ?? const [];
+    final buses = asList(data['buses']);
     int totalStudents = 0;
     for (final b in buses) {
-      totalStudents += ((b as Map?)?['passengers'] as List?)?.length ?? 0;
+      totalStudents += asList((b as Map?)?['passengers']).length;
     }
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 12),

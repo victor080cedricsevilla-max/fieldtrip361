@@ -4,6 +4,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import '../../config/theme.dart';
 import '../../utils/utils.dart';
+import '../../utils/firestore_utils.dart';
 import '../../models/directions_model.dart';
 import '../../repositories/directions_repository.dart';
 import 'create_trip_view.dart';
@@ -136,7 +137,7 @@ class ManageTripsView extends StatelessWidget {
                               const SizedBox(height: 15),
                               const Text("Buses & Assignments", style: TextStyle(fontWeight: FontWeight.bold, color: Colors.grey)),
                               const SizedBox(height: 5),
-                              ...(data['buses'] as List? ?? []).map((bus) => Padding(
+                              ...asList(data['buses']).map((bus) => Padding(
                                 padding: const EdgeInsets.only(bottom: 8),
                                 child: Column(
                                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -144,7 +145,7 @@ class ManageTripsView extends StatelessWidget {
                                     Text("Bus #${bus['busNo']}", style: const TextStyle(fontWeight: FontWeight.bold)),
                                     Text("Main: ${bus['mainTeacher']?['name'] ?? 'None'}"),
                                     Text("Co-Teacher: ${bus['coTeacher']?['name'] ?? 'None'}"),
-                                    Text("Students: ${(bus['passengers'] as List?)?.length ?? 0} assigned"),
+                                    Text("Students: ${asList(bus['passengers']).length} assigned"),
                                   ],
                                 ),
                               )),

@@ -14,6 +14,7 @@ import 'package:flutter_ringtone_player/flutter_ringtone_player.dart';
 import '../../config/theme.dart';
 import '../../controllers/auth_controller.dart';
 import '../../utils/live_tracker.dart';
+import '../../utils/firestore_utils.dart';
 import '../auth/mobile_login_view.dart';
 import '../shared/settings_view.dart';
 import '../shared/chat_view.dart';
@@ -86,10 +87,10 @@ class _StudentDashboardState extends State<StudentDashboard> {
       String? newTripId;
       outer:
       for (final doc in snap.docs) {
-        final buses = (doc.data()['buses'] as List?) ?? [];
+        final buses = asList(doc.data()['buses']);
         for (final b in buses) {
           if (b is Map) {
-            for (final p in (b['passengers'] as List? ?? const [])) {
+            for (final p in asList(b['passengers'])) {
               if (p is Map && p['id'] == uid) {
                 newTripId = doc.id;
                 break outer;
@@ -390,9 +391,9 @@ class StudentTripsTab extends StatelessWidget {
 
           final myTrips = snapshot.data!.docs.where((doc) {
             final data = doc.data() as Map<String, dynamic>;
-            final buses = data['buses'] as List<dynamic>? ?? [];
+            final buses = asList(data['buses']);
             for (var bus in buses) {
-              List passengers = bus['passengers'] ?? [];
+              final List passengers = asList(bus['passengers']);
               for (var p in passengers) {
                 if (p['id'] == myUid) return true;
               }
@@ -821,14 +822,14 @@ class _StudentTripDetailsState extends State<StudentTripDetails>
         final currentTripData = tripSnap.data!.data() as Map<String, dynamic>;
         _currentTripData = currentTripData;
 
-        final List buses = currentTripData['buses'] ?? [];
+        final List buses = asList(currentTripData['buses']);
         final List<String> visibleUserIds = [widget.myUid];
 
         // Locate the student's own bus + seat number.
         Map<String, dynamic>? myBus;
         int? mySeat;
         for (final bus in buses) {
-          List passengers = bus['passengers'] ?? [];
+          final List passengers = asList(bus['passengers']);
           for (var p in passengers) {
             if (p['id'] == widget.myUid) {
               myBus = Map<String, dynamic>.from(bus as Map);
@@ -1223,9 +1224,9 @@ class _StudentQRTabState extends State<StudentQRTab> {
             final data = doc.data() as Map<String, dynamic>;
 
             bool isMyTrip = false;
-            List buses = data['buses'] ?? [];
+            final List buses = asList(data['buses']);
             for (var bus in buses) {
-              List passengers = bus['passengers'] ?? [];
+              final List passengers = asList(bus['passengers']);
               for (var p in passengers) {
                 if (p['id'] == myUid) {
                   isMyTrip = true;
@@ -1516,9 +1517,9 @@ class _EmergencyButtonDialogState extends State<EmergencyButtonDialog> {
 
       for (var doc in tripsSnapshot.docs) {
         final data = doc.data();
-        final buses = data['buses'] as List<dynamic>? ?? [];
+        final buses = asList(data['buses']);
         for (var bus in buses) {
-          List passengers = bus['passengers'] ?? [];
+          final List passengers = asList(bus['passengers']);
           for (var p in passengers) {
             if (p['id'] == myUid) {
               teacherId = bus['mainTeacher']?['id'];

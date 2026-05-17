@@ -1,5 +1,6 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/foundation.dart';
+import 'firestore_utils.dart';
 
 /// Client-side fallback that mirrors the Cloud Function `onTripChatSync`.
 /// Call this any time `trips/{tripId}.buses` is created or modified so a
@@ -38,7 +39,7 @@ class ChatSync {
 
       addMember(bus['mainTeacher'] as Map?, 'teacher');
       addMember(bus['coTeacher'] as Map?, 'teacher');
-      for (final p in (bus['passengers'] as List? ?? const [])) {
+      for (final p in asList(bus['passengers'])) {
         addMember(p as Map?, 'student');
       }
 

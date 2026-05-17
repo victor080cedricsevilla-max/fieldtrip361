@@ -5,6 +5,7 @@ import 'package:google_maps_flutter/google_maps_flutter.dart';
 import '../../config/theme.dart';
 import '../../utils/utils.dart';
 import '../../utils/chat_sync.dart';
+import '../../utils/firestore_utils.dart';
 import '../../models/directions_model.dart';
 import '../../repositories/directions_repository.dart';
 
@@ -80,7 +81,7 @@ class _CreateTripViewState extends State<CreateTripView> {
       ];
     }
 
-    final List rawBuses = (data['buses'] as List?) ?? const [];
+    final List rawBuses = asList(data['buses']);
     _buses = rawBuses.map<Map<String, dynamic>>((b) {
       final bus = b as Map;
       final String label = (bus['busLabel'] ?? bus['busNo'] ?? '').toString();
@@ -88,7 +89,7 @@ class _CreateTripViewState extends State<CreateTripView> {
           ? bus['capacity'] as int
           : int.tryParse((bus['capacity'] ?? '').toString()) ?? 60;
       final List<dynamic> passengers =
-          ((bus['passengers'] as List?) ?? const [])
+          asList(bus['passengers'])
               .map((p) => Map<String, dynamic>.from(p as Map))
               .toList();
       return {
@@ -573,7 +574,7 @@ class _CreateTripViewState extends State<CreateTripView> {
         _showSnack("Set a valid capacity for Bus $label.", Colors.red);
         return;
       }
-      final int assigned = (bus['passengers'] as List).length;
+      final int assigned = asList(bus['passengers']).length;
       if (assigned > capacity) {
         _showSnack("Bus $label has $assigned passengers but capacity is $capacity.", Colors.red);
         return;
@@ -1066,7 +1067,7 @@ class _CreateTripViewState extends State<CreateTripView> {
                 itemCount: _buses.length,
                 itemBuilder: (ctx, i) {
                   final bus = _buses[i];
-                  final passengerCount = (bus['passengers'] as List).length;
+                  final passengerCount = asList(bus['passengers']).length;
                   final int capacity =
                       int.tryParse((bus['capacity'] as TextEditingController).text.trim()) ?? 60;
                   final bool atOrOver = passengerCount >= capacity;

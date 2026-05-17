@@ -16,6 +16,7 @@ import 'package:audioplayers/audioplayers.dart';
 import '../../config/theme.dart';
 import '../../controllers/auth_controller.dart';
 import '../../utils/chat_sync.dart';
+import '../../utils/firestore_utils.dart';
 import '../../utils/live_tracker.dart';
 import '../auth/mobile_login_view.dart';
 import '../shared/settings_view.dart';
@@ -142,7 +143,7 @@ class _TeacherDashboardState extends State<TeacherDashboard> {
       String? newTripId;
       outer:
       for (final doc in snap.docs) {
-        final buses = (doc.data()['buses'] as List?) ?? [];
+        final buses = asList(doc.data()['buses']);
         for (final b in buses) {
           if (b is Map) {
             if (b['mainTeacher']?['id'] == uid || b['coTeacher']?['id'] == uid) {
@@ -404,9 +405,9 @@ class TeacherTripsTab extends StatelessWidget {
 
           final myTrips = snapshot.data!.docs.where((doc) {
             final data = doc.data() as Map<String, dynamic>;
-            final buses = data['buses'] as List<dynamic>? ?? [];
+            final buses = asList(data['buses']);
             for (var bus in buses) {
-              if (bus['mainTeacher']?['id'] == myUid || bus['coTeacher']?['id'] == myUid) return true;
+              if (bus?['mainTeacher']?['id'] == myUid || bus?['coTeacher']?['id'] == myUid) return true;
             }
             return false;
           }).toList();
@@ -844,15 +845,15 @@ class _TeacherTripDetailsState extends State<TeacherTripDetails> {
         final data = snapshot.data!.data() as Map<String, dynamic>;
         final List stops = data['stops'] ?? [];
         final int activeStop = data['activeStopIndex'] ?? -1;
-        final List buses = data['buses'] ?? [];
+        final buses = asList(data['buses']);
 
         int myBusIndex = -1;
         List<dynamic> assignedStudents = [];
 
         for (int i = 0; i < buses.length; i++) {
-          if (buses[i]['mainTeacher']?['id'] == widget.myUid || buses[i]['coTeacher']?['id'] == widget.myUid) {
+          if (buses[i]?['mainTeacher']?['id'] == widget.myUid || buses[i]?['coTeacher']?['id'] == widget.myUid) {
             myBusIndex = i;
-            assignedStudents = buses[i]['passengers'] ?? [];
+            assignedStudents = asList(buses[i]?['passengers']);
             break;
           }
         }
@@ -1458,8 +1459,8 @@ class _TeacherSeatMapDialogState extends State<TeacherSeatMapDialog> {
     _capacity = (widget.bus['capacity'] is int)
         ? widget.bus['capacity']
         : int.tryParse(widget.bus['capacity']?.toString() ?? '') ?? 60;
-    _passengers = ((widget.bus['passengers'] ?? []) as List)
-        .map((p) => Map<String, dynamic>.from(p))
+    _passengers = asList(widget.bus['passengers'])
+        .map((p) => Map<String, dynamic>.from(p as Map))
         .toList();
   }
 
