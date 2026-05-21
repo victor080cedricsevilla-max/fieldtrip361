@@ -1,7 +1,7 @@
 import 'dart:async';
-import 'package:cloud_functions/cloud_functions.dart';
+import 'dart:convert';
 import 'dart:ui' as ui;
-import 'dart:typed_data';
+import 'package:qr_flutter/qr_flutter.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -102,11 +102,12 @@ class _TeacherDashboardState extends State<TeacherDashboard> {
   StreamSubscription<QuerySnapshot>? _geofenceTripSub;
   StreamSubscription<QuerySnapshot>? _geofenceAlertSub;
   String? _watchedTripId;
+  final Set<String> _activeGeofenceStudents = {};
 
   @override
   void initState() {
     super.initState();
-    _pages = [const TeacherTripsTab(), const ChatListView(), const TeacherProfileTab()];
+    _pages = [const TeacherTripsTab(), const TeacherStudentsTab(), const ChatListView(), const TeacherProfileTab()];
     _requestLocationPermission();
     _listenForEmergencies();
     _listenForGeofenceAlerts();
@@ -192,6 +193,12 @@ class _TeacherDashboardState extends State<TeacherDashboard> {
 
   void _showGeofenceAlert(DocumentReference ref, Map<String, dynamic> data) {
     if (!mounted) return;
+    final studentId = data['studentId'] as String? ?? ref.id;
+    if (_activeGeofenceStudents.contains(studentId)) {
+      ref.update({'status': 'acknowledged'});
+      return;
+    }
+    _activeGeofenceStudents.add(studentId);
     _playEmergencyAlarm();
     showDialog(
       context: context,
@@ -215,6 +222,7 @@ class _TeacherDashboardState extends State<TeacherDashboard> {
             onPressed: () {
               ref.update({'status': 'dismissed'});
               _stopEmergencySound();
+              _activeGeofenceStudents.remove(studentId);
               Navigator.pop(ctx);
             },
             child: const Text('Dismiss'),
@@ -224,13 +232,14 @@ class _TeacherDashboardState extends State<TeacherDashboard> {
             onPressed: () {
               ref.update({'status': 'acknowledged'});
               _stopEmergencySound();
+              _activeGeofenceStudents.remove(studentId);
               Navigator.pop(ctx);
             },
             child: const Text('Acknowledge', style: TextStyle(color: Colors.white)),
           ),
         ],
       ),
-    );
+    ).then((_) => _activeGeofenceStudents.remove(studentId));
   }
 
   void _showEmergencyAlarm(DocumentSnapshot doc) {
@@ -360,6 +369,11 @@ class _TeacherDashboardState extends State<TeacherDashboard> {
               icon: Icon(Icons.route_outlined),
               selectedIcon: Icon(Icons.route, color: AppTheme.primaryColor),
               label: "Trips",
+            ),
+            NavigationDestination(
+              icon: Icon(Icons.people_outline_rounded),
+              selectedIcon: Icon(Icons.people_rounded, color: AppTheme.primaryColor),
+              label: "Students",
             ),
             NavigationDestination(
               icon: Icon(Icons.chat_bubble_outline_rounded),
@@ -658,29 +672,6 @@ class _TeacherTripDetailsState extends State<TeacherTripDetails> {
     ));
   }
 
-  Future<void> _toggleQRGeneration(int stopIndex, bool value, List stops) async {
-    try {
-      List<dynamic> updatedStops = List.from(stops);
-      Map<String, dynamic> targetStop = Map<String, dynamic>.from(updatedStops[stopIndex]);
-      targetStop['qrEnabled'] = value;
-      updatedStops[stopIndex] = targetStop;
-
-      await FirebaseFirestore.instance.collection('trips').doc(widget.tripId).update({
-        'stops': updatedStops,
-        'updatedAt': FieldValue.serverTimestamp(),
-      });
-      
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text(value ? "QR Generation Unlocked" : "QR Generation Locked"),
-        backgroundColor: value ? Colors.green : Colors.orange,
-        duration: const Duration(seconds: 2),
-      ));
-    } catch (e) {
-      debugPrint("QR Toggle Error: $e");
-    }
-  }
-
   void _showStudentAssignmentModal(BuildContext context, int busIndex, List<dynamic> currentPassengers) {
     showModalBottomSheet(
       context: context,
@@ -783,29 +774,72 @@ class _TeacherTripDetailsState extends State<TeacherTripDetails> {
 
   Future<void> _processScannedQR(BuildContext ctx, String rawData, int stopIndex, int myBusIndex) async {
     try {
-      final result = await FirebaseFunctions.instance
-          .httpsCallable('redeemAttendanceToken')
-          .call({'tokenId': rawData.trim()});
-      final data = result.data as Map<String, dynamic>;
-      final studentName = (data['studentName'] ?? 'Student').toString();
+      final qrMap = jsonDecode(rawData.trim()) as Map<String, dynamic>;
+      final String? studentId = qrMap['studentId'] as String?;
+      if (studentId == null || studentId.isEmpty) {
+        if (!ctx.mounted) return;
+        await _showResultDialog(ctx, "Invalid QR", "This is not a valid student QR code.", Colors.red, Icons.qr_code_scanner);
+        return;
+      }
+
+      final tripRef = FirebaseFirestore.instance.collection('trips').doc(widget.tripId);
+      final tripSnap = await tripRef.get();
+      if (!tripSnap.exists) {
+        if (!ctx.mounted) return;
+        await _showResultDialog(ctx, "Error", "Trip not found.", Colors.red, Icons.error_outline);
+        return;
+      }
+
+      final tripData = tripSnap.data() as Map<String, dynamic>;
+      final List rawBuses = asList(tripData['buses']);
+      final List<Map<String, dynamic>> buses =
+          rawBuses.map((b) => Map<String, dynamic>.from(b as Map)).toList();
+
+      bool found = false;
+      bool alreadyScanned = false;
+      String studentName = '';
+
+      outer:
+      for (int bi = 0; bi < buses.length; bi++) {
+        final passengers = asList(buses[bi]['passengers']);
+        final updatedPassengers = passengers
+            .map((p) => Map<String, dynamic>.from(p as Map))
+            .toList();
+        for (int pi = 0; pi < updatedPassengers.length; pi++) {
+          if (updatedPassengers[pi]['id'] == studentId) {
+            found = true;
+            studentName = (updatedPassengers[pi]['name'] ?? 'Student').toString();
+            final att = Map<String, dynamic>.from(
+                (updatedPassengers[pi]['attendance'] as Map?) ?? {});
+            if (att['stop_$stopIndex'] == true) {
+              alreadyScanned = true;
+            } else {
+              att['stop_$stopIndex'] = true;
+              updatedPassengers[pi]['attendance'] = att;
+              buses[bi]['passengers'] = updatedPassengers;
+              await tripRef.update({
+                'buses': buses,
+                'updatedAt': FieldValue.serverTimestamp(),
+              });
+            }
+            break outer;
+          }
+        }
+      }
+
       if (!ctx.mounted) return;
-      if (data['alreadyScanned'] == true) {
+      if (!found) {
+        await _showResultDialog(ctx, "Not Found", "Student is not assigned to this trip.", Colors.red, Icons.person_off_outlined);
+        return;
+      }
+      if (alreadyScanned) {
         await _showResultDialog(ctx, "Already Scanned", "$studentName already scanned for this stop.", Colors.orange, Icons.info_outline);
       } else {
         await _showResultDialog(ctx, "Success", "Attendance recorded for $studentName!", Colors.green, Icons.check_circle);
       }
-    } on FirebaseFunctionsException catch (e) {
+    } catch (_) {
       if (!ctx.mounted) return;
-      final msg = switch (e.code) {
-        'deadline-exceeded' => "QR code expired. Ask student to refresh.",
-        'not-found'         => "Invalid QR code or student not in this trip.",
-        'already-exists'    => "QR code already used.",
-        _                   => e.message ?? "An error occurred.",
-      };
-      await _showResultDialog(ctx, "Scan Failed", msg, Colors.red, Icons.qr_code_scanner);
-    } catch (e) {
-      if (!ctx.mounted) return;
-      await _showResultDialog(ctx, "Invalid QR", "Could not read QR code.", Colors.red, Icons.qr_code_scanner);
+      await _showResultDialog(ctx, "Invalid QR", "Could not read QR code. Make sure to scan a valid student QR.", Colors.red, Icons.qr_code_scanner);
     }
   }
 
@@ -1044,7 +1078,6 @@ class _TeacherTripDetailsState extends State<TeacherTripDetails> {
                   final bool canStartOrArrive = !isDone && !isAtDest &&
                       (isOriginStop || prevStatus == 'completed');
                   final bool isActive = isAtDest;
-                  final bool isQrEnabled = stop['qrEnabled'] ?? false;
                   final int presentCount = assignedStudents.where((s) => s['attendance']?['stop_$i'] == true).length;
 
                   return Container(
@@ -1101,39 +1134,31 @@ class _TeacherTripDetailsState extends State<TeacherTripDetails> {
                         ),
                         trailing: isDone
                             ? const Icon(Icons.check_circle_rounded, color: Colors.green, size: 26)
-                            : isAtDest
-                                ? GestureDetector(
-                                    onTap: () => _departFromStop(context, stops, statuses, i),
-                                    child: Container(
-                                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
-                                      decoration: BoxDecoration(
-                                        color: Colors.orange.shade50,
-                                        borderRadius: BorderRadius.circular(20),
-                                      ),
-                                      child: Text("Depart", style: TextStyle(fontWeight: FontWeight.w600, fontSize: 12, color: Colors.orange.shade700)),
-                                    ),
+                            : isAtDest && i == stops.length - 1
+                                ? Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+                                    decoration: BoxDecoration(color: Colors.green.shade50, borderRadius: BorderRadius.circular(20)),
+                                    child: Text("Final Stop", style: TextStyle(fontWeight: FontWeight.w600, fontSize: 12, color: Colors.green.shade700)),
                                   )
-                                : canStartOrArrive
-                                    ? GestureDetector(
-                                        onTap: () => _arriveAtStop(context, stops, statuses, i),
-                                        child: Container(
-                                          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
-                                          decoration: BoxDecoration(
-                                            color: AppTheme.primaryColor.withValues(alpha: 0.1),
-                                            borderRadius: BorderRadius.circular(20),
-                                          ),
-                                          child: Text(
-                                            isOriginStop ? "Start" : "Arrive",
-                                            style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 12, color: AppTheme.primaryColor),
-                                          ),
+                                : isAtDest || canStartOrArrive
+                                    ? Container(
+                                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                                        decoration: BoxDecoration(
+                                          color: (isAtDest ? Colors.orange : AppTheme.primaryColor).withValues(alpha: 0.1),
+                                          borderRadius: BorderRadius.circular(20),
                                         ),
+                                        child: Row(mainAxisSize: MainAxisSize.min, children: [
+                                          Icon(Icons.swipe_right_alt_rounded, size: 14, color: isAtDest ? Colors.orange.shade700 : AppTheme.primaryColor),
+                                          const SizedBox(width: 4),
+                                          Text(
+                                            isAtDest ? "Depart" : (isOriginStop ? "Start" : "Arrive"),
+                                            style: TextStyle(fontWeight: FontWeight.w600, fontSize: 12, color: isAtDest ? Colors.orange.shade700 : AppTheme.primaryColor),
+                                          ),
+                                        ]),
                                       )
                                     : Container(
                                         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
-                                        decoration: BoxDecoration(
-                                          color: Colors.grey.shade100,
-                                          borderRadius: BorderRadius.circular(20),
-                                        ),
+                                        decoration: BoxDecoration(color: Colors.grey.shade100, borderRadius: BorderRadius.circular(20)),
                                         child: Text("Locked", style: TextStyle(fontWeight: FontWeight.w600, fontSize: 12, color: Colors.grey.shade400)),
                                       ),
                         children: [
@@ -1146,21 +1171,22 @@ class _TeacherTripDetailsState extends State<TeacherTripDetails> {
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                Row(
-                                  children: [
-                                    Expanded(
-                                      child: Text("Allow QR Generation",
-                                          style: TextStyle(fontWeight: FontWeight.w500, fontSize: 13, color: Colors.grey.shade700)),
-                                    ),
-                                    Switch.adaptive(
-                                      value: isQrEnabled,
-                                      activeColor: AppTheme.primaryColor,
-                                      onChanged: (val) => _toggleQRGeneration(i, val, stops),
-                                    ),
-                                  ],
-                                ),
-                                const SizedBox(height: 10),
-
+                                if (canStartOrArrive) ...[
+                                  _SlideToConfirm(
+                                    label: isOriginStop ? "Slide to Start" : "Slide to Arrive",
+                                    color: AppTheme.primaryColor,
+                                    onConfirmed: () => _arriveAtStop(context, stops, statuses, i),
+                                  ),
+                                  const SizedBox(height: 14),
+                                ],
+                                if (isAtDest && i < stops.length - 1) ...[
+                                  _SlideToConfirm(
+                                    label: "Slide to Depart",
+                                    color: Colors.orange,
+                                    onConfirmed: () => _departFromStop(context, stops, statuses, i),
+                                  ),
+                                  const SizedBox(height: 14),
+                                ],
                                 Row(
                                   children: [
                                     Expanded(
@@ -1998,6 +2024,7 @@ class _TeacherMapScreenState extends State<TeacherMapScreen>
   final Map<String, Map<String, dynamic>> _peopleInfo = {};
   StreamSubscription<Position>? _positionStream;
   StreamSubscription<QuerySnapshot>? _alertSubMap;
+  StreamSubscription<DocumentSnapshot>? _tripStatusSub;
   Timer? _heartbeatTimer;
   Position? _lastKnownPos;
   final String myUid = FirebaseAuth.instance.currentUser!.uid;
@@ -2009,6 +2036,42 @@ class _TeacherMapScreenState extends State<TeacherMapScreen>
     super.initState();
     _startLocationUpdates();
     _listenForAlerts();
+    _watchTripStatus();
+  }
+
+  void _watchTripStatus() {
+    _tripStatusSub = FirebaseFirestore.instance
+        .collection('trips')
+        .doc(widget.tripId)
+        .snapshots()
+        .listen((snap) {
+      if (!snap.exists) return;
+      final status = snap.data()?['status'] as String?;
+      if (status == 'completed' && mounted) {
+        showDialog(
+          context: context,
+          barrierDismissible: false,
+          builder: (ctx) => AlertDialog(
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+            title: const Text('Trip Ended',
+                style: TextStyle(fontWeight: FontWeight.bold, color: AppTheme.secondaryColor)),
+            content: const Text(
+              'This trip has been completed. Location tracking has stopped.',
+            ),
+            actions: [
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(backgroundColor: AppTheme.primaryColor),
+                onPressed: () {
+                  Navigator.pop(ctx);
+                  if (mounted) Navigator.pop(context);
+                },
+                child: const Text('OK', style: TextStyle(color: Colors.white)),
+              ),
+            ],
+          ),
+        );
+      }
+    });
   }
 
   void _listenForAlerts() {
@@ -2142,6 +2205,7 @@ class _TeacherMapScreenState extends State<TeacherMapScreen>
   void dispose() {
     _heartbeatTimer?.cancel();
     _alertSubMap?.cancel();
+    _tripStatusSub?.cancel();
     _positionStream?.cancel();
     _tracker.dispose();
     super.dispose();
@@ -2149,9 +2213,6 @@ class _TeacherMapScreenState extends State<TeacherMapScreen>
 
   @override
   Widget build(BuildContext context) {
-    List<String> studentIds = widget.assignedStudents.map((s) => s['id'].toString()).toList();
-    studentIds.add(myUid);
-
     return Scaffold(
       extendBodyBehindAppBar: true,
       appBar: AppBar(
@@ -2163,201 +2224,281 @@ class _TeacherMapScreenState extends State<TeacherMapScreen>
         ),
         title: const Text("Live Map", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18, color: AppTheme.secondaryColor)),
       ),
-      body: StreamBuilder<QuerySnapshot>(
+      // Outer stream: live trip doc → determines which students have been scanned.
+      body: StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
         stream: FirebaseFirestore.instance
-            .collection('users')
-            .where(FieldPath.documentId, whereIn: studentIds)
+            .collection('trips')
+            .doc(widget.tripId)
             .snapshots(),
-        builder: (context, userSnap) {
-          if (!userSnap.hasData) return const Center(child: CircularProgressIndicator(color: AppTheme.primaryColor));
+        builder: (context, tripSnap) {
+          final tripData = tripSnap.data?.data() ?? widget.tripData;
 
-          List<Map<String, dynamic>> peopleList = [];
-          final Map<String, LatLng> targets = {};
-
-          for (var doc in userSnap.data!.docs) {
-            final data = doc.data() as Map<String, dynamic>;
-            peopleList.add(data);
-            _peopleInfo[doc.id] = data;
-            if (data['lat'] is num && data['lng'] is num) {
-              bool isMe = doc.id == myUid;
-              Color markerColor = isMe ? Colors.red : AppTheme.primaryColor;
-              _loadMarker(doc.id, data['name'], markerColor);
-              targets[doc.id] = LatLng(
-                (data['lat'] as num).toDouble(),
-                (data['lng'] as num).toDouble(),
-              );
+          // Build the set of student IDs that have at least one attendance mark.
+          final Set<String> scannedIds = {};
+          for (final b in asList(tripData['buses'])) {
+            if (b is! Map) continue;
+            for (final p in asList(b['passengers'])) {
+              if (p is! Map) continue;
+              final att = p['attendance'];
+              if (att is Map && att.values.any((v) => v == true)) {
+                final id = p['id']?.toString();
+                if (id != null && id.isNotEmpty) scannedIds.add(id);
+              }
             }
           }
-          // Hand the latest targets to the tracker; it tweens markers smoothly
-          // toward these positions over ~1.5s instead of teleporting.
-          WidgetsBinding.instance.addPostFrameCallback((_) {
-            if (mounted) _tracker.setTargets(targets);
-          });
 
+          // Geofence circle from live trip data.
           Set<Circle> circles = {};
-          int activeStop = widget.tripData['activeStopIndex'] ?? -1;
-          if (activeStop != -1) {
-            var stop = widget.tripData['stops'][activeStop];
-            circles.add(Circle(
-              circleId: const CircleId("geofence"),
-              center: LatLng(stop['lat'], stop['lng']),
-              radius: (stop['geofenceRadius'] as num).toDouble(),
-              fillColor: AppTheme.primaryColor.withValues(alpha: 0.15),
-              strokeColor: AppTheme.primaryColor,
-              strokeWidth: 2,
-            ));
+          final activeStop = tripData['activeStopIndex'];
+          if (activeStop is int && activeStop >= 0) {
+            final stops = asList(tripData['stops']);
+            if (activeStop < stops.length) {
+              final stop = stops[activeStop];
+              if (stop is Map && stop['lat'] is num && stop['lng'] is num) {
+                circles.add(Circle(
+                  circleId: const CircleId("geofence"),
+                  center: LatLng(
+                      (stop['lat'] as num).toDouble(), (stop['lng'] as num).toDouble()),
+                  radius: stop['geofenceRadius'] is num
+                      ? (stop['geofenceRadius'] as num).toDouble()
+                      : 200.0,
+                  fillColor: AppTheme.primaryColor.withValues(alpha: 0.15),
+                  strokeColor: AppTheme.primaryColor,
+                  strokeWidth: 2,
+                ));
+              }
+            }
           }
 
-          return Stack(
-            children: [
-              AnimatedBuilder(
-                animation: _tracker,
-                builder: (ctx, _) {
-                  // Always pass a fresh Set<Marker>: Google Maps re-diffs only
-                  // when the markers collection differs from the previous build.
-                  final Set<Marker> markers = {};
-                  for (final entry in _peopleInfo.entries) {
-                    final uid = entry.key;
-                    final data = entry.value;
-                    final pos = _tracker.current(uid);
-                    if (pos == null) continue;
-                    markers.add(Marker(
-                      markerId: MarkerId(uid),
-                      position: pos,
-                      infoWindow: InfoWindow(title: data['name']?.toString() ?? ''),
-                      icon: _customMarkers[uid] ?? BitmapDescriptor.defaultMarker,
-                      flat: true,
-                      anchor: const Offset(0.5, 0.5),
-                    ));
-                  }
-                  return GoogleMap(
-                    initialCameraPosition: const CameraPosition(
-                        target: LatLng(14.9543, 120.9008), zoom: 15),
-                    markers: markers,
-                    circles: circles,
-                    myLocationEnabled: true,
-                    myLocationButtonEnabled: false,
-                    onMapCreated: (c) {
-                      _mapController = c;
-                      _zoomToMe();
-                    },
-                  );
-                },
-              ),
-              Positioned(
-                right: 16,
-                bottom: 200,
-                child: FloatingActionButton.small(
-                  heroTag: 'teacher_map_zoom_to_me',
-                  backgroundColor: Colors.white,
-                  onPressed: _zoomToMe,
-                  tooltip: "Center on my location",
-                  child: const Icon(Icons.my_location_rounded, color: AppTheme.primaryColor),
-                ),
-              ),
-              DraggableScrollableSheet(
-                initialChildSize: 0.3,
-                minChildSize: 0.15,
-                maxChildSize: 0.8,
-                builder: (context, scrollController) {
-                  return Container(
-                    decoration: const BoxDecoration(
-                      color: Colors.white,
-                      borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-                      boxShadow: [BoxShadow(blurRadius: 20, color: Colors.black26)],
-                    ),
-                    child: Column(
-                      children: [
-                        Container(
-                          margin: const EdgeInsets.symmetric(vertical: 12),
-                          width: 40, height: 4,
-                          decoration: BoxDecoration(color: Colors.grey.shade300, borderRadius: BorderRadius.circular(10)),
-                        ),
-                        Padding(
-                          padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
-                          child: Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: [
-                              const Text("People", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: AppTheme.secondaryColor)),
-                              Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                                decoration: BoxDecoration(
-                                  color: AppTheme.primaryColor.withValues(alpha: 0.1),
-                                  borderRadius: BorderRadius.circular(20),
-                                ),
-                                child: Text("${peopleList.length} tracked",
-                                    style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: AppTheme.primaryColor)),
-                              ),
-                            ],
-                          ),
-                        ),
-                        Expanded(
-                          child: ListView.separated(
-                            controller: scrollController,
-                            padding: const EdgeInsets.symmetric(horizontal: 16),
-                            itemCount: peopleList.length,
-                            separatorBuilder: (_, __) => Divider(color: Colors.grey.shade100, height: 1),
-                            itemBuilder: (context, index) {
-                              final person = peopleList[index];
-                              final int battery = person['battery'] ?? 0;
-                              final String activity = person['lastActivity'] ?? "Unknown";
-                              final bool isMe = person['name'] == (FirebaseAuth.instance.currentUser?.displayName ?? '');
-                              final Color avatarColor = isMe ? Colors.red : AppTheme.primaryColor;
+          // Inner stream: only scanned students + teacher.
+          // ValueKey forces re-subscription when the scanned set changes.
+          final queryIds = [...scannedIds, myUid];
+          return StreamBuilder<QuerySnapshot>(
+            key: ValueKey(queryIds.join(',')),
+            stream: FirebaseFirestore.instance
+                .collection('users')
+                .where(FieldPath.documentId, whereIn: queryIds)
+                .snapshots(),
+            builder: (context, userSnap) {
+              if (!userSnap.hasData) {
+                return const Center(child: CircularProgressIndicator(color: AppTheme.primaryColor));
+              }
 
-                              return Padding(
-                                padding: const EdgeInsets.symmetric(vertical: 10),
-                                child: Row(
-                                  children: [
-                                    CircleAvatar(
-                                      radius: 22,
-                                      backgroundColor: avatarColor.withValues(alpha: 0.12),
-                                      child: Text(person['name'][0].toUpperCase(),
-                                          style: TextStyle(color: avatarColor, fontWeight: FontWeight.bold, fontSize: 16)),
+              List<Map<String, dynamic>> peopleList = [];
+              final Map<String, LatLng> targets = {};
+
+              for (var doc in userSnap.data!.docs) {
+                final data = doc.data() as Map<String, dynamic>;
+                peopleList.add(data);
+                _peopleInfo[doc.id] = data;
+                if (data['lat'] is num && data['lng'] is num) {
+                  final isMe = doc.id == myUid;
+                  _loadMarker(doc.id, data['name'], isMe ? Colors.red : AppTheme.primaryColor);
+                  targets[doc.id] = LatLng(
+                    (data['lat'] as num).toDouble(),
+                    (data['lng'] as num).toDouble(),
+                  );
+                }
+              }
+
+              // Drop stale entries for students removed from the query.
+              _peopleInfo.removeWhere((id, _) => !queryIds.contains(id));
+
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                if (mounted) _tracker.setTargets(targets);
+              });
+
+              return Stack(
+                children: [
+                  AnimatedBuilder(
+                    animation: _tracker,
+                    builder: (ctx, _) {
+                      final Set<Marker> markers = {};
+                      for (final entry in _peopleInfo.entries) {
+                        final uid = entry.key;
+                        final data = entry.value;
+                        final pos = _tracker.current(uid);
+                        if (pos == null) continue;
+                        markers.add(Marker(
+                          markerId: MarkerId(uid),
+                          position: pos,
+                          infoWindow: InfoWindow(title: data['name']?.toString() ?? ''),
+                          icon: _customMarkers[uid] ?? BitmapDescriptor.defaultMarker,
+                          flat: true,
+                          anchor: const Offset(0.5, 0.5),
+                        ));
+                      }
+                      return GoogleMap(
+                        initialCameraPosition: const CameraPosition(
+                            target: LatLng(14.9543, 120.9008), zoom: 15),
+                        markers: markers,
+                        circles: circles,
+                        myLocationEnabled: true,
+                        myLocationButtonEnabled: false,
+                        onMapCreated: (c) {
+                          _mapController = c;
+                          _zoomToMe();
+                        },
+                      );
+                    },
+                  ),
+                  Positioned(
+                    right: 16,
+                    bottom: 200,
+                    child: FloatingActionButton.small(
+                      heroTag: 'teacher_map_zoom_to_me',
+                      backgroundColor: Colors.white,
+                      onPressed: _zoomToMe,
+                      tooltip: "Center on my location",
+                      child: const Icon(Icons.my_location_rounded, color: AppTheme.primaryColor),
+                    ),
+                  ),
+                  DraggableScrollableSheet(
+                    initialChildSize: 0.3,
+                    minChildSize: 0.15,
+                    maxChildSize: 0.8,
+                    builder: (context, scrollController) {
+                      return Container(
+                        decoration: const BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+                          boxShadow: [BoxShadow(blurRadius: 20, color: Colors.black26)],
+                        ),
+                        child: Column(
+                          children: [
+                            Container(
+                              margin: const EdgeInsets.symmetric(vertical: 12),
+                              width: 40,
+                              height: 4,
+                              decoration: BoxDecoration(
+                                  color: Colors.grey.shade300,
+                                  borderRadius: BorderRadius.circular(10)),
+                            ),
+                            Padding(
+                              padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
+                              child: Row(
+                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                children: [
+                                  const Text("People",
+                                      style: TextStyle(
+                                          fontSize: 18,
+                                          fontWeight: FontWeight.bold,
+                                          color: AppTheme.secondaryColor)),
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(
+                                        horizontal: 10, vertical: 4),
+                                    decoration: BoxDecoration(
+                                      color: AppTheme.primaryColor.withValues(alpha: 0.1),
+                                      borderRadius: BorderRadius.circular(20),
                                     ),
-                                    const SizedBox(width: 12),
-                                    Expanded(
-                                      child: Column(
-                                        crossAxisAlignment: CrossAxisAlignment.start,
-                                        children: [
-                                          Text(person['name'],
-                                              style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14, color: AppTheme.secondaryColor)),
-                                          const SizedBox(height: 2),
-                                          Text(person['role'].toString().toUpperCase(),
-                                              style: TextStyle(fontSize: 10, color: Colors.grey.shade500, letterSpacing: 0.5)),
-                                        ],
-                                      ),
-                                    ),
-                                    Column(
-                                      crossAxisAlignment: CrossAxisAlignment.end,
+                                    child: Text("${peopleList.length} tracked",
+                                        style: const TextStyle(
+                                            fontSize: 11,
+                                            fontWeight: FontWeight.w600,
+                                            color: AppTheme.primaryColor)),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            Expanded(
+                              child: ListView.separated(
+                                controller: scrollController,
+                                padding: const EdgeInsets.symmetric(horizontal: 16),
+                                itemCount: peopleList.length,
+                                separatorBuilder: (_, __) =>
+                                    Divider(color: Colors.grey.shade100, height: 1),
+                                itemBuilder: (context, index) {
+                                  final person = peopleList[index];
+                                  final int battery = person['battery'] ?? 0;
+                                  final String activity =
+                                      person['lastActivity'] ?? "Unknown";
+                                  final bool isMe = person['name'] ==
+                                      (FirebaseAuth.instance.currentUser
+                                              ?.displayName ??
+                                          '');
+                                  final Color avatarColor =
+                                      isMe ? Colors.red : AppTheme.primaryColor;
+                                  return Padding(
+                                    padding:
+                                        const EdgeInsets.symmetric(vertical: 10),
+                                    child: Row(
                                       children: [
-                                        Row(
+                                        CircleAvatar(
+                                          radius: 22,
+                                          backgroundColor:
+                                              avatarColor.withValues(alpha: 0.12),
+                                          child: Text(
+                                              person['name'][0].toUpperCase(),
+                                              style: TextStyle(
+                                                  color: avatarColor,
+                                                  fontWeight: FontWeight.bold,
+                                                  fontSize: 16)),
+                                        ),
+                                        const SizedBox(width: 12),
+                                        Expanded(
+                                          child: Column(
+                                            crossAxisAlignment:
+                                                CrossAxisAlignment.start,
+                                            children: [
+                                              Text(person['name'],
+                                                  style: const TextStyle(
+                                                      fontWeight: FontWeight.w600,
+                                                      fontSize: 14,
+                                                      color: AppTheme.secondaryColor)),
+                                              const SizedBox(height: 2),
+                                              Text(
+                                                  person['role']
+                                                      .toString()
+                                                      .toUpperCase(),
+                                                  style: TextStyle(
+                                                      fontSize: 10,
+                                                      color: Colors.grey.shade500,
+                                                      letterSpacing: 0.5)),
+                                            ],
+                                          ),
+                                        ),
+                                        Column(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.end,
                                           children: [
-                                            Icon(
-                                              battery > 20 ? Icons.battery_full_rounded : Icons.battery_alert_rounded,
-                                              color: battery > 20 ? Colors.green : Colors.red,
-                                              size: 14,
-                                            ),
-                                            const SizedBox(width: 3),
-                                            Text("$battery%",
-                                                style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 12, color: AppTheme.secondaryColor)),
+                                            Row(children: [
+                                              Icon(
+                                                battery > 20
+                                                    ? Icons.battery_full_rounded
+                                                    : Icons.battery_alert_rounded,
+                                                color: battery > 20
+                                                    ? Colors.green
+                                                    : Colors.red,
+                                                size: 14,
+                                              ),
+                                              const SizedBox(width: 3),
+                                              Text("$battery%",
+                                                  style: const TextStyle(
+                                                      fontWeight: FontWeight.w600,
+                                                      fontSize: 12,
+                                                      color: AppTheme.secondaryColor)),
+                                            ]),
+                                            const SizedBox(height: 2),
+                                            Text(activity,
+                                                style: TextStyle(
+                                                    color: Colors.grey.shade500,
+                                                    fontSize: 10)),
                                           ],
                                         ),
-                                        const SizedBox(height: 2),
-                                        Text(activity, style: TextStyle(color: Colors.grey.shade500, fontSize: 10)),
                                       ],
                                     ),
-                                  ],
-                                ),
-                              );
-                            },
-                          ),
+                                  );
+                                },
+                              ),
+                            ),
+                          ],
                         ),
-                      ],
-                    ),
-                  );
-                },
-              ),
-            ],
+                      );
+                    },
+                  ),
+                ],
+              );
+            },
           );
         },
       ),
@@ -2773,5 +2914,365 @@ class _ProfileInfoCard extends StatelessWidget {
         ],
       ),
     );
+  }
+}
+
+// ─── Slide-to-confirm widget ──────────────────────────────────────────────────
+class _SlideToConfirm extends StatefulWidget {
+  final String label;
+  final Color color;
+  final VoidCallback onConfirmed;
+
+  const _SlideToConfirm({required this.label, required this.color, required this.onConfirmed});
+
+  @override
+  State<_SlideToConfirm> createState() => _SlideToConfirmState();
+}
+
+class _SlideToConfirmState extends State<_SlideToConfirm> {
+  double _dragX = 0;
+  double _maxDrag = 250; // updated on first frame
+  static const double _thumbSize = 48;
+  final GlobalKey _trackKey = GlobalKey();
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _updateMaxDrag());
+  }
+
+  void _updateMaxDrag() {
+    final box = _trackKey.currentContext?.findRenderObject() as RenderBox?;
+    if (box != null && mounted) {
+      setState(() => _maxDrag = box.size.width - _thumbSize - 8);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      key: _trackKey,
+      height: 52,
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(30),
+        gradient: LinearGradient(
+          colors: [widget.color.withValues(alpha: 0.15), widget.color.withValues(alpha: 0.05)],
+        ),
+        border: Border.all(color: widget.color.withValues(alpha: 0.3)),
+      ),
+      child: Stack(
+        alignment: Alignment.centerLeft,
+        children: [
+          Center(
+            child: Text(
+              widget.label,
+              style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: widget.color.withValues(alpha: 0.7)),
+            ),
+          ),
+          Positioned(
+            left: 4 + _dragX,
+            child: GestureDetector(
+              onHorizontalDragUpdate: (d) {
+                setState(() {
+                  _dragX = (_dragX + d.delta.dx).clamp(0, _maxDrag);
+                });
+                if (_dragX >= _maxDrag) {
+                  widget.onConfirmed();
+                  setState(() => _dragX = 0);
+                }
+              },
+              onHorizontalDragEnd: (_) => setState(() => _dragX = 0),
+              child: Container(
+                width: _thumbSize,
+                height: _thumbSize,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  gradient: LinearGradient(
+                    colors: [widget.color, widget.color.withValues(alpha: 0.8)],
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                  ),
+                  boxShadow: [BoxShadow(color: widget.color.withValues(alpha: 0.4), blurRadius: 8, offset: const Offset(0, 3))],
+                ),
+                child: const Icon(Icons.chevron_right_rounded, color: Colors.white, size: 28),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ─── Teacher Students Tab ─────────────────────────────────────────────────────
+class TeacherStudentsTab extends StatelessWidget {
+  const TeacherStudentsTab({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    return Scaffold(
+      backgroundColor: const Color(0xFFF5F6FA),
+      appBar: AppBar(
+        title: const Text("My Students", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18, color: AppTheme.secondaryColor)),
+        backgroundColor: Colors.white,
+        elevation: 0,
+        surfaceTintColor: Colors.transparent,
+      ),
+      body: StreamBuilder<QuerySnapshot>(
+        stream: FirebaseFirestore.instance
+            .collection('trips')
+            .where('status', isEqualTo: 'in_progress')
+            .snapshots(),
+        builder: (context, tripSnap) {
+          if (!tripSnap.hasData) return const Center(child: CircularProgressIndicator(color: AppTheme.primaryColor));
+
+          final Set<String> studentIds = {};
+          for (final doc in tripSnap.data!.docs) {
+            final buses = asList((doc.data() as Map<String, dynamic>?)?['buses']);
+            for (final b in buses) {
+              if (b is! Map) continue;
+              if (b['mainTeacher']?['id'] == uid || b['coTeacher']?['id'] == uid) {
+                for (final p in asList(b['passengers'])) {
+                  if (p is Map && p['id'] != null) studentIds.add(p['id'].toString());
+                }
+              }
+            }
+          }
+
+          if (studentIds.isEmpty) {
+            return const Center(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.people_outline_rounded, size: 56, color: Colors.grey),
+                  SizedBox(height: 12),
+                  Text("No active trip students", style: TextStyle(color: Colors.grey, fontSize: 15)),
+                ],
+              ),
+            );
+          }
+
+          // Stream student docs live so unlinks reflect immediately.
+          return StreamBuilder<QuerySnapshot>(
+            stream: FirebaseFirestore.instance
+                .collection('users')
+                .where(FieldPath.documentId, whereIn: studentIds.toList())
+                .snapshots(),
+            builder: (context, userSnap) {
+              if (!userSnap.hasData) return const Center(child: CircularProgressIndicator(color: AppTheme.primaryColor));
+              final students = userSnap.data!.docs.where((d) => d.exists).toList();
+              return ListView.builder(
+                padding: const EdgeInsets.all(16),
+                itemCount: students.length,
+                itemBuilder: (context, index) {
+                  final doc = students[index];
+                  final data = doc.data() as Map<String, dynamic>;
+                  final String name = (data['name'] ?? 'Unknown').toString();
+                  final String lrn = (data['lrn'] ?? '').toString();
+                  final initials = name.trim().split(RegExp(r'\s+')).where((w) => w.isNotEmpty).map((w) => w[0].toUpperCase()).join();
+                  final suffix = lrn.length >= 6 ? lrn.substring(lrn.length - 6) : lrn;
+                  final code = '$initials-$suffix';
+                  final parentIds = asList(data['parentIds']);
+
+                  return Card(
+                    margin: const EdgeInsets.only(bottom: 12),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                    elevation: 0,
+                    color: Colors.white,
+                    child: Padding(
+                      padding: const EdgeInsets.only(bottom: 8),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          ListTile(
+                            contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                            leading: CircleAvatar(
+                              backgroundColor: AppTheme.primaryColor.withValues(alpha: 0.12),
+                              child: Text(name.isNotEmpty ? name[0].toUpperCase() : '?',
+                                  style: const TextStyle(color: AppTheme.primaryColor, fontWeight: FontWeight.bold)),
+                            ),
+                            title: Text(name, style: const TextStyle(fontWeight: FontWeight.w600, color: AppTheme.secondaryColor)),
+                            subtitle: Text(
+                              "LRN: $lrn  •  Code: $code",
+                              style: TextStyle(fontSize: 12, color: Colors.grey.shade500),
+                            ),
+                            trailing: IconButton(
+                              icon: const Icon(Icons.qr_code_rounded, color: AppTheme.primaryColor),
+                              tooltip: "View QR",
+                              onPressed: () => _showStudentQR(context, name, lrn, doc.id, code),
+                            ),
+                          ),
+                          if (parentIds.isNotEmpty)
+                            _ParentLinksList(studentId: doc.id, parentIds: parentIds)
+                          else
+                            Padding(
+                              padding: const EdgeInsets.only(left: 68, bottom: 6),
+                              child: Text("No linked parents",
+                                  style: TextStyle(fontSize: 12, color: Colors.grey.shade400)),
+                            ),
+                        ],
+                      ),
+                    ),
+                  );
+                },
+              );
+            },
+          );
+        },
+      ),
+    );
+  }
+
+  void _showStudentQR(BuildContext context, String name, String lrn, String studentId, String code) {
+    showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: Text(name, style: const TextStyle(fontWeight: FontWeight.bold, color: AppTheme.secondaryColor), textAlign: TextAlign.center),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                border: Border.all(color: AppTheme.primaryColor.withValues(alpha: 0.2), width: 2),
+                borderRadius: BorderRadius.circular(16),
+              ),
+              child: CustomPaint(
+                size: const Size(200, 200),
+                painter: QrPainter(
+                  data: '{"studentId":"$studentId","name":"$name","lrn":"$lrn","code":"$code"}',
+                  version: QrVersions.auto,
+                  eyeStyle: const QrEyeStyle(eyeShape: QrEyeShape.square, color: Colors.black),
+                  dataModuleStyle: const QrDataModuleStyle(dataModuleShape: QrDataModuleShape.square, color: Colors.black),
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              decoration: BoxDecoration(
+                color: AppTheme.primaryColor.withValues(alpha: 0.08),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Text("Code: $code",
+                  style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold, letterSpacing: 1.2, color: AppTheme.primaryColor)),
+            ),
+          ],
+        ),
+        actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text("Close"))],
+      ),
+    );
+  }
+}
+
+class _ParentLinksList extends StatelessWidget {
+  final String studentId;
+  final List<dynamic> parentIds;
+
+  const _ParentLinksList({required this.studentId, required this.parentIds});
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<List<DocumentSnapshot>>(
+      future: Future.wait(
+        parentIds.map((id) => FirebaseFirestore.instance.collection('users').doc(id.toString()).get()),
+      ),
+      builder: (context, snap) {
+        if (!snap.hasData) return const SizedBox.shrink();
+        final parents = snap.data!.where((d) => d.exists).toList();
+        if (parents.isEmpty) return const SizedBox.shrink();
+        return Padding(
+          padding: const EdgeInsets.only(left: 16, right: 8, bottom: 4),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Divider(height: 1),
+              const SizedBox(height: 6),
+              Row(children: [
+                const Icon(Icons.family_restroom_rounded, size: 14, color: Colors.grey),
+                const SizedBox(width: 6),
+                Text("Linked Parents",
+                    style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Colors.grey.shade600)),
+              ]),
+              const SizedBox(height: 4),
+              ...parents.map((doc) {
+                final pName = (doc.data() as Map<String, dynamic>?)?['name']?.toString() ?? 'Parent';
+                return Row(
+                  children: [
+                    const SizedBox(width: 4),
+                    const Icon(Icons.person_outline, size: 14, color: Colors.grey),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(pName, style: TextStyle(fontSize: 13, color: Colors.grey.shade700)),
+                    ),
+                    TextButton(
+                      onPressed: () => _confirmUnlink(context, pName, doc.id),
+                      style: TextButton.styleFrom(
+                        foregroundColor: Colors.red.shade400,
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        minimumSize: Size.zero,
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      ),
+                      child: const Text("Unlink", style: TextStyle(fontSize: 12)),
+                    ),
+                  ],
+                );
+              }),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  void _confirmUnlink(BuildContext context, String parentName, String parentId) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Text("Unlink Parent", style: TextStyle(fontWeight: FontWeight.bold)),
+        content: Text("Remove $parentName as a linked parent of this student?"),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("Cancel")),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+            onPressed: () async {
+              Navigator.pop(ctx);
+              await _doUnlink(context, parentId);
+            },
+            child: const Text("Unlink", style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _doUnlink(BuildContext context, String parentId) async {
+    try {
+      final batch = FirebaseFirestore.instance.batch();
+      batch.update(
+        FirebaseFirestore.instance.collection('users').doc(studentId),
+        {'parentIds': FieldValue.arrayRemove([parentId])},
+      );
+      batch.update(
+        FirebaseFirestore.instance.collection('users').doc(parentId),
+        {'children': FieldValue.arrayRemove([studentId])},
+      );
+      await batch.commit();
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("Parent unlinked."), backgroundColor: Colors.green),
+        );
+      }
+    } catch (_) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("Failed to unlink parent."), backgroundColor: Colors.red),
+        );
+      }
+    }
   }
 }

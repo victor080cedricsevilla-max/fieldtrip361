@@ -1,0 +1,61 @@
+@startuml DFD_Level2_P7
+title **LEVEL 2 — Process 7: Generate Reports**
+
+skinparam backgroundColor White
+skinparam defaultFontName Arial
+skinparam defaultFontSize 10
+skinparam linetype ortho
+skinparam arrowColor #1F2937
+skinparam arrowThickness 1.2
+skinparam arrowFontSize 8
+
+skinparam rectangle<<ent>> {
+  BackgroundColor White
+  BorderColor Black
+  RoundCorner 0
+  FontStyle bold
+  FontSize 11
+}
+skinparam rectangle<<proc>> {
+  BackgroundColor #DBEAFE
+  BorderColor #2563EB
+  RoundCorner 12
+  FontStyle bold
+  FontSize 10
+}
+skinparam rectangle<<ds>> {
+  BackgroundColor White
+  BorderColor Black
+  RoundCorner 0
+  FontSize 9
+}
+
+top to bottom direction
+
+rectangle "School\nAdmin" as ADM <<ent>>
+
+rectangle "7.1\nReceive Filter\nParameters\n(Date, Teacher, Bus)" as P71 <<proc>>
+rectangle "7.2\nRetrieve Geofence\nViolations"                   as P72 <<proc>>
+rectangle "7.3\nRetrieve Trip &\nAttendance Data"                as P73 <<proc>>
+rectangle "7.4\nCompile\nReport Data"                            as P74 <<proc>>
+rectangle "7.5\nGenerate\nPDF Export"                            as P75 <<proc>>
+
+rectangle "D1  |  Trip Details"          as D1 <<ds>>
+rectangle "D3  |  Attendance Records"    as D3 <<ds>>
+rectangle "D5  |  SOS & Geofence Alerts" as D5 <<ds>>
+rectangle "D7  |  Reports Log"           as D7 <<ds>>
+
+ADM --> P71 : filter parameters\n(date range, teacher, bus number)
+ADM --> P71 : selected checkboxes\n(violations, trips)
+P71 --> P72 : filter criteria
+P71 --> P73 : filter criteria
+D5  --> P72 : geofence violations\n(student name, bus, time)
+D1  --> P73 : trip details\n(route, stops, status)
+D3  --> P73 : attendance records
+P72 --> P74 : violation data
+P73 --> P74 : trip & attendance data
+P74 --> P75 : compiled report data
+P75 --> ADM : PDF report
+P75 --> D7  : report record
+
+@enduml

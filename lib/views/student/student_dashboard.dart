@@ -1,6 +1,6 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:ui' as ui;
-import 'package:cloud_functions/cloud_functions.dart';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -18,6 +18,7 @@ import '../../utils/firestore_utils.dart';
 import '../auth/mobile_login_view.dart';
 import '../shared/settings_view.dart';
 import '../shared/chat_view.dart';
+import '../shared/notification_panel.dart';
 
 class MarkerGenerator {
   static Future<BitmapDescriptor> createCustomMarker(String name, Color color) async {
@@ -60,7 +61,14 @@ class _StudentDashboardState extends State<StudentDashboard> {
   late final List<Widget> _pages;
   StreamSubscription<QuerySnapshot>? _geofenceTripSub;
   StreamSubscription<QuerySnapshot>? _geofenceAlertSub;
+  StreamSubscription? _activeTripSub;
+  StreamSubscription<Position>? _dashPositionStream;
+  Timer? _dashHeartbeatTimer;
+  Position? _dashLastPos;
+  Map<String, dynamic>? _activeTripData;
+  bool _dashIsOutOfBounds = false;
   String? _watchedTripId;
+  BuildContext? _warningCtx;
 
   @override
   void initState() {
@@ -73,6 +81,7 @@ class _StudentDashboardState extends State<StudentDashboard> {
     ];
     _requestLocationPermission();
     _listenForGeofenceAlerts();
+    _startDashboardLocationUpdates();
   }
 
   void _listenForGeofenceAlerts() {
@@ -100,11 +109,31 @@ class _StudentDashboardState extends State<StudentDashboard> {
         }
       }
 
+      // Keep active trip data fresh for geofence distance checks.
+      if (newTripId != null) {
+        for (final doc in snap.docs) {
+          if (doc.id == newTripId) { _activeTripData = doc.data(); break; }
+        }
+      } else {
+        _activeTripData = null;
+      }
+
       if (newTripId == _watchedTripId) return;
       _watchedTripId = newTripId;
       _geofenceAlertSub?.cancel();
+      _activeTripSub?.cancel();
 
       if (newTripId == null) return;
+
+      // Subscribe to real-time trip updates so activeStopIndex stays current.
+      _activeTripSub = FirebaseFirestore.instance
+          .collection('trips')
+          .doc(newTripId)
+          .snapshots()
+          .listen((tripDoc) {
+        if (tripDoc.exists) _activeTripData = tripDoc.data();
+      });
+
       bool isFirstSnapshot = true;
       final seenIds = <String>{};
       _geofenceAlertSub = FirebaseFirestore.instance
@@ -125,6 +154,16 @@ class _StudentDashboardState extends State<StudentDashboard> {
               !seenIds.contains(change.doc.id)) {
             seenIds.add(change.doc.id);
             if (!mounted) return;
+            if (!_dashIsOutOfBounds) {
+              _dashIsOutOfBounds = true;
+              FlutterRingtonePlayer().play(
+                fromAsset: "assets/audio/alarm.mp3",
+                looping: true,
+                volume: 1.0,
+                asAlarm: true,
+              );
+              _showDashboardOutOfBoundsWarning();
+            }
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(
                 content: const Row(
@@ -146,10 +185,126 @@ class _StudentDashboardState extends State<StudentDashboard> {
     });
   }
 
+  void _startDashboardLocationUpdates() async {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) return;
+    try {
+      final pos = await Geolocator.getCurrentPosition(
+        locationSettings: const LocationSettings(accuracy: LocationAccuracy.high),
+      );
+      _dashLastPos = pos;
+      _publishAndCheckGeofence(uid, pos);
+    } catch (_) {}
+    _dashPositionStream = Geolocator.getPositionStream(
+      locationSettings: const LocationSettings(
+        accuracy: LocationAccuracy.high,
+        distanceFilter: 3,
+      ),
+    ).listen((pos) {
+      _dashLastPos = pos;
+      _publishAndCheckGeofence(uid, pos);
+    });
+    _dashHeartbeatTimer = Timer.periodic(const Duration(seconds: 5), (_) {
+      final pos = _dashLastPos;
+      if (pos != null) _publishAndCheckGeofence(uid, pos);
+    });
+  }
+
+  Future<void> _publishAndCheckGeofence(String uid, Position pos) async {
+    // Only publish after QR scan on the active trip.  If there is no active
+    // in-progress trip, or the student hasn't been scanned yet, skip entirely.
+    final trip = _activeTripData;
+    if (trip == null) return;
+    bool scanned = false;
+    outer:
+    for (final b in asList(trip['buses'])) {
+      if (b is Map) {
+        for (final p in asList(b['passengers'])) {
+          if (p is Map && p['id'] == uid) {
+            final att = p['attendance'];
+            if (att is Map && att.values.any((v) => v == true)) scanned = true;
+            break outer;
+          }
+        }
+      }
+    }
+    if (!scanned) return;
+
+    try {
+      await FirebaseFirestore.instance.collection('users').doc(uid).update({
+        'lat': pos.latitude,
+        'lng': pos.longitude,
+        'lastUpdate': FieldValue.serverTimestamp(),
+      });
+    } catch (_) {}
+
+    final activeStop = trip['activeStopIndex'];
+    if (activeStop is! int || activeStop < 0) return;
+    final stops = asList(trip['stops']);
+    if (activeStop >= stops.length) return;
+    final stop = stops[activeStop];
+    if (stop is! Map || stop['lat'] is! num || stop['lng'] is! num) return;
+    final centerLat = (stop['lat'] as num).toDouble();
+    final centerLng = (stop['lng'] as num).toDouble();
+    final radius = (stop['geofenceRadius'] is num)
+        ? (stop['geofenceRadius'] as num).toDouble()
+        : 200.0;
+    final distance = Geolocator.distanceBetween(
+      pos.latitude, pos.longitude, centerLat, centerLng,
+    );
+    if (distance > radius && !_dashIsOutOfBounds) {
+      _dashIsOutOfBounds = true;
+      FlutterRingtonePlayer().play(
+        fromAsset: "assets/audio/alarm.mp3",
+        looping: true,
+        volume: 1.0,
+        asAlarm: true,
+      );
+      if (mounted) _showDashboardOutOfBoundsWarning();
+    } else if (distance <= radius && _dashIsOutOfBounds) {
+      _dashIsOutOfBounds = false;
+      FlutterRingtonePlayer().stop();
+      final ctx = _warningCtx;
+      if (ctx != null && ctx.mounted) {
+        Navigator.pop(ctx);
+        _warningCtx = null;
+      }
+    }
+  }
+
+  void _showDashboardOutOfBoundsWarning() {
+    if (_warningCtx != null) return; // already showing
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) {
+        _warningCtx = ctx;
+        return AlertDialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          title: const Row(
+            children: [
+              Icon(Icons.warning_amber_rounded, color: Colors.red, size: 28),
+              SizedBox(width: 8),
+              Text("GEOFENCE WARNING",
+                  style: TextStyle(color: Colors.red, fontWeight: FontWeight.bold, fontSize: 18)),
+            ],
+          ),
+          content: const Text(
+            "You left the designated area. Return immediately.",
+            style: TextStyle(fontSize: 15),
+          ),
+        );
+      },
+    ).then((_) => _warningCtx = null);
+  }
+
   @override
   void dispose() {
     _geofenceTripSub?.cancel();
     _geofenceAlertSub?.cancel();
+    _activeTripSub?.cancel();
+    _dashPositionStream?.cancel();
+    _dashHeartbeatTimer?.cancel();
     super.dispose();
   }
 
@@ -215,91 +370,6 @@ class _StudentDashboardState extends State<StudentDashboard> {
     );
   }
 
-  Widget _buildLinkRequestBanner() {
-    final uid = FirebaseAuth.instance.currentUser?.uid;
-    if (uid == null) return const SizedBox.shrink();
-    return StreamBuilder<QuerySnapshot>(
-      stream: FirebaseFirestore.instance
-          .collection('linkRequests')
-          .where('studentId', isEqualTo: uid)
-          .where('status', isEqualTo: 'pending')
-          .snapshots(),
-      builder: (context, snap) {
-        if (!snap.hasData || snap.data!.docs.isEmpty) return const SizedBox.shrink();
-        final doc = snap.data!.docs.first;
-        final parentName = (doc['parentName'] ?? 'A parent').toString();
-        return SafeArea(
-          bottom: false,
-          child: Container(
-            width: double.infinity,
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-            color: AppTheme.primaryColor,
-            child: Row(
-              children: [
-                const Icon(Icons.family_restroom, color: Colors.white, size: 20),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Text(
-                    "$parentName wants to link as your parent.",
-                    style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600, fontSize: 13),
-                  ),
-                ),
-                TextButton(
-                  onPressed: () => _handleLinkRequest(doc.id, false),
-                  style: TextButton.styleFrom(foregroundColor: Colors.white70, padding: EdgeInsets.zero, minimumSize: Size.zero, tapTargetSize: MaterialTapTargetSize.shrinkWrap),
-                  child: const Text("Deny", style: TextStyle(fontSize: 12)),
-                ),
-                const SizedBox(width: 8),
-                ElevatedButton(
-                  onPressed: () => _handleLinkRequest(doc.id, true),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.white,
-                    foregroundColor: AppTheme.primaryColor,
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                    minimumSize: Size.zero,
-                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                    textStyle: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
-                  ),
-                  child: const Text("Approve"),
-                ),
-              ],
-            ),
-          ),
-        );
-      },
-    );
-  }
-
-  Future<void> _handleLinkRequest(String requestId, bool approve) async {
-    try {
-      if (approve) {
-        await FirebaseFunctions.instance
-            .httpsCallable('approveLinkRequest')
-            .call({'requestId': requestId});
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Parent linked successfully.'), backgroundColor: Colors.green),
-          );
-        }
-      } else {
-        await FirebaseFirestore.instance
-            .collection('linkRequests')
-            .doc(requestId)
-            .update({'status': 'rejected'});
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Request denied.'), backgroundColor: Colors.orange),
-          );
-        }
-      }
-    } catch (_) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Something went wrong. Try again.'), backgroundColor: Colors.red),
-        );
-      }
-    }
-  }
 
   @override
   Widget build(BuildContext context) {
@@ -307,7 +377,6 @@ class _StudentDashboardState extends State<StudentDashboard> {
       body: Column(
         children: [
           _buildEmergencyBanner(),
-          _buildLinkRequestBanner(),
           Expanded(child: _pages[_selectedIndex]),
         ],
       ),
@@ -378,6 +447,7 @@ class StudentTripsTab extends StatelessWidget {
           "My Trips",
           style: TextStyle(fontWeight: FontWeight.bold, fontSize: 22, color: AppTheme.secondaryColor),
         ),
+        actions: const [NotificationBell(), SizedBox(width: 8)],
       ),
       body: StreamBuilder<QuerySnapshot>(
         stream: FirebaseFirestore.instance
@@ -535,8 +605,6 @@ class _StudentTripDetailsState extends State<StudentTripDetails>
   final Battery _battery = Battery();
   late final LiveTracker _tracker = LiveTracker(vsync: this);
 
-  Map<String, dynamic>? _currentTripData;
-  bool _isOutOfBounds = false;
 
   @override
   void initState() {
@@ -622,68 +690,6 @@ class _StudentTripDetailsState extends State<StudentTripDetails>
       'lastUpdate': FieldValue.serverTimestamp(),
     });
 
-    if (_currentTripData != null) {
-      int activeStop = _currentTripData!['activeStopIndex'] ?? -1;
-      if (activeStop != -1) {
-        var stopsList = _currentTripData!['stops'] as List?;
-        if (stopsList != null && activeStop < stopsList.length) {
-          var stop = stopsList[activeStop];
-          double centerLat = (stop['lat'] as num).toDouble();
-          double centerLng = (stop['lng'] as num).toDouble();
-          double radius = (stop['geofenceRadius'] as num).toDouble();
-
-          double distance = Geolocator.distanceBetween(pos.latitude, pos.longitude, centerLat, centerLng);
-
-          if (distance > radius) {
-            if (!_isOutOfBounds) {
-              _isOutOfBounds = true;
-              FlutterRingtonePlayer().play(
-                fromAsset: "assets/audio/alarm.mp3",
-                looping: true,
-                volume: 1.0,
-                asAlarm: true,
-              );
-              _showOutOfBoundsWarning();
-              // Alert write is handled by the background service so we don't
-              // create a duplicate Firestore doc here.
-            }
-          } else {
-            if (_isOutOfBounds) {
-              _isOutOfBounds = false;
-              FlutterRingtonePlayer().stop();
-            }
-          }
-        }
-      }
-    }
-  }
-
-  void _showOutOfBoundsWarning() {
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (ctx) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: Row(
-          children: [
-            const Icon(Icons.warning_amber_rounded, color: Colors.red, size: 28),
-            const SizedBox(width: 8),
-            const Text("GEOFENCE WARNING", style: TextStyle(color: Colors.red, fontWeight: FontWeight.bold, fontSize: 18)),
-          ],
-        ),
-        content: const Text("You left the designated area. Return immediately.", style: TextStyle(fontSize: 15)),
-        actions: [
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
-            onPressed: () {
-              FlutterRingtonePlayer().stop();
-              Navigator.pop(ctx);
-            },
-            child: const Text("I Understand", style: TextStyle(color: Colors.white)),
-          )
-        ]
-      )
-    );
   }
 
 
@@ -820,7 +826,6 @@ class _StudentTripDetailsState extends State<StudentTripDetails>
         }
 
         final currentTripData = tripSnap.data!.data() as Map<String, dynamic>;
-        _currentTripData = currentTripData;
 
         final List buses = asList(currentTripData['buses']);
         final List<String> visibleUserIds = [widget.myUid];
@@ -843,7 +848,7 @@ class _StudentTripDetailsState extends State<StudentTripDetails>
           if (myBus != null) {
             if (bus['mainTeacher'] != null) visibleUserIds.add(bus['mainTeacher']['id']);
             if (bus['coTeacher'] != null) visibleUserIds.add(bus['coTeacher']['id']);
-            for (var p in passengers) visibleUserIds.add(p['id']);
+            for (var p in passengers) { visibleUserIds.add(p['id']); }
             break;
           }
         }
@@ -1180,18 +1185,25 @@ class _StudentTripDetailsState extends State<StudentTripDetails>
   }
 }
 
-class StudentQRTab extends StatefulWidget {
+// ── Static identity QR ─────────────────────────────────────────────────────
+String _computeStudentCode(String name, String lrn) {
+  final initials = name
+      .trim()
+      .split(RegExp(r'\s+'))
+      .where((w) => w.isNotEmpty)
+      .map((w) => w[0].toUpperCase())
+      .join();
+  final suffix = lrn.length >= 6 ? lrn.substring(lrn.length - 6) : lrn;
+  return '$initials-$suffix';
+}
+
+class StudentQRTab extends StatelessWidget {
   const StudentQRTab({super.key});
 
   @override
-  State<StudentQRTab> createState() => _StudentQRTabState();
-}
-
-class _StudentQRTabState extends State<StudentQRTab> {
-  final String myUid = FirebaseAuth.instance.currentUser!.uid;
-
-  @override
   Widget build(BuildContext context) {
+    final String myUid = FirebaseAuth.instance.currentUser!.uid;
+
     return Scaffold(
       backgroundColor: const Color(0xFFF7F8FA),
       appBar: AppBar(
@@ -1203,259 +1215,116 @@ class _StudentQRTabState extends State<StudentQRTab> {
           style: TextStyle(fontWeight: FontWeight.bold, fontSize: 22, color: AppTheme.secondaryColor),
         ),
       ),
-      body: StreamBuilder<QuerySnapshot>(
-        stream: FirebaseFirestore.instance
-            .collection('trips')
-            .where('status', isEqualTo: 'in_progress')
-            .snapshots(),
-        builder: (context, snapshot) {
-          if (snapshot.connectionState == ConnectionState.waiting) {
+      body: FutureBuilder<DocumentSnapshot>(
+        future: FirebaseFirestore.instance.collection('users').doc(myUid).get(),
+        builder: (context, snap) {
+          if (!snap.hasData) {
             return const Center(child: CircularProgressIndicator(color: AppTheme.primaryColor));
           }
-
-          if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
-            return const _LockedQRView(message: "You have no active trips running right now.");
+          final data = snap.data!.data() as Map<String, dynamic>? ?? {};
+          final String name = (data['name'] ?? '').toString();
+          final String lrn  = (data['lrn']  ?? '').toString();
+          final String code = _computeStudentCode(name, lrn);
+          // Persist computed code so parents can look up by it.
+          if ((data['code'] ?? '') != code && code.isNotEmpty) {
+            FirebaseFirestore.instance.collection('users').doc(myUid).update({'code': code});
           }
+          final String qrJson = jsonEncode({
+            'studentId': myUid,
+            'name': name,
+            'lrn': lrn,
+            'code': code,
+          });
 
-          Map<String, dynamic>? myActiveTrip;
-          String? myActiveTripId;
-
-          for (var doc in snapshot.data!.docs) {
-            final data = doc.data() as Map<String, dynamic>;
-
-            bool isMyTrip = false;
-            final List buses = asList(data['buses']);
-            for (var bus in buses) {
-              final List passengers = asList(bus['passengers']);
-              for (var p in passengers) {
-                if (p['id'] == myUid) {
-                  isMyTrip = true;
-                  break;
-                }
-              }
-              if (isMyTrip) break;
-            }
-
-            if (isMyTrip) {
-              int currentActive = data['activeStopIndex'] ?? -1;
-              if (currentActive != -1) {
-                myActiveTrip = data;
-                myActiveTripId = doc.id;
-                break;
-              } else {
-                myActiveTrip ??= data;
-                myActiveTripId ??= doc.id;
-              }
-            }
-          }
-
-          if (myActiveTrip == null || myActiveTripId == null) {
-            return const _LockedQRView(message: "You are not assigned to any currently active trip.");
-          }
-
-          int activeStopIndex = myActiveTrip['activeStopIndex'] ?? -1;
-
-          if (activeStopIndex == -1) {
-            return const _LockedQRView(message: "Your teacher hasn't started the destination yet.");
-          }
-
-          List stopsList = myActiveTrip['stops'] ?? [];
-          if (activeStopIndex >= stopsList.length) {
-            return const _LockedQRView(message: "Invalid destination index.");
-          }
-
-          bool qrEnabled = stopsList[activeStopIndex]['qrEnabled'] == true;
-
-          if (!qrEnabled) {
-            return const _LockedQRView(
-              message: "QR generation is locked. Wait for your teacher to allow QR for this destination.",
-            );
-          }
-
-          return _ActiveQRView(tripId: myActiveTripId, stopIndex: activeStopIndex);
-        },
-      ),
-    );
-  }
-}
-
-class _ActiveQRView extends StatefulWidget {
-  final String tripId;
-  final int stopIndex;
-  const _ActiveQRView({required this.tripId, required this.stopIndex});
-
-  @override
-  State<_ActiveQRView> createState() => _ActiveQRViewState();
-}
-
-class _ActiveQRViewState extends State<_ActiveQRView> {
-  String qrData = "";
-  bool _isGenerating = false;
-  Timer? _timer;
-  static const int _qrInterval = 25;
-  int _secondsLeft = _qrInterval;
-
-  @override
-  void initState() {
-    super.initState();
-    _generateQR();
-    _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
-      if (!mounted) return;
-      setState(() {
-        _secondsLeft--;
-        if (_secondsLeft <= 0) {
-          _secondsLeft = _qrInterval;
-          _generateQR();
-        }
-      });
-    });
-  }
-
-  Future<void> _generateQR() async {
-    if (_isGenerating || !mounted) return;
-    setState(() => _isGenerating = true);
-    try {
-      final result = await FirebaseFunctions.instance
-          .httpsCallable('generateAttendanceToken')
-          .call({'tripId': widget.tripId, 'stopIndex': widget.stopIndex});
-      if (mounted) {
-        setState(() => qrData = (result.data['tokenId'] as String?) ?? '');
-      }
-    } catch (_) {
-      // Keep showing the last token until the next cycle.
-    } finally {
-      if (mounted) setState(() => _isGenerating = false);
-    }
-  }
-
-  @override
-  void dispose() {
-    _timer?.cancel();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Center(
-      child: SingleChildScrollView(
-        padding: const EdgeInsets.all(32),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            const Text(
-              "Present to your teacher",
-              style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600, color: AppTheme.secondaryColor),
-            ),
-            const SizedBox(height: 6),
-            Text(
-              "Show this QR code to mark your attendance",
-              style: TextStyle(fontSize: 12, color: Colors.grey.shade500),
-              textAlign: TextAlign.center,
-            ),
-            const SizedBox(height: 32),
-            Container(
-              padding: const EdgeInsets.all(24),
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(24),
-                boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.08), blurRadius: 24, offset: const Offset(0, 8))],
-              ),
+          return Center(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.all(32),
               child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
                 children: [
+                  Text(
+                    name.isEmpty ? 'Student' : name,
+                    style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: AppTheme.secondaryColor),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    "LRN: ${lrn.isEmpty ? '—' : lrn}",
+                    style: TextStyle(fontSize: 13, color: Colors.grey.shade500),
+                  ),
+                  const SizedBox(height: 28),
                   Container(
-                    padding: const EdgeInsets.all(12),
+                    padding: const EdgeInsets.all(24),
                     decoration: BoxDecoration(
-                      border: Border.all(color: AppTheme.primaryColor.withValues(alpha: 0.2), width: 2),
-                      borderRadius: BorderRadius.circular(16),
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(24),
+                      boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.08), blurRadius: 24, offset: const Offset(0, 8))],
                     ),
-                    child: qrData.isEmpty
-                        ? const SizedBox(width: 220, height: 220, child: Center(child: CircularProgressIndicator()))
-                        : QrImageView(data: qrData, version: QrVersions.auto, size: 220),
+                    child: Column(
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            border: Border.all(color: AppTheme.primaryColor.withValues(alpha: 0.2), width: 2),
+                            borderRadius: BorderRadius.circular(16),
+                          ),
+                          child: QrImageView(
+                            data: qrJson,
+                            version: QrVersions.auto,
+                            size: 220,
+                            backgroundColor: Colors.white,
+                            eyeStyle: const QrEyeStyle(eyeShape: QrEyeShape.square, color: Colors.black),
+                            dataModuleStyle: const QrDataModuleStyle(dataModuleShape: QrDataModuleShape.square, color: Colors.black),
+                          ),
+                        ),
+                        const SizedBox(height: 20),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                          decoration: BoxDecoration(
+                            color: AppTheme.primaryColor.withValues(alpha: 0.08),
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: Text(
+                            "Code: $code",
+                            style: const TextStyle(
+                              fontSize: 20,
+                              fontWeight: FontWeight.bold,
+                              color: AppTheme.primaryColor,
+                              letterSpacing: 1.5,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
                   const SizedBox(height: 20),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      SizedBox(
-                        width: 20,
-                        height: 20,
-                        child: CircularProgressIndicator(
-                          value: _secondsLeft / _qrInterval,
-                          strokeWidth: 2.5,
-                          color: AppTheme.primaryColor,
-                          backgroundColor: AppTheme.primaryColor.withValues(alpha: 0.1),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                    decoration: BoxDecoration(
+                      color: Colors.orange.withValues(alpha: 0.08),
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(color: Colors.orange.withValues(alpha: 0.2)),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.info_outline_rounded, size: 14, color: Colors.orange.shade700),
+                        const SizedBox(width: 8),
+                        Flexible(
+                          child: Text(
+                            "Show this code to your parent if camera is unavailable",
+                            textAlign: TextAlign.center,
+                            style: TextStyle(fontSize: 12, color: Colors.orange.shade700, fontWeight: FontWeight.w500),
+                          ),
                         ),
-                      ),
-                      const SizedBox(width: 10),
-                      Text(
-                        "Refreshes in $_secondsLeft second${_secondsLeft == 1 ? '' : 's'}",
-                        style: TextStyle(fontSize: 12, color: Colors.grey.shade500, fontWeight: FontWeight.w500),
-                      ),
-                    ],
+                      ],
+                    ),
                   ),
                 ],
               ),
             ),
-            const SizedBox(height: 28),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-              decoration: BoxDecoration(
-                color: AppTheme.primaryColor.withValues(alpha: 0.08),
-                borderRadius: BorderRadius.circular(20),
-              ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const Icon(Icons.info_outline_rounded, size: 14, color: AppTheme.primaryColor),
-                  const SizedBox(width: 6),
-                  const Text(
-                    "QR auto-refreshes for security",
-                    style: TextStyle(fontSize: 12, color: AppTheme.primaryColor, fontWeight: FontWeight.w500),
-                  ),
-                ],
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _LockedQRView extends StatelessWidget {
-  final String message;
-  const _LockedQRView({required this.message});
-
-  @override
-  Widget build(BuildContext context) {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 40),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Container(
-              width: 88,
-              height: 88,
-              decoration: BoxDecoration(
-                color: Colors.grey.shade100,
-                shape: BoxShape.circle,
-              ),
-              child: Icon(Icons.lock_outline_rounded, size: 40, color: Colors.grey.shade400),
-            ),
-            const SizedBox(height: 20),
-            const Text(
-              "QR Locked",
-              style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: AppTheme.secondaryColor),
-            ),
-            const SizedBox(height: 10),
-            Text(
-              message,
-              textAlign: TextAlign.center,
-              style: TextStyle(color: Colors.grey.shade500, fontSize: 14, height: 1.5),
-            ),
-          ],
-        ),
+          );
+        },
       ),
     );
   }

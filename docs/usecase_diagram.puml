@@ -1,0 +1,107 @@
+@startuml FieldTrip360_UseCaseDiagram
+
+title Use Case Diagram - FieldTrip360
+
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName Arial
+skinparam defaultFontSize 11
+
+skinparam actor {
+  BorderColor #CC4A00
+  BackgroundColor #FF6B35
+  FontColor #1F2937
+  FontSize 12
+  FontStyle bold
+}
+
+skinparam usecase {
+  BackgroundColor #334155
+  BorderColor #1E293B
+  FontColor #FFFFFF
+  FontSize 11
+  BorderThickness 2
+}
+
+skinparam rectangle {
+  BorderColor #2563EB
+  BorderThickness 2
+  BackgroundColor #EFF6FF
+  FontColor #1E3A5F
+  FontSize 14
+  FontStyle bold
+}
+
+skinparam ArrowColor #374151
+skinparam ArrowThickness 1.5
+skinparam ArrowFontSize 10
+skinparam ArrowFontColor #374151
+skinparam linetype ortho
+
+left to right direction
+
+'─── LEFT ACTORS ───────────────────────────────────────────────────────────────
+actor Student as ST
+actor Parent  as PA
+
+'─── SYSTEM BOUNDARY ───────────────────────────────────────────────────────────
+rectangle "FieldTrip360 System" {
+
+  usecase "View Own QR\nCode & Text Code"         as UC01
+  usecase "Share Live\nLocation"                   as UC02
+  usecase "Trigger\nEmergency Alert"               as UC03
+  usecase "Receive Trip\nNotification"             as UC04
+  usecase "Approve\nParent Link"                   as UC05
+
+  usecase "Link Child\n(QR Scan / LRN)"            as UC06
+  usecase "View Child\nLive Location"              as UC07
+
+  usecase "Execute Trip\n(Start/Arrive/Depart)"    as UC08
+  usecase "View Live Map\n& Student List"          as UC09
+  usecase "Scan QR\nAttendance"                    as UC10
+  usecase "Receive\nGeofence Alert"                as UC11
+
+  usecase "Create &\nManage Trips"                 as UC12
+  usecase "Generate\nPDF Report"                   as UC13
+
+  usecase "Group Chat &\nDirect Message"           as UC14
+
+}
+
+'─── RIGHT ACTORS ──────────────────────────────────────────────────────────────
+actor Teacher as TC
+actor Admin   as AD
+
+'─── STUDENT LINKS ─────────────────────────────────────────────────────────────
+ST --> UC01
+ST --> UC02
+ST --> UC03
+ST --> UC04
+ST --> UC05
+ST --> UC14
+
+'─── PARENT LINKS ──────────────────────────────────────────────────────────────
+PA --> UC06
+PA --> UC07
+PA --> UC04
+PA --> UC14
+
+'─── TEACHER LINKS ─────────────────────────────────────────────────────────────
+TC --> UC08
+TC --> UC09
+TC --> UC10
+TC --> UC11
+TC --> UC14
+
+'─── ADMIN LINKS ───────────────────────────────────────────────────────────────
+AD --> UC12
+AD --> UC13
+AD --> UC14
+
+'─── RELATIONSHIPS ─────────────────────────────────────────────────────────────
+UC06 ..> UC05 : <<include>>
+UC02 ..> UC11 : <<extend>>
+UC08 ..> UC04 : <<extend>>
+UC03 ..> UC11 : <<include>>
+UC12 ..> UC13 : <<extend>>
+
+@enduml

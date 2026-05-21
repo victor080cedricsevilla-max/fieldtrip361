@@ -1,0 +1,59 @@
+@startuml DFD_Level2_P2
+title **LEVEL 2 — Process 2: Manage Student & Parent Information**
+
+skinparam backgroundColor White
+skinparam defaultFontName Arial
+skinparam defaultFontSize 10
+skinparam linetype ortho
+skinparam arrowColor #1F2937
+skinparam arrowThickness 1.2
+skinparam arrowFontSize 8
+
+skinparam rectangle<<ent>> {
+  BackgroundColor White
+  BorderColor Black
+  RoundCorner 0
+  FontStyle bold
+  FontSize 11
+}
+skinparam rectangle<<proc>> {
+  BackgroundColor #DBEAFE
+  BorderColor #2563EB
+  RoundCorner 12
+  FontStyle bold
+  FontSize 10
+}
+skinparam rectangle<<ds>> {
+  BackgroundColor White
+  BorderColor Black
+  RoundCorner 0
+  FontSize 9
+}
+
+top to bottom direction
+
+rectangle "Student" as STU <<ent>>
+rectangle "Parent"  as PAR <<ent>>
+rectangle "Teacher" as TCH <<ent>>
+
+rectangle "2.1\nGenerate Student\nIdentity QR Code\n(ID, Name, LRN, Code)" as P21 <<proc>>
+rectangle "2.2\nReceive Parent\nLink Request\n(QR Scan / LRN Entry)"      as P22 <<proc>>
+rectangle "2.3\nVerify & Enforce\nLink Limit\n(Max 2 Parents per Student)" as P23 <<proc>>
+rectangle "2.4\nStudent Approves\nLink Request"                            as P24 <<proc>>
+rectangle "2.5\nStore Student &\nParent Record"                            as P25 <<proc>>
+
+rectangle "D2  |  Student & Parent Information" as D2 <<ds>>
+
+D2  --> P21 : student profile\n(name, LRN, student ID)
+P21 --> STU : static QR code & text code\n(e.g. VCS-161430)
+P21 --> TCH : student QR & code\n(teacher view)
+
+PAR --> P22 : QR scan data or LRN
+P22 --> P23 : link request data
+D2  --> P23 : existing parentIds array
+P23 --> P24 : validated link request\n(if current parents < 2)
+STU --> P24 : approve / reject
+P24 --> P25 : approved link data
+P25 --> D2  : update parentIds array\n& linked children list
+
+@enduml

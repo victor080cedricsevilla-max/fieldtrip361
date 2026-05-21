@@ -9,8 +9,83 @@ import '../../models/directions_model.dart';
 import '../../repositories/directions_repository.dart';
 import 'create_trip_view.dart';
 
-class ManageTripsView extends StatelessWidget {
+class ManageTripsView extends StatefulWidget {
   const ManageTripsView({super.key});
+
+  @override
+  State<ManageTripsView> createState() => _ManageTripsViewState();
+}
+
+class _ManageTripsViewState extends State<ManageTripsView> {
+  final TextEditingController _searchCtrl = TextEditingController();
+  DateTimeRange? _dateRange;
+  String _searchQuery = '';
+
+  @override
+  void initState() {
+    super.initState();
+    _searchCtrl.addListener(() {
+      setState(() => _searchQuery = _searchCtrl.text.trim().toLowerCase());
+    });
+  }
+
+  @override
+  void dispose() {
+    _searchCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _pickDateRange(BuildContext context) async {
+    final picked = await showDateRangePicker(
+      context: context,
+      firstDate: DateTime(2020),
+      lastDate: DateTime(2030),
+      initialDateRange: _dateRange,
+      builder: (ctx, child) => Theme(
+        data: Theme.of(ctx).copyWith(
+          colorScheme: const ColorScheme.light(
+            primary: AppTheme.primaryColor,
+            onPrimary: Colors.white,
+            surface: Colors.white,
+            onSurface: AppTheme.secondaryColor,
+          ),
+        ),
+        child: child!,
+      ),
+    );
+    if (picked != null) setState(() => _dateRange = picked);
+  }
+
+  void _clearFilters() {
+    _searchCtrl.clear();
+    setState(() => _dateRange = null);
+  }
+
+  bool _matchesFilters(Map<String, dynamic> data) {
+    // Search filter
+    if (_searchQuery.isNotEmpty) {
+      final title = (data['title'] ?? '').toString().toLowerCase();
+      final date = (data['date'] ?? '').toString().toLowerCase();
+      if (!title.contains(_searchQuery) && !date.contains(_searchQuery)) return false;
+    }
+    // Date range filter
+    if (_dateRange != null) {
+      final dateStr = (data['date'] ?? '').toString();
+      // Try to parse trip date (format: MMMM d, yyyy or yyyy-MM-dd)
+      DateTime? tripDate;
+      try {
+        tripDate = DateTime.parse(dateStr);
+      } catch (_) {
+        // fallback: match raw string against range
+      }
+      if (tripDate != null) {
+        final from = _dateRange!.start;
+        final to = _dateRange!.end.add(const Duration(days: 1));
+        if (tripDate.isBefore(from) || !tripDate.isBefore(to)) return false;
+      }
+    }
+    return true;
+  }
 
   void _handleEditClick(BuildContext context, String docId, Map<String, dynamic> tripData) {
     Timestamp? createdAt = tripData['createdAt'];
@@ -93,7 +168,61 @@ class ManageTripsView extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         const Text("Trip Management", style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
-        const SizedBox(height: 20),
+        const SizedBox(height: 16),
+        // ── Search & Filter row ──────────────────────────────────────────────
+        Row(
+          children: [
+            Expanded(
+              child: TextField(
+                controller: _searchCtrl,
+                decoration: InputDecoration(
+                  hintText: 'Search trips…',
+                  prefixIcon: const Icon(Icons.search_rounded, color: AppTheme.primaryColor, size: 20),
+                  contentPadding: const EdgeInsets.symmetric(vertical: 0, horizontal: 16),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(30),
+                    borderSide: BorderSide(color: Colors.grey.shade300),
+                  ),
+                  enabledBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(30),
+                    borderSide: BorderSide(color: Colors.grey.shade300),
+                  ),
+                  focusedBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(30),
+                    borderSide: const BorderSide(color: AppTheme.primaryColor, width: 1.5),
+                  ),
+                  filled: true,
+                  fillColor: Colors.white,
+                ),
+              ),
+            ),
+            const SizedBox(width: 10),
+            OutlinedButton.icon(
+              onPressed: () => _pickDateRange(context),
+              icon: const Icon(Icons.date_range_rounded, size: 18, color: AppTheme.primaryColor),
+              label: Text(
+                _dateRange == null
+                    ? 'Date Range'
+                    : '${_dateRange!.start.year}-${_dateRange!.start.month.toString().padLeft(2,'0')}-${_dateRange!.start.day.toString().padLeft(2,'0')} – ${_dateRange!.end.year}-${_dateRange!.end.month.toString().padLeft(2,'0')}-${_dateRange!.end.day.toString().padLeft(2,'0')}',
+                style: const TextStyle(color: AppTheme.primaryColor, fontWeight: FontWeight.w500),
+              ),
+              style: OutlinedButton.styleFrom(
+                side: const BorderSide(color: AppTheme.primaryColor),
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
+              ),
+            ),
+            if (_searchQuery.isNotEmpty || _dateRange != null) ...[
+              const SizedBox(width: 8),
+              IconButton(
+                onPressed: _clearFilters,
+                icon: const Icon(Icons.close_rounded, color: Colors.red),
+                tooltip: 'Clear filters',
+              ),
+            ],
+          ],
+        ),
+        const SizedBox(height: 16),
         Expanded(
           child: StreamBuilder<QuerySnapshot>(
             stream: FirebaseFirestore.instance.collection('trips').orderBy('createdAt', descending: true).snapshots(),
@@ -101,11 +230,31 @@ class ManageTripsView extends StatelessWidget {
               if (snapshot.connectionState == ConnectionState.waiting) return const Center(child: CircularProgressIndicator());
               if (!snapshot.hasData || snapshot.data!.docs.isEmpty) return const Center(child: Text("No trips found."));
 
+              final filtered = snapshot.data!.docs.where((doc) {
+                return _matchesFilters(doc.data() as Map<String, dynamic>);
+              }).toList();
+
+              if (filtered.isEmpty) {
+                return Center(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.search_off_rounded, size: 48, color: Colors.grey.shade300),
+                      const SizedBox(height: 12),
+                      Text('No trips match your filters.',
+                          style: TextStyle(color: Colors.grey.shade500, fontWeight: FontWeight.w500)),
+                      const SizedBox(height: 8),
+                      TextButton(onPressed: _clearFilters, child: const Text('Clear filters')),
+                    ],
+                  ),
+                );
+              }
+
               return ListView.builder(
-                itemCount: snapshot.data!.docs.length,
+                itemCount: filtered.length,
                 itemBuilder: (context, index) {
-                  var data = snapshot.data!.docs[index].data() as Map<String, dynamic>;
-                  String docId = snapshot.data!.docs[index].id;
+                  var data = filtered[index].data() as Map<String, dynamic>;
+                  String docId = filtered[index].id;
                   bool isCompleted = data['status'] == "completed";
 
                   return Card(
@@ -130,7 +279,7 @@ class ManageTripsView extends StatelessWidget {
                             children: [
                               const Text("Itinerary", style: TextStyle(fontWeight: FontWeight.bold, color: Colors.grey)),
                               const SizedBox(height: 5),
-                              ...(data['stops'] as List? ?? []).map((stop) => Padding(
+                              ...asList(data['stops']).map((stop) => Padding(
                                 padding: const EdgeInsets.only(bottom: 4),
                                 child: Text("- ${stop['time']}: ${stop['name']}"),
                               )),
@@ -183,7 +332,7 @@ class ManageTripsView extends StatelessWidget {
   void _showPreview(BuildContext context, Map<String, dynamic> data) async {
     Set<Marker> markers = {};
     Set<Circle> circles = {};
-    List<dynamic> stops = data['stops'] as List;
+    List<dynamic> stops = asList(data['stops']);
     List<LatLng> locations = [];
 
     for (int i = 0; i < stops.length; i++) {

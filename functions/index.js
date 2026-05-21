@@ -207,11 +207,16 @@ exports.onTripUpdated = onDocumentUpdated("trips/{tripId}", async (event) => {
       const stop = stops[i] || {};
       const stopName = stop.name || "stop";
       const nextStop = stops[i + 1];
+      const isNextStopFinal = nextStop && (i + 1 === stops.length - 1);
       const body = nextStop
-        ? `Bus has departed from ${stopName}, heading to ${nextStop.name || "next stop"}.`
+        ? isNextStopFinal
+          ? `Students are heading back to ${nextStop.name || "school"}.`
+          : `Bus has departed from ${stopName}, heading to ${nextStop.name || "next stop"}.`
         : `Bus has departed from ${stopName}.`;
       const notifTitle = nextStop
-        ? `${title}: Heading to ${nextStop.name || "next stop"}`
+        ? isNextStopFinal
+          ? `${title}: Heading back to ${nextStop.name || "school"}`
+          : `${title}: Heading to ${nextStop.name || "next stop"}`
         : `${title}: Departed from ${stopName}`;
       await sendMulticast(tokens, notifTitle, body, { tripId, kind: "departed_stop", stopIndex: String(i) });
       await writeParentNotifications(parentIds, notifTitle, body, "next_destination", tripId);
@@ -595,10 +600,19 @@ exports.approveLinkRequest = onCall(async (request) => {
     if (data.status !== "pending") {
       throw new HttpsError("failed-precondition", "Request is no longer pending.");
     }
-    // Mark approved and add student to parent's children array.
+    // Enforce max 2 linked parents per student.
+    const studentDoc = await tx.get(db.collection("users").doc(data.studentId));
+    const existingParentIds = (studentDoc.data() && studentDoc.data().parentIds) ? studentDoc.data().parentIds : [];
+    if (existingParentIds.length >= 2) {
+      throw new HttpsError("failed-precondition", "This student already has 2 linked parents.");
+    }
+    // Mark approved, add student to parent's children array, add parent to student's parentIds.
     tx.update(reqRef, { status: "approved" });
     tx.update(db.collection("users").doc(data.parentId), {
       children: admin.firestore.FieldValue.arrayUnion(data.studentId),
+    });
+    tx.update(db.collection("users").doc(data.studentId), {
+      parentIds: admin.firestore.FieldValue.arrayUnion(data.parentId),
     });
   });
 

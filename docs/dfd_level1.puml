@@ -1,0 +1,118 @@
+@startuml DFD_Level1
+title **DFD Model — Level 1**
+
+skinparam backgroundColor White
+skinparam defaultFontName Arial
+skinparam defaultFontSize 10
+skinparam linetype ortho
+skinparam arrowColor #1F2937
+skinparam arrowThickness 1.2
+skinparam arrowFontSize 8
+
+skinparam rectangle<<ent>> {
+  BackgroundColor White
+  BorderColor Black
+  RoundCorner 0
+  FontStyle bold
+  FontSize 11
+}
+skinparam rectangle<<proc>> {
+  BackgroundColor #DBEAFE
+  BorderColor #2563EB
+  RoundCorner 12
+  FontStyle bold
+  FontSize 10
+}
+skinparam rectangle<<ds>> {
+  BackgroundColor White
+  BorderColor Black
+  RoundCorner 0
+  FontSize 9
+}
+
+top to bottom direction
+
+'─── External Entities ──────────────────────────────────────────────────────────
+rectangle "School\nAdmin" as ADM <<ent>>
+rectangle "Teacher"       as TCH <<ent>>
+rectangle "Student"       as STU <<ent>>
+rectangle "Parent"        as PAR <<ent>>
+
+'─── Processes ──────────────────────────────────────────────────────────────────
+rectangle "1\nSetup Trip\n& Geofence"            as P1 <<proc>>
+rectangle "2\nManage Student\n& Parent Info"     as P2 <<proc>>
+rectangle "3\nLog Attendance\n& GPS"             as P3 <<proc>>
+rectangle "4\nMonitor\nGeofence"                 as P4 <<proc>>
+rectangle "5\nTrigger\nSOS"                      as P5 <<proc>>
+rectangle "6\nChat & Direct\nMessaging"          as P6 <<proc>>
+rectangle "7\nGenerate\nReports"                 as P7 <<proc>>
+
+'─── Data Stores ────────────────────────────────────────────────────────────────
+rectangle "D1  |  Trip Details"                       as D1 <<ds>>
+rectangle "D2  |  Student & Parent Information"       as D2 <<ds>>
+rectangle "D3  |  Attendance Records"                 as D3 <<ds>>
+rectangle "D4  |  Chat History"                       as D4 <<ds>>
+rectangle "D5  |  SOS & Geofence Alerts"              as D5 <<ds>>
+rectangle "D6  |  GPS Location Data"                  as D6 <<ds>>
+rectangle "D7  |  Reports Log"                        as D7 <<ds>>
+
+'─── Process 1: Setup Trip & Geofence ───────────────────────────────────────────
+ADM --> P1 : fieldtrip details\n(destination, date, time)
+ADM --> P1 : geofence coordinates\n(1–4000m per stop)
+P1  --> D1 : trip & geofence data
+P1  --> TCH : trip itinerary
+P1  --> STU : trip itinerary
+P1  --> PAR : trip notification
+
+'─── Process 2: Manage Student & Parent Info ────────────────────────────────────
+STU --> P2 : QR display / approve link
+PAR --> P2 : link request (QR scan / LRN)
+TCH --> P2 : view student list & QR
+P2  --> D2 : student & parent records
+D2  --> P2 : student & parent data
+P2  --> STU : identity QR code & text code
+P2  --> TCH : student & parent info
+
+'─── Process 3: Log Attendance & GPS ────────────────────────────────────────────
+STU --> P3 : GPS location data
+TCH --> P3 : QR scan (attendance marking)
+D1  --> P3 : trip schedule
+D2  --> P3 : student profile data
+P3  --> D3 : attendance record (QR + GPS + timestamp)
+P3  --> D6 : GPS location data
+P3  --> TCH : attendance status update
+
+'─── Process 4: Monitor Geofence ────────────────────────────────────────────────
+D6  --> P4 : GPS data stream
+D1  --> P4 : geofence boundaries
+P4  --> TCH : geofence alert (alarm)
+P4  --> STU : geofence warning (alarm until re-entry)
+P4  --> D5 : alert record
+
+'─── Process 5: Trigger SOS ─────────────────────────────────────────────────────
+STU --> P5 : SOS manual trigger
+P5  --> TCH : SOS notification
+P5  --> PAR : SOS notification
+P5  --> D5 : SOS alert record
+
+'─── Process 6: Chat & Direct Messaging ─────────────────────────────────────────
+STU --> P6 : chat messages & replies
+TCH --> P6 : chat & direct messages
+PAR --> P6 : chat messages & replies
+ADM --> P6 : communication via chat
+P6  --> D4 : save chat history
+D4  --> P6 : retrieve chat history
+P6  --> STU : messages delivered
+P6  --> TCH : messages delivered
+P6  --> PAR : messages delivered
+P6  --> ADM : messages delivered
+
+'─── Process 7: Generate Reports ────────────────────────────────────────────────
+ADM --> P7 : filter parameters\n(date, teacher, bus number)
+D1  --> P7 : trip details
+D3  --> P7 : attendance data
+D5  --> P7 : geofence violations & SOS data
+P7  --> ADM : generated PDF report
+P7  --> D7 : report record
+
+@enduml

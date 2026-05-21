@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
+import 'package:http/http.dart' as http;
+import 'dart:convert';
 import '../../config/theme.dart';
 import '../../utils/utils.dart';
 import '../../utils/chat_sync.dart';
@@ -261,37 +263,78 @@ class _CreateTripViewState extends State<CreateTripView> {
     if (_stops[index]['lat'] != 0.0) {
       center = LatLng(_stops[index]['lat'], _stops[index]['lng']);
     }
-    final LatLng? result = await showDialog(
+    final result = await showDialog<(LatLng, String)>(
       context: context,
       builder: (ctx) => LocationPickerModal(initialCenter: center),
     );
-    
+
     if (result != null) {
+      final (latLng, searchName) = result;
       bool isReturnTrip = _stops[index]['name'].text.contains("Return");
       bool isDuplicate = false;
-      
-      // Payagan ang duplicate kung pabalik na sa origin
+
       if (!isReturnTrip) {
         for (int i = 0; i < _stops.length; i++) {
           if (i == index) continue;
-          if ((_stops[i]['lat'] - result.latitude).abs() < 0.0001 &&
-              (_stops[i]['lng'] - result.longitude).abs() < 0.0001) {
+          if ((_stops[i]['lat'] - latLng.latitude).abs() < 0.0001 &&
+              (_stops[i]['lng'] - latLng.longitude).abs() < 0.0001) {
             isDuplicate = true;
             break;
           }
         }
       }
-      
+
       if (isDuplicate) {
         if (!mounted) return;
         _showSnack("Location already used by another stop.", Colors.red);
         return;
       }
-      setState(() {
-        _stops[index]['lat'] = result.latitude;
-        _stops[index]['lng'] = result.longitude;
-      });
+
+      if (searchName.isNotEmpty) {
+        // User selected via search bar — use the search description directly
+        setState(() {
+          _stops[index]['lat'] = latLng.latitude;
+          _stops[index]['lng'] = latLng.longitude;
+          _stops[index]['name'].text = searchName;
+        });
+      } else {
+        // User dragged pin without searching — reverse geocode for a name
+        setState(() {
+          _stops[index]['lat'] = latLng.latitude;
+          _stops[index]['lng'] = latLng.longitude;
+        });
+        _reverseGeocode(index, latLng.latitude, latLng.longitude);
+      }
     }
+  }
+
+  Future<void> _reverseGeocode(int index, double lat, double lng) async {
+    const apiKey = 'AIzaSyAoBhWhuW725rdDv8AnX3GKLHcNIyMFYgg';
+    final url = Uri.parse(
+      'https://maps.googleapis.com/maps/api/geocode/json?latlng=$lat,$lng&key=$apiKey',
+    );
+    try {
+      final res = await http.get(url);
+      if (res.statusCode == 200) {
+        final data = jsonDecode(res.body);
+        final results = data['results'] as List?;
+        if (results != null && results.isNotEmpty) {
+          // Prefer a named result (not a Plus Code) when available
+          String address = '';
+          for (final r in results) {
+            final a = r['formatted_address'] as String? ?? '';
+            if (a.isNotEmpty && !RegExp(r'^[A-Z0-9]{4}\+').hasMatch(a)) {
+              address = a;
+              break;
+            }
+          }
+          address = address.isNotEmpty ? address : (results[0]['formatted_address'] as String? ?? '');
+          if (address.isNotEmpty && mounted) {
+            setState(() => _stops[index]['name'].text = address);
+          }
+        }
+      }
+    } catch (_) {}
   }
 
   // ── Radius Picker ──────────────────────────────────────────────────────────
@@ -357,17 +400,17 @@ class _CreateTripViewState extends State<CreateTripView> {
                           ),
                           child: Slider(
                             value: currentRadius,
-                            min: 50,
-                            max: 2000,
-                            divisions: 39,
+                            min: 1,
+                            max: 4000,
+                            divisions: 3999,
                             onChanged: (v) => setModalState(() => currentRadius = v),
                           ),
                         ),
                         Row(
                           mainAxisAlignment: MainAxisAlignment.spaceBetween,
                           children: [
-                            Text("50 m", style: TextStyle(fontSize: 11, color: Colors.grey.shade400)),
-                            Text("2000 m", style: TextStyle(fontSize: 11, color: Colors.grey.shade400)),
+                            Text("1 m", style: TextStyle(fontSize: 11, color: Colors.grey.shade400)),
+                            Text("4000 m", style: TextStyle(fontSize: 11, color: Colors.grey.shade400)),
                           ],
                         ),
                       ],
@@ -421,17 +464,15 @@ class _CreateTripViewState extends State<CreateTripView> {
         ),
       ));
       
-      if (!isOrigin && !isReturn) {
-        double radius = double.tryParse(stop['radius'].text) ?? 200;
-        circles.add(Circle(
-          circleId: CircleId("geofence_$i"),
-          center: position,
-          radius: radius,
-          fillColor: AppTheme.primaryColor.withValues(alpha: 0.15),
-          strokeColor: AppTheme.primaryColor,
-          strokeWidth: 2,
-        ));
-      }
+      double radius = double.tryParse(stop['radius'].text) ?? 200;
+      circles.add(Circle(
+        circleId: CircleId("geofence_$i"),
+        center: position,
+        radius: radius,
+        fillColor: AppTheme.primaryColor.withValues(alpha: 0.15),
+        strokeColor: AppTheme.primaryColor,
+        strokeWidth: 2,
+      ));
     }
 
     if (locations.length < 2) {
@@ -1392,7 +1433,7 @@ class _CreateTripViewState extends State<CreateTripView> {
                                       ),
                                     ),
                                   ),
-                                  if (!isOrigin && !isReturn) ...[
+                                  ...[
                                     const SizedBox(width: 10),
                                     Expanded(
                                       child: OutlinedButton.icon(

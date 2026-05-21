@@ -198,11 +198,13 @@ Future<void> _onStart(ServiceInstance service) async {
   String? userName;
   bool wasOutOfBounds = false;
 
-  // Fetch the user doc once to know their display name (for alert payloads).
+  // Fetch the user doc once to know their display name and role.
+  String? userRole;
   try {
     if (uid != null) {
       final u = await FirebaseFirestore.instance.collection('users').doc(uid).get();
       userName = u.data()?['name']?.toString();
+      userRole = u.data()?['role']?.toString();
     }
   } catch (_) {}
 
@@ -223,7 +225,7 @@ Future<void> _onStart(ServiceInstance service) async {
             inTrip = true;
             break;
           }
-          for (final p in (b['passengers'] as List? ?? const [])) {
+          for (final p in asList(b['passengers'])) {
             if (p is Map && p['id'] == uid) {
               inTrip = true;
               break;
@@ -245,6 +247,31 @@ Future<void> _onStart(ServiceInstance service) async {
   Future<void> publish(Position pos) async {
     if (uid == null) return;
     lastPos = pos;
+
+    // Students only publish location after being QR-scanned on the active trip.
+    // activeTripData is null when there is no in_progress trip for this user,
+    // so this also stops publishing once a trip completes.
+    if (userRole == 'student') {
+      bool scanned = false;
+      if (activeTripData != null) {
+        outer:
+        for (final b in asList(activeTripData!['buses'])) {
+          if (b is Map) {
+            for (final p in asList(b['passengers'])) {
+              if (p is Map && p['id'] == uid) {
+                final att = p['attendance'];
+                if (att is Map && att.values.any((v) => v == true)) {
+                  scanned = true;
+                }
+                break outer;
+              }
+            }
+          }
+        }
+      }
+      if (!scanned) return;
+    }
+
     try {
       await FirebaseFirestore.instance.collection('users').doc(uid).update({
         'lat': pos.latitude,
@@ -276,6 +303,9 @@ Future<void> _onStart(ServiceInstance service) async {
       centerLat,
       centerLng,
     );
+
+    // Only students trigger geofence alerts — teachers are the supervisors.
+    if (userRole != 'student') return;
 
     if (distance > radius && !wasOutOfBounds) {
       wasOutOfBounds = true;

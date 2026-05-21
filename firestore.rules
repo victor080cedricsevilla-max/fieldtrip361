@@ -30,11 +30,11 @@ service cloud.firestore {
     match /users/{userId} {
       allow read: if isSignedIn();
       allow create: if isSignedIn() && request.auth.uid == userId;
-      allow update: if isSignedIn() && request.auth.uid == userId
-                    // Clients can never change role or approval status.
+      allow update: if isSignedIn() && (
+                    // Owner updates their own doc with field-level restrictions.
+                    (request.auth.uid == userId
                     && !('role'   in request.resource.data.diff(resource.data).affectedKeys())
                     && !('status' in request.resource.data.diff(resource.data).affectedKeys())
-                    // Validate GPS so students cannot spoof coordinates.
                     && (!('lat' in request.resource.data.diff(resource.data).affectedKeys())
                         || (request.resource.data.lat is number
                             && request.resource.data.lat >= -90
@@ -43,9 +43,21 @@ service cloud.firestore {
                         || (request.resource.data.lng is number
                             && request.resource.data.lng >= -180
                             && request.resource.data.lng <= 180))
-                    // Cap FCM token array to prevent notification flooding.
                     && (!('fcmTokens' in request.resource.data.diff(resource.data).affectedKeys())
-                        || request.resource.data.fcmTokens.size() <= 10);
+                        || request.resource.data.fcmTokens.size() <= 10))
+                    // A parent may add themselves to a student's parentIds (max 2).
+                    || (myRole() == 'parent'
+                        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['parentIds'])
+                        && request.auth.uid in request.resource.data.parentIds
+                        && request.resource.data.parentIds.size() <= 2)
+                    // A teacher/admin may remove a parent from a student's parentIds.
+                    || (isTeacherOrAdmin()
+                        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['parentIds'])
+                        && request.resource.data.get('parentIds', []).size() < resource.data.get('parentIds', []).size())
+                    // A teacher/admin may remove a student from a parent's children list.
+                    || (isTeacherOrAdmin()
+                        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['children'])
+                        && request.resource.data.get('children', []).size() < resource.data.get('children', []).size()));
 
       // Per-user notification inbox — only the owner can read/write.
       match /notifications/{notifId} {
@@ -89,6 +101,11 @@ service cloud.firestore {
       allow read: if isSignedIn()
                   && (isAdmin() || request.auth.uid in resource.data.memberIds);
       allow write: if isAdmin();
+      // Non-admin users may create DM chats where they are one of exactly 2 members.
+      allow create: if isSignedIn()
+                    && request.resource.data.type == 'dm'
+                    && request.auth.uid in request.resource.data.memberIds
+                    && request.resource.data.memberIds.size() == 2;
 
       match /messages/{messageId} {
         allow read: if isSignedIn()

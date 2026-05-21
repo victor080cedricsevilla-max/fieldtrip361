@@ -1,0 +1,62 @@
+@startuml DFD_Level2_P3
+title **LEVEL 2 — Process 3: Log Attendance & GPS**
+
+skinparam backgroundColor White
+skinparam defaultFontName Arial
+skinparam defaultFontSize 10
+skinparam linetype ortho
+skinparam arrowColor #1F2937
+skinparam arrowThickness 1.2
+skinparam arrowFontSize 8
+
+skinparam rectangle<<ent>> {
+  BackgroundColor White
+  BorderColor Black
+  RoundCorner 0
+  FontStyle bold
+  FontSize 11
+}
+skinparam rectangle<<proc>> {
+  BackgroundColor #DBEAFE
+  BorderColor #2563EB
+  RoundCorner 12
+  FontStyle bold
+  FontSize 10
+}
+skinparam rectangle<<ds>> {
+  BackgroundColor White
+  BorderColor Black
+  RoundCorner 0
+  FontSize 9
+}
+
+top to bottom direction
+
+rectangle "Student" as STU <<ent>>
+rectangle "Teacher" as TCH <<ent>>
+rectangle "Parent"  as PAR <<ent>>
+
+rectangle "3.1\nScan Student\nIdentity QR Code"                       as P31 <<proc>>
+rectangle "3.2\nCapture GPS\nLocation\n(Background, 5s Heartbeat)"    as P32 <<proc>>
+rectangle "3.3\nVerify Attendance\nData"                              as P33 <<proc>>
+rectangle "3.4\nStore Attendance\nRecord"                             as P34 <<proc>>
+rectangle "3.5\nProvide Attendance\nStatus"                           as P35 <<proc>>
+
+rectangle "D1  |  Trip Details"                  as D1 <<ds>>
+rectangle "D2  |  Student & Parent Information"  as D2 <<ds>>
+rectangle "D3  |  Attendance Records"            as D3 <<ds>>
+rectangle "D6  |  GPS Location Data"             as D6 <<ds>>
+
+STU --> P31 : QR code display\n(static identity QR)
+P31 --> P33 : scanned student ID
+STU --> P32 : GPS coordinates\n(background service)
+P32 --> D6  : GPS location data
+D1  --> P33 : trip schedule & stop data
+D2  --> P33 : student profile data
+P33 --> P34 : validated attendance entry
+P34 --> D3  : attendance log\n(QR + GPS + timestamp)
+D3  --> P35 : attendance data
+P35 --> TCH : attendance status update\n(present/absent per stop)
+D6  --> PAR : live GPS data of child
+
+@enduml

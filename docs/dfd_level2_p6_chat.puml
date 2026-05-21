@@ -1,0 +1,63 @@
+@startuml DFD_Level2_P6
+title **LEVEL 2 — Process 6: Chat & Direct Messaging**
+
+skinparam backgroundColor White
+skinparam defaultFontName Arial
+skinparam defaultFontSize 10
+skinparam linetype ortho
+skinparam arrowColor #1F2937
+skinparam arrowThickness 1.2
+skinparam arrowFontSize 8
+
+skinparam rectangle<<ent>> {
+  BackgroundColor White
+  BorderColor Black
+  RoundCorner 0
+  FontStyle bold
+  FontSize 11
+}
+skinparam rectangle<<proc>> {
+  BackgroundColor #DBEAFE
+  BorderColor #2563EB
+  RoundCorner 12
+  FontStyle bold
+  FontSize 10
+}
+skinparam rectangle<<ds>> {
+  BackgroundColor White
+  BorderColor Black
+  RoundCorner 0
+  FontSize 9
+}
+
+top to bottom direction
+
+rectangle "Student"      as STU <<ent>>
+rectangle "Teacher"      as TCH <<ent>>
+rectangle "Parent"       as PAR <<ent>>
+rectangle "School Admin" as ADM <<ent>>
+
+rectangle "6.1\nReceive\nMessage"                                    as P61 <<proc>>
+rectangle "6.2\nRoute Message\n(Group Trip Channel\nor Direct Message)" as P62 <<proc>>
+rectangle "6.3\nSave\nChat History"                                  as P63 <<proc>>
+rectangle "6.4\nDeliver Messages\nto Recipients"                     as P64 <<proc>>
+
+rectangle "D4  |  Chat History" as D4 <<ds>>
+
+STU --> P61 : message (text)
+TCH --> P61 : message (text / DM)
+PAR --> P61 : message (text)
+ADM --> P61 : message (text)
+
+P61 --> P62 : raw message + sender ID
+P62 --> P63 : routed message
+P63 --> D4  : save chat record
+D4  --> P64 : chat history
+P62 --> P64 : recipient list
+
+P64 --> STU : delivered message
+P64 --> TCH : delivered message
+P64 --> PAR : delivered message
+P64 --> ADM : delivered message
+
+@enduml

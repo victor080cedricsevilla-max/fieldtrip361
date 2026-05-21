@@ -1,0 +1,59 @@
+@startuml DFD_Level2_P1
+title **LEVEL 2 — Process 1: Setup Trip & Geofence**
+
+skinparam backgroundColor White
+skinparam defaultFontName Arial
+skinparam defaultFontSize 10
+skinparam linetype ortho
+skinparam arrowColor #1F2937
+skinparam arrowThickness 1.2
+skinparam arrowFontSize 8
+
+skinparam rectangle<<ent>> {
+  BackgroundColor White
+  BorderColor Black
+  RoundCorner 0
+  FontStyle bold
+  FontSize 11
+}
+skinparam rectangle<<proc>> {
+  BackgroundColor #DBEAFE
+  BorderColor #2563EB
+  RoundCorner 12
+  FontStyle bold
+  FontSize 10
+}
+skinparam rectangle<<ds>> {
+  BackgroundColor White
+  BorderColor Black
+  RoundCorner 0
+  FontSize 9
+}
+
+top to bottom direction
+
+rectangle "School\nAdmin" as ADM <<ent>>
+rectangle "Teacher"       as TCH <<ent>>
+rectangle "Student"       as STU <<ent>>
+rectangle "Parent"        as PAR <<ent>>
+
+rectangle "1.1\nReceive\nTrip Details"                      as P11 <<proc>>
+rectangle "1.2\nDefine Stop Locations\n(Auto-fill Name via\nReverse Geocode)" as P12 <<proc>>
+rectangle "1.3\nDefine Geofence\nBoundaries\n(1–4000 m per stop,\nincl. Origin)" as P13 <<proc>>
+rectangle "1.4\nSave Trip\nInformation"                     as P14 <<proc>>
+rectangle "1.5\nShare Trip\nInformation"                    as P15 <<proc>>
+
+rectangle "D1  |  Trip Details" as D1 <<ds>>
+
+ADM --> P11 : trip details\n(title, date, time, bus)
+P11 --> P12 : raw trip data
+P12 --> P12 : Google Geocoding API\n(auto-fill location name)
+P12 --> P13 : stop locations & names
+P13 --> P14 : geofence config\n(radius per stop)
+P14 --> D1  : store trip record
+D1  --> P15 : trip data
+P15 --> TCH : trip itinerary
+P15 --> STU : trip notification
+P15 --> PAR : trip notification
+
+@enduml

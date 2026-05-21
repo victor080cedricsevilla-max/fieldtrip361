@@ -66,7 +66,6 @@ class AuthController {
       return "System Error";
     }
   }
-
   Future<String?> resendVerificationEmail({
     required String email,
     required String password,

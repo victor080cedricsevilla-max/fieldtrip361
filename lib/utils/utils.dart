@@ -248,10 +248,10 @@ class _LocationPickerModalState extends State<LocationPickerModal> {
         ),
         
         Positioned(
-          bottom: 30, left: 40, right: 40, 
+          bottom: 30, left: 40, right: 40,
           child: ElevatedButton(
-            onPressed: () => Navigator.pop(context, _selectedLocation), 
-            style: ElevatedButton.styleFrom(backgroundColor: AppTheme.primaryColor, padding: const EdgeInsets.symmetric(vertical: 15), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30))), 
+            onPressed: () => Navigator.pop(context, (_selectedLocation, _searchController.text.trim())),
+            style: ElevatedButton.styleFrom(backgroundColor: AppTheme.primaryColor, padding: const EdgeInsets.symmetric(vertical: 15), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30))),
             child: const Text("SELECT THIS LOCATION", style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold))
           )
         )

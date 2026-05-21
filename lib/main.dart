@@ -14,6 +14,7 @@ import 'views/auth/mobile_login_view.dart';
 import 'views/admin/admin_dashboard.dart';
 import 'views/teacher/teacher_dashboard.dart';
 import 'views/student/student_dashboard.dart';
+import 'views/parent/parent_dashboard.dart';
 
 /// Top-level handler required by firebase_messaging — runs in its own isolate
 /// when a push arrives while the app is killed or backgrounded.
@@ -136,6 +137,7 @@ class FieldTrip360App extends StatelessWidget {
         '/admin/dashboard': (context) => const AdminDashboard(),
         '/teacher/dashboard': (context) => const TeacherDashboard(),
         '/student/dashboard': (context) => const StudentDashboard(),
+        '/parent/dashboard': (context) => const ParentDashboard(),
       },
     );
   }

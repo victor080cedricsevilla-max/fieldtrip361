@@ -1,0 +1,58 @@
+@startuml DFD_Level2_P4
+title **LEVEL 2 — Process 4: Monitor Geofence**
+
+skinparam backgroundColor White
+skinparam defaultFontName Arial
+skinparam defaultFontSize 10
+skinparam linetype ortho
+skinparam arrowColor #1F2937
+skinparam arrowThickness 1.2
+skinparam arrowFontSize 8
+
+skinparam rectangle<<ent>> {
+  BackgroundColor White
+  BorderColor Black
+  RoundCorner 0
+  FontStyle bold
+  FontSize 11
+}
+skinparam rectangle<<proc>> {
+  BackgroundColor #DBEAFE
+  BorderColor #2563EB
+  RoundCorner 12
+  FontStyle bold
+  FontSize 10
+}
+skinparam rectangle<<ds>> {
+  BackgroundColor White
+  BorderColor Black
+  RoundCorner 0
+  FontSize 9
+}
+
+top to bottom direction
+
+rectangle "Teacher" as TCH <<ent>>
+rectangle "Student" as STU <<ent>>
+
+rectangle "4.1\nReceive\nGPS Data"                                     as P41 <<proc>>
+rectangle "4.2\nCompare Location\nwith Geofence\nBoundaries"           as P42 <<proc>>
+rectangle "4.3\nGenerate\nGeofence Alert\n(if Outside Boundary)"       as P43 <<proc>>
+rectangle "4.4\nNotify Teacher\n(Alarm + Dialog,\n1 Alert per Student)" as P44 <<proc>>
+rectangle "4.5\nWarn Student\n(Alarm Until\nRe-entry)"                 as P45 <<proc>>
+
+rectangle "D1  |  Trip Details"          as D1 <<ds>>
+rectangle "D5  |  SOS & Geofence Alerts" as D5 <<ds>>
+rectangle "D6  |  GPS Location Data"     as D6 <<ds>>
+
+D6  --> P41 : GPS data stream\n(5s interval)
+D1  --> P42 : geofence boundaries\n(per stop, all stops)
+P41 --> P42 : current coordinates
+P42 --> P43 : location status\n(outside geofence)
+P43 --> D5  : alert record
+P43 --> P44 : geofence alert\n(student name, distance)
+P43 --> P45 : out-of-bounds flag
+P44 --> TCH : alarm + notification dialog\n(deduped per student)
+P45 --> STU : alarm (rings until re-entry)\nno dismiss button
+
+@enduml

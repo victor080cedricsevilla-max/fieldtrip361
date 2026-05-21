@@ -9,6 +9,7 @@ import 'logs_view.dart';
 import 'create_trip_view.dart';
 import 'manage_trips_view.dart';
 import 'admin_overview.dart';
+import 'reports_view.dart';
 
 class AdminDashboard extends StatefulWidget {
   const AdminDashboard({super.key});
@@ -18,7 +19,7 @@ class AdminDashboard extends StatefulWidget {
 }
 
 class _AdminDashboardState extends State<AdminDashboard> {
-  // 0=Dashboard, 1=Create, 2=Manage, 3=Logs, 4=Settings
+  // 0=Dashboard, 1=Create, 2=Manage, 3=Logs, 4=Settings, 5=Reports
   int _selectedIndex = 0;
 
   late final List<Widget> _pages = [
@@ -27,6 +28,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
     const ManageTripsView(),
     const LogsView(),
     const SettingsView(allowEmergencySoundUpload: false),
+    const ReportsView(),
   ];
 
   Future<void> _handleLogout() async {
@@ -118,6 +120,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
           _buildMenuItem(2, "Manage Trips", Icons.map_outlined),
           _buildMenuItem(3, "Activity Logs", Icons.history),
           _buildMenuItem(4, "Settings", Icons.settings_outlined),
+          _buildMenuItem(5, "Reports", Icons.assessment_rounded),
 
           const Spacer(),
 
@@ -220,6 +223,8 @@ class _AdminDashboardState extends State<AdminDashboard> {
         return "Activity Logs";
       case 4:
         return "Settings";
+      case 5:
+        return "Reports";
       default:
         return "Admin";
     }

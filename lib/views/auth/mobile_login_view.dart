@@ -22,6 +22,23 @@ class _MobileLoginViewState extends State<MobileLoginView> {
 
   void _handleLogin() async {
     FocusScope.of(context).unfocus();
+
+    final email = _emailController.text.trim();
+    final password = _passwordController.text.trim();
+
+    if (email.isEmpty && password.isEmpty) {
+      setState(() => _errorMessage = "Please enter your email and password.");
+      return;
+    }
+    if (email.isEmpty) {
+      setState(() => _errorMessage = "Please enter your email.");
+      return;
+    }
+    if (password.isEmpty) {
+      setState(() => _errorMessage = "Please enter your password.");
+      return;
+    }
+
     setState(() {
       _isLoading = true;
       _errorMessage = null;
@@ -61,7 +78,10 @@ class _MobileLoginViewState extends State<MobileLoginView> {
     if (lower.contains('not-verified') || lower.contains('verify your email')) {
       return "Please verify your email before logging in.";
     }
-    return raw;
+    if (lower.contains('invalid-email') || lower.contains('badly formatted')) {
+      return "Please enter a valid email address.";
+    }
+    return "Login failed. Please check your credentials and try again.";
   }
 
   @override
@@ -93,7 +113,7 @@ class _MobileLoginViewState extends State<MobileLoginView> {
                   padding: const EdgeInsets.all(10),
                   margin: const EdgeInsets.only(bottom: 20),
                   decoration: BoxDecoration(
-                    color: AppTheme.errorColor.withOpacity(0.1),
+                    color: AppTheme.errorColor.withValues(alpha: 0.1),
                     borderRadius: BorderRadius.circular(8),
                   ),
                   child: Text(_errorMessage!, style: TextStyle(color: AppTheme.errorColor)),

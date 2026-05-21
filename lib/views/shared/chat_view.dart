@@ -3,6 +3,243 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import '../../config/theme.dart';
 
+// ─────────────────────────────────────────────────────────────────────────────
+// DM COMPOSE — user search + chat creation
+// ─────────────────────────────────────────────────────────────────────────────
+class _ComposeDirectMessagePage extends StatefulWidget {
+  const _ComposeDirectMessagePage();
+
+  @override
+  State<_ComposeDirectMessagePage> createState() =>
+      _ComposeDirectMessagePageState();
+}
+
+class _ComposeDirectMessagePageState
+    extends State<_ComposeDirectMessagePage> {
+  final _searchCtrl = TextEditingController();
+  List<Map<String, dynamic>> _results = [];
+  bool _searching = false;
+
+  @override
+  void dispose() {
+    _searchCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _search(String query) async {
+    final q = query.trim().toLowerCase();
+    if (q.isEmpty) {
+      setState(() => _results = []);
+      return;
+    }
+    setState(() => _searching = true);
+    try {
+      final uid = FirebaseAuth.instance.currentUser?.uid;
+      final snap = await FirebaseFirestore.instance.collection('users').get();
+      final matches = snap.docs
+          .where((d) => d.id != uid)
+          .where((d) {
+            final name = (d.data()['name'] ?? '').toString().toLowerCase();
+            final email = (d.data()['email'] ?? '').toString().toLowerCase();
+            return name.contains(q) || email.contains(q);
+          })
+          .map((d) => {'uid': d.id, ...d.data()})
+          .toList();
+      if (mounted) setState(() => _results = matches);
+    } finally {
+      if (mounted) setState(() => _searching = false);
+    }
+  }
+
+  Future<void> _openOrCreateDM(Map<String, dynamic> other) async {
+    final myUid = FirebaseAuth.instance.currentUser?.uid;
+    if (myUid == null) return;
+    final otherUid = other['uid'] as String;
+
+    // Look for existing DM chat between the two users
+    final existing = await FirebaseFirestore.instance
+        .collection('chats')
+        .where('type', isEqualTo: 'dm')
+        .where('memberIds', arrayContains: myUid)
+        .get();
+
+    String? chatId;
+    for (final doc in existing.docs) {
+      final members = doc.data()['memberIds'] as List? ?? [];
+      if (members.contains(otherUid) && members.length == 2) {
+        chatId = doc.id;
+        break;
+      }
+    }
+
+    if (chatId == null) {
+      // Create new DM chat
+      final mySnap = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(myUid)
+          .get();
+      final myName = mySnap.data()?['name'] ?? 'Me';
+      final otherName = other['name'] ?? 'User';
+      final ref = await FirebaseFirestore.instance.collection('chats').add({
+        'type': 'dm',
+        'memberIds': [myUid, otherUid],
+        'name': '$myName & $otherName',
+        'createdAt': FieldValue.serverTimestamp(),
+        'lastMessageAt': FieldValue.serverTimestamp(),
+        'lastMessage': '',
+        'lastSenderName': '',
+      });
+      chatId = ref.id;
+    }
+
+    if (!mounted) return;
+    Navigator.pop(context);
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => ChatRoomView(chatId: chatId!)),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: const Color(0xFFF7F8FA),
+      appBar: AppBar(
+        backgroundColor: Colors.white,
+        elevation: 0,
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back_ios_new_rounded,
+              size: 20, color: AppTheme.secondaryColor),
+          onPressed: () => Navigator.pop(context),
+        ),
+        title: const Text(
+          'New Message',
+          style: TextStyle(
+            fontWeight: FontWeight.bold,
+            fontSize: 18,
+            color: AppTheme.secondaryColor,
+          ),
+        ),
+      ),
+      body: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+            child: TextField(
+              controller: _searchCtrl,
+              autofocus: true,
+              onChanged: _search,
+              decoration: InputDecoration(
+                hintText: 'Search by name or email…',
+                prefixIcon: const Icon(Icons.search_rounded,
+                    color: AppTheme.primaryColor),
+                contentPadding: const EdgeInsets.symmetric(vertical: 0),
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(30),
+                  borderSide: BorderSide(color: Colors.grey.shade300),
+                ),
+                enabledBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(30),
+                  borderSide: BorderSide(color: Colors.grey.shade300),
+                ),
+                focusedBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(30),
+                  borderSide:
+                      const BorderSide(color: AppTheme.primaryColor, width: 1.5),
+                ),
+              ),
+            ),
+          ),
+          if (_searching)
+            const Padding(
+              padding: EdgeInsets.all(24),
+              child: CircularProgressIndicator(color: AppTheme.primaryColor),
+            )
+          else
+            Expanded(
+              child: _results.isEmpty
+                  ? Center(
+                      child: Text(
+                        _searchCtrl.text.isEmpty
+                            ? 'Type a name or email to search'
+                            : 'No users found',
+                        style: TextStyle(color: Colors.grey.shade500),
+                      ),
+                    )
+                  : ListView.separated(
+                      padding: const EdgeInsets.fromLTRB(16, 4, 16, 24),
+                      itemCount: _results.length,
+                      separatorBuilder: (_, __) => const SizedBox(height: 8),
+                      itemBuilder: (ctx, i) {
+                        final u = _results[i];
+                        final name = u['name'] ?? 'Unknown';
+                        final role = (u['role'] ?? '').toString();
+                        return Material(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(12),
+                          child: InkWell(
+                            borderRadius: BorderRadius.circular(12),
+                            onTap: () => _openOrCreateDM(u),
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 14, vertical: 12),
+                              child: Row(
+                                children: [
+                                  CircleAvatar(
+                                    radius: 20,
+                                    backgroundColor: AppTheme.primaryColor
+                                        .withValues(alpha: 0.12),
+                                    child: Text(
+                                      name.isNotEmpty
+                                          ? name[0].toUpperCase()
+                                          : '?',
+                                      style: const TextStyle(
+                                        color: AppTheme.primaryColor,
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 12),
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        Text(
+                                          name.toString(),
+                                          style: const TextStyle(
+                                            fontWeight: FontWeight.w600,
+                                            color: AppTheme.secondaryColor,
+                                          ),
+                                        ),
+                                        if (role.isNotEmpty)
+                                          Text(
+                                            role[0].toUpperCase() +
+                                                role.substring(1),
+                                            style: TextStyle(
+                                              fontSize: 12,
+                                              color: Colors.grey.shade500,
+                                            ),
+                                          ),
+                                      ],
+                                    ),
+                                  ),
+                                  const Icon(Icons.chevron_right_rounded,
+                                      color: AppTheme.primaryColor),
+                                ],
+                              ),
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
 /// List of group chats the current user belongs to.
 /// Admins (role == 'admin' on their user doc) see every chat.
 class ChatListView extends StatefulWidget {
@@ -54,6 +291,17 @@ class _ChatListViewState extends State<ChatListView> {
                 onPressed: () => Navigator.pop(context),
               )
             : null,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.edit_square, color: AppTheme.primaryColor),
+            tooltip: 'New Direct Message',
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(
+                  builder: (_) => const _ComposeDirectMessagePage()),
+            ),
+          ),
+        ],
       ),
       body: _role == null
           ? const Center(child: CircularProgressIndicator(color: AppTheme.primaryColor))
@@ -113,6 +361,7 @@ class _ChatListViewState extends State<ChatListView> {
                     final String lastSender = (data['lastSenderName'] ?? '').toString();
                     final Timestamp? when = data['lastMessageAt'] as Timestamp?;
                     final int memberCount = (data['memberIds'] as List?)?.length ?? 0;
+                    final bool isDm = data['type'] == 'dm';
 
                     return Material(
                       color: Colors.white,
@@ -131,9 +380,18 @@ class _ChatListViewState extends State<ChatListView> {
                             children: [
                               CircleAvatar(
                                 radius: 22,
-                                backgroundColor: AppTheme.primaryColor.withValues(alpha: 0.12),
-                                child: const Icon(Icons.directions_bus_rounded,
-                                    color: AppTheme.primaryColor),
+                                backgroundColor: (isDm
+                                        ? AppTheme.secondaryColor
+                                        : AppTheme.primaryColor)
+                                    .withValues(alpha: 0.12),
+                                child: Icon(
+                                  isDm
+                                      ? Icons.person_rounded
+                                      : Icons.directions_bus_rounded,
+                                  color: isDm
+                                      ? AppTheme.secondaryColor
+                                      : AppTheme.primaryColor,
+                                ),
                               ),
                               const SizedBox(width: 12),
                               Expanded(

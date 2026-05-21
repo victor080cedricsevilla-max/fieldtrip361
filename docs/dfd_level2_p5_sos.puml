@@ -1,0 +1,56 @@
+@startuml DFD_Level2_P5
+title **LEVEL 2 — Process 5: Trigger SOS**
+
+skinparam backgroundColor White
+skinparam defaultFontName Arial
+skinparam defaultFontSize 10
+skinparam linetype ortho
+skinparam arrowColor #1F2937
+skinparam arrowThickness 1.2
+skinparam arrowFontSize 8
+
+skinparam rectangle<<ent>> {
+  BackgroundColor White
+  BorderColor Black
+  RoundCorner 0
+  FontStyle bold
+  FontSize 11
+}
+skinparam rectangle<<proc>> {
+  BackgroundColor #DBEAFE
+  BorderColor #2563EB
+  RoundCorner 12
+  FontStyle bold
+  FontSize 10
+}
+skinparam rectangle<<ds>> {
+  BackgroundColor White
+  BorderColor Black
+  RoundCorner 0
+  FontSize 9
+}
+
+top to bottom direction
+
+rectangle "Student" as STU <<ent>>
+rectangle "Teacher" as TCH <<ent>>
+rectangle "Parent"  as PAR <<ent>>
+
+rectangle "5.1\nReceive\nSOS Request\n(Manual Trigger)"     as P51 <<proc>>
+rectangle "5.2\nCapture Current\nGPS Location"              as P52 <<proc>>
+rectangle "5.3\nLog SOS Alert\n(with Location\n& Timestamp)" as P53 <<proc>>
+rectangle "5.4\nNotify Concerned\nParties via FCM"          as P54 <<proc>>
+
+rectangle "D5  |  SOS & Geofence Alerts" as D5 <<ds>>
+rectangle "D6  |  GPS Location Data"     as D6 <<ds>>
+
+STU --> P51 : SOS manual trigger
+P51 --> P52 : SOS request
+D6  --> P52 : current GPS coordinates
+P52 --> P53 : SOS data + location
+P53 --> D5  : store SOS alert record
+D5  --> P54 : SOS alert
+P54 --> TCH : SOS notification\n(alarm + rescue dialog)
+P54 --> PAR : SOS notification\n(push notification)
+
+@enduml
