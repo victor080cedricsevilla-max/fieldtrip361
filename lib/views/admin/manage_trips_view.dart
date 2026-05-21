@@ -250,9 +250,17 @@ class _ManageTripsViewState extends State<ManageTripsView> {
                 );
               }
 
-              return ListView.builder(
-                itemCount: filtered.length,
-                itemBuilder: (context, index) {
+              return Container(
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: Colors.grey.shade200),
+                ),
+                clipBehavior: Clip.antiAlias,
+                child: ListView.builder(
+                  padding: EdgeInsets.zero,
+                  itemCount: filtered.length,
+                  itemBuilder: (context, index) {
                   var data = filtered[index].data() as Map<String, dynamic>;
                   String docId = filtered[index].id;
                   bool isCompleted = data['status'] == "completed";
@@ -321,7 +329,8 @@ class _ManageTripsViewState extends State<ManageTripsView> {
                     ),
                   );
                 },
-              );
+              ),
+            );
             },
           ),
         )
