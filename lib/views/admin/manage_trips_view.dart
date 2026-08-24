@@ -4,7 +4,9 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import '../../config/theme.dart';
 import '../../utils/utils.dart';
+import 'package:cloud_functions/cloud_functions.dart';
 import '../../utils/firestore_utils.dart';
+import '../../utils/trip_queries.dart';
 import '../../models/directions_model.dart';
 import '../../repositories/directions_repository.dart';
 import 'create_trip_view.dart';
@@ -20,6 +22,7 @@ class _ManageTripsViewState extends State<ManageTripsView> {
   final TextEditingController _searchCtrl = TextEditingController();
   DateTimeRange? _dateRange;
   String _searchQuery = '';
+  bool _claimingLegacy = false;
 
   @override
   void initState() {
@@ -43,8 +46,8 @@ class _ManageTripsViewState extends State<ManageTripsView> {
       initialDateRange: _dateRange,
       builder: (ctx, child) => Theme(
         data: Theme.of(ctx).copyWith(
-          colorScheme: const ColorScheme.light(
-            primary: AppTheme.primaryColor,
+          colorScheme: ColorScheme.light(
+            primary: AppTheme.effectivePrimary,
             onPrimary: Colors.white,
             surface: Colors.white,
             onSurface: AppTheme.secondaryColor,
@@ -54,6 +57,74 @@ class _ManageTripsViewState extends State<ManageTripsView> {
       ),
     );
     if (picked != null) setState(() => _dateRange = picked);
+  }
+
+  /// Trips are now scoped to the admin's school, so any created before schools
+  /// existed carry no schoolId and fall outside that filter. This claims them —
+  /// it only touches trips with no school at all, so it cannot move another
+  /// school's data.
+  Future<void> _claimLegacyTrips() async {
+    setState(() => _claimingLegacy = true);
+    try {
+      final res = await FirebaseFunctions.instance
+          .httpsCallable('backfillTripSchoolIds')
+          .call(<String, dynamic>{});
+      final claimed = ((res.data as Map)['claimed'] as num?)?.toInt() ?? 0;
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(claimed == 0
+            ? 'No unassigned trips were found.'
+            : 'Attached $claimed ${claimed == 1 ? "trip" : "trips"} to your school.'),
+        backgroundColor: AppTheme.secondaryColor,
+        behavior: SnackBarBehavior.floating,
+      ));
+    } on FirebaseFunctionsException catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(e.message ?? 'Could not attach older trips.'),
+        backgroundColor: Colors.red,
+        behavior: SnackBarBehavior.floating,
+      ));
+    } finally {
+      if (mounted) setState(() => _claimingLegacy = false);
+    }
+  }
+
+  Widget _emptyTrips() {
+    return Center(
+      child: Container(
+        constraints: const BoxConstraints(maxWidth: 460),
+        padding: const EdgeInsets.all(28),
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          Icon(Icons.map_outlined, size: 48, color: Colors.grey.shade300),
+          const SizedBox(height: 14),
+          const Text("No trips found",
+              style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
+          const SizedBox(height: 8),
+          Text(
+            "Trips you create are listed here. If you had trips before your school "
+            "was set up, they are not attached to it yet — claim them below.",
+            textAlign: TextAlign.center,
+            style: TextStyle(fontSize: 13, color: Colors.grey.shade600, height: 1.55),
+          ),
+          const SizedBox(height: 18),
+          OutlinedButton.icon(
+            onPressed: _claimingLegacy ? null : _claimLegacyTrips,
+            icon: _claimingLegacy
+                ? const SizedBox(
+                    width: 15, height: 15,
+                    child: CircularProgressIndicator(strokeWidth: 2))
+                : const Icon(Icons.playlist_add_check_rounded, size: 18),
+            label: Text(_claimingLegacy ? "Working…" : "Attach older trips to my school"),
+            style: OutlinedButton.styleFrom(
+              foregroundColor: AppTheme.effectivePrimary,
+              side: BorderSide(color: AppTheme.effectivePrimary),
+              padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
+            ),
+          ),
+        ]),
+      ),
+    );
   }
 
   void _clearFilters() {
@@ -169,15 +240,15 @@ class _ManageTripsViewState extends State<ManageTripsView> {
       children: [
         const Text("Trip Management", style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
         const SizedBox(height: 16),
-        // ── Search & Filter row ──────────────────────────────────────────────
+        // â"€â"€ Search & Filter row â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
         Row(
           children: [
             Expanded(
               child: TextField(
                 controller: _searchCtrl,
                 decoration: InputDecoration(
-                  hintText: 'Search trips…',
-                  prefixIcon: const Icon(Icons.search_rounded, color: AppTheme.primaryColor, size: 20),
+                  hintText: 'Search trips--',
+                  prefixIcon: Icon(Icons.search_rounded, color: AppTheme.effectivePrimary, size: 20),
                   contentPadding: const EdgeInsets.symmetric(vertical: 0, horizontal: 16),
                   border: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(30),
@@ -189,7 +260,7 @@ class _ManageTripsViewState extends State<ManageTripsView> {
                   ),
                   focusedBorder: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(30),
-                    borderSide: const BorderSide(color: AppTheme.primaryColor, width: 1.5),
+                    borderSide: BorderSide(color: AppTheme.effectivePrimary, width: 1.5),
                   ),
                   filled: true,
                   fillColor: Colors.white,
@@ -199,15 +270,15 @@ class _ManageTripsViewState extends State<ManageTripsView> {
             const SizedBox(width: 10),
             OutlinedButton.icon(
               onPressed: () => _pickDateRange(context),
-              icon: const Icon(Icons.date_range_rounded, size: 18, color: AppTheme.primaryColor),
+              icon: Icon(Icons.date_range_rounded, size: 18, color: AppTheme.effectivePrimary),
               label: Text(
                 _dateRange == null
                     ? 'Date Range'
-                    : '${_dateRange!.start.year}-${_dateRange!.start.month.toString().padLeft(2,'0')}-${_dateRange!.start.day.toString().padLeft(2,'0')} – ${_dateRange!.end.year}-${_dateRange!.end.month.toString().padLeft(2,'0')}-${_dateRange!.end.day.toString().padLeft(2,'0')}',
-                style: const TextStyle(color: AppTheme.primaryColor, fontWeight: FontWeight.w500),
+                    : '${_dateRange!.start.year}-${_dateRange!.start.month.toString().padLeft(2,'0')}-${_dateRange!.start.day.toString().padLeft(2,'0')} -- ${_dateRange!.end.year}-${_dateRange!.end.month.toString().padLeft(2,'0')}-${_dateRange!.end.day.toString().padLeft(2,'0')}',
+                style: TextStyle(color: AppTheme.effectivePrimary, fontWeight: FontWeight.w500),
               ),
               style: OutlinedButton.styleFrom(
-                side: const BorderSide(color: AppTheme.primaryColor),
+                side: BorderSide(color: AppTheme.effectivePrimary),
                 padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
               ),
@@ -224,15 +295,17 @@ class _ManageTripsViewState extends State<ManageTripsView> {
         ),
         const SizedBox(height: 16),
         Expanded(
-          child: StreamBuilder<QuerySnapshot>(
-            stream: FirebaseFirestore.instance.collection('trips').orderBy('createdAt', descending: true).snapshots(),
+          child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+            stream: TripQueries.ofMySchool(),
             builder: (context, snapshot) {
               if (snapshot.connectionState == ConnectionState.waiting) return const Center(child: CircularProgressIndicator());
-              if (!snapshot.hasData || snapshot.data!.docs.isEmpty) return const Center(child: Text("No trips found."));
+              if (!snapshot.hasData || snapshot.data!.docs.isEmpty) return _emptyTrips();
 
-              final filtered = snapshot.data!.docs.where((doc) {
-                return _matchesFilters(doc.data() as Map<String, dynamic>);
-              }).toList();
+              // Sorted client-side: orderBy alongside the schoolId filter would
+              // require a composite index.
+              final filtered = TripQueries.newestFirst(snapshot.data!.docs)
+                  .where((doc) => _matchesFilters(doc.data()))
+                  .toList();
 
               if (filtered.isEmpty) {
                 return Center(
@@ -261,7 +334,7 @@ class _ManageTripsViewState extends State<ManageTripsView> {
                   padding: EdgeInsets.zero,
                   itemCount: filtered.length,
                   itemBuilder: (context, index) {
-                  var data = filtered[index].data() as Map<String, dynamic>;
+                  var data = filtered[index].data();
                   String docId = filtered[index].id;
                   bool isCompleted = data['status'] == "completed";
 
@@ -432,7 +505,7 @@ class _ManageTripsViewState extends State<ManageTripsView> {
             children: [
               Container(
                 padding: const EdgeInsets.all(20),
-                decoration: const BoxDecoration(color: AppTheme.primaryColor, borderRadius: BorderRadius.only(topLeft: Radius.circular(12), topRight: Radius.circular(12))),
+                decoration: BoxDecoration(color: AppTheme.effectivePrimary, borderRadius: BorderRadius.only(topLeft: Radius.circular(12), topRight: Radius.circular(12))),
                 child: Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
@@ -460,8 +533,8 @@ class _ManageTripsViewState extends State<ManageTripsView> {
 
 
 /// Edit-mode wrapper around [CreateTripView]. We reuse the create form so
-/// editing has identical fields (bus label, capacity, seat assignment, …)
-/// and so existing passenger data — especially `seatNumber` — is preserved.
+/// editing has identical fields (bus label, capacity, seat assignment, --)
+/// and so existing passenger data -- especially `seatNumber` -- is preserved.
 class EditTripDialog extends StatelessWidget {
   final String docId;
   final Map<String, dynamic> tripData;
@@ -497,11 +570,11 @@ class EditTripDialog extends StatelessWidget {
                     width: 38,
                     height: 38,
                     decoration: BoxDecoration(
-                      color: AppTheme.primaryColor.withValues(alpha: 0.1),
+                      color: AppTheme.effectivePrimary.withValues(alpha: 0.1),
                       borderRadius: BorderRadius.circular(10),
                     ),
-                    child: const Icon(Icons.edit_outlined,
-                        color: AppTheme.primaryColor, size: 18),
+                    child: Icon(Icons.edit_outlined,
+                        color: AppTheme.effectivePrimary, size: 18),
                   ),
                   const SizedBox(width: 12),
                   Expanded(

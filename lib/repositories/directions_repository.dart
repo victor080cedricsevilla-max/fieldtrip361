@@ -27,7 +27,7 @@ class DirectionsRepository {
   }
 
   // ---------------------------------------------------------------------------
-  // WEB path — Firebase Cloud Function proxy (no CORS issue)
+  // WEB path -- Firebase Cloud Function proxy (no CORS issue)
   // ---------------------------------------------------------------------------
   Future<Directions?> _getDirectionsViaCloudFunction({
     required LatLng origin,
@@ -52,7 +52,7 @@ class DirectionsRepository {
         return Directions.fromMap(data);
       } else {
         print(
-            '⚠️ Cloud Function Directions status: ${data['status']} — ${data['error_message'] ?? ''}');
+            '⚠️ Cloud Function Directions status: ${data['status']} -- ${data['error_message'] ?? ''}');
         return null;
       }
     } catch (e) {
@@ -62,7 +62,7 @@ class DirectionsRepository {
   }
 
   // ---------------------------------------------------------------------------
-  // MOBILE path — direct HTTP call (no CORS restriction on native)
+  // MOBILE path -- direct HTTP call (no CORS restriction on native)
   // ---------------------------------------------------------------------------
   Future<Directions?> _getDirectionsViaHttp({
     required LatLng origin,
@@ -91,7 +91,7 @@ class DirectionsRepository {
           return Directions.fromMap(data);
         } else {
           print(
-              '⚠️ Directions API status: ${data['status']} — ${data['error_message'] ?? ''}');
+              '⚠️ Directions API status: ${data['status']} -- ${data['error_message'] ?? ''}');
           return null;
         }
       } else {

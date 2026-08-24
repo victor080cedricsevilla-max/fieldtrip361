@@ -99,7 +99,7 @@ class _LoginViewState extends State<LoginView> {
               ],
               // Mint Green Top Border
               border: Border(
-                top: BorderSide(color: AppTheme.primaryColor, width: 6),
+                top: BorderSide(color: AppTheme.effectivePrimary, width: 6),
               ),
             ),
             child: Column(
@@ -110,7 +110,7 @@ class _LoginViewState extends State<LoginView> {
                 Icon(
                   Icons.lock_person_rounded, 
                   size: 60, 
-                  color: AppTheme.primaryColor
+                  color: AppTheme.effectivePrimary
                 ),
                 const SizedBox(height: 10),
                 Text(
@@ -185,9 +185,9 @@ class _LoginViewState extends State<LoginView> {
                         initialEmail: _emailController.text.trim(),
                       ),
                     ),
-                    child: const Text(
+                    child: Text(
                       "Forgot password?",
-                      style: TextStyle(color: AppTheme.primaryColor, fontWeight: FontWeight.w600),
+                      style: TextStyle(color: AppTheme.effectivePrimary, fontWeight: FontWeight.w600),
                     ),
                   ),
                 ),

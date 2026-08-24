@@ -68,7 +68,7 @@ class _LandingPageState extends State<LandingPage>
           // Background blobs
           Positioned(
             top: -80, right: -80,
-            child: _Blob(size: 320, color: AppTheme.primaryColor.withValues(alpha: .12)),
+            child: _Blob(size: 320, color: AppTheme.effectivePrimary.withValues(alpha: .12)),
           ),
           Positioned(
             bottom: -60, left: -60,
@@ -93,14 +93,14 @@ class _LandingPageState extends State<LandingPage>
                             Container(
                               width: 40, height: 40,
                               decoration: BoxDecoration(
-                                color: AppTheme.primaryColor,
+                                color: AppTheme.effectivePrimary,
                                 borderRadius: BorderRadius.circular(12),
                               ),
                               child: const Icon(Icons.directions_bus_rounded, color: Colors.white, size: 22),
                             ),
                             const SizedBox(width: 10),
                             RichText(
-                              text: const TextSpan(
+                              text: TextSpan(
                                 style: TextStyle(
                                   fontFamily: 'Poppins',
                                   fontSize: 18,
@@ -109,7 +109,7 @@ class _LandingPageState extends State<LandingPage>
                                 ),
                                 children: [
                                   TextSpan(text: 'FieldTrip'),
-                                  TextSpan(text: '360', style: TextStyle(color: AppTheme.primaryColor)),
+                                  TextSpan(text: '360', style: TextStyle(color: AppTheme.effectivePrimary)),
                                 ],
                               ),
                             ),
@@ -131,7 +131,7 @@ class _LandingPageState extends State<LandingPage>
                                 Container(
                                   padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
                                   decoration: BoxDecoration(
-                                    color: AppTheme.primaryColor.withValues(alpha: .12),
+                                    color: AppTheme.effectivePrimary.withValues(alpha: .12),
                                     borderRadius: BorderRadius.circular(999),
                                   ),
                                   child: Row(
@@ -139,19 +139,19 @@ class _LandingPageState extends State<LandingPage>
                                     children: [
                                       Container(
                                         width: 6, height: 6,
-                                        decoration: const BoxDecoration(
-                                          color: AppTheme.primaryColor,
+                                        decoration: BoxDecoration(
+                                          color: AppTheme.effectivePrimary,
                                           shape: BoxShape.circle,
                                         ),
                                       ),
                                       const SizedBox(width: 7),
-                                      const Text(
+                                      Text(
                                         'Real-time Field Trip Management',
                                         style: TextStyle(
                                           fontFamily: 'Poppins',
                                           fontSize: 11,
                                           fontWeight: FontWeight.w600,
-                                          color: AppTheme.primaryColor,
+                                          color: AppTheme.effectivePrimary,
                                         ),
                                       ),
                                     ],
@@ -162,7 +162,7 @@ class _LandingPageState extends State<LandingPage>
 
                                 // Headline
                                 RichText(
-                                  text: const TextSpan(
+                                  text: TextSpan(
                                     style: TextStyle(
                                       fontFamily: 'Poppins',
                                       fontSize: 36,
@@ -174,7 +174,7 @@ class _LandingPageState extends State<LandingPage>
                                       TextSpan(text: 'Keep Every\n'),
                                       TextSpan(
                                         text: 'Student Safe\n',
-                                        style: TextStyle(color: AppTheme.primaryColor),
+                                        style: TextStyle(color: AppTheme.effectivePrimary),
                                       ),
                                       TextSpan(text: 'On Every Trip'),
                                     ],
@@ -184,7 +184,7 @@ class _LandingPageState extends State<LandingPage>
                                 const SizedBox(height: 16),
 
                                 const Text(
-                                  'Real-time GPS, QR attendance, and instant parent alerts — all in one app for teachers, students, and parents.',
+                                  'Real-time GPS, QR attendance, and instant parent alerts -- all in one app for teachers, students, and parents.',
                                   style: TextStyle(
                                     fontFamily: 'Poppins',
                                     fontSize: 14,
@@ -230,17 +230,17 @@ class _LandingPageState extends State<LandingPage>
                                           Container(
                                             width: 40, height: 40,
                                             decoration: BoxDecoration(
-                                              color: AppTheme.primaryColor.withValues(alpha: .1),
+                                              color: AppTheme.effectivePrimary.withValues(alpha: .1),
                                               borderRadius: BorderRadius.circular(10),
                                             ),
-                                            child: const Icon(Icons.directions_bus_rounded, color: AppTheme.primaryColor, size: 22),
+                                            child: Icon(Icons.directions_bus_rounded, color: AppTheme.effectivePrimary, size: 22),
                                           ),
                                           const SizedBox(width: 12),
                                           const Expanded(
                                             child: Column(
                                               crossAxisAlignment: CrossAxisAlignment.start,
                                               children: [
-                                                Text('Bus 1 — En Route', style: TextStyle(fontFamily: 'Poppins', fontSize: 13, fontWeight: FontWeight.w600, color: AppTheme.secondaryColor)),
+                                                Text('Bus 1 -- En Route', style: TextStyle(fontFamily: 'Poppins', fontSize: 13, fontWeight: FontWeight.w600, color: AppTheme.secondaryColor)),
                                                 Text('Science Museum Trip', style: TextStyle(fontFamily: 'Poppins', fontSize: 11, color: Color(0xFF6B7280))),
                                               ],
                                             ),
@@ -265,7 +265,7 @@ class _LandingPageState extends State<LandingPage>
                                       const SizedBox(height: 14),
                                       const Divider(color: Color(0xFFE5E7EB), height: 1),
                                       const SizedBox(height: 14),
-                                      _StatusRow(icon: Icons.people_rounded, label: '24 / 25 students present', color: AppTheme.primaryColor),
+                                      _StatusRow(icon: Icons.people_rounded, label: '24 / 25 students present', color: AppTheme.effectivePrimary),
                                       const SizedBox(height: 8),
                                       _StatusRow(icon: Icons.location_on_rounded, label: 'Next stop: Mall of Asia', color: Colors.orange),
                                       const SizedBox(height: 8),
@@ -302,7 +302,7 @@ class _LandingPageState extends State<LandingPage>
                                   );
                                 },
                                 style: ElevatedButton.styleFrom(
-                                  backgroundColor: AppTheme.primaryColor,
+                                  backgroundColor: AppTheme.effectivePrimary,
                                   foregroundColor: Colors.white,
                                   elevation: 0,
                                   shadowColor: Colors.transparent,
@@ -341,7 +341,7 @@ class _LandingPageState extends State<LandingPage>
   }
 }
 
-// ── Helpers ────────────────────────────────────────────────────────────────
+// â"€â"€ Helpers â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 class _Blob extends StatelessWidget {
   final double size;
@@ -375,7 +375,7 @@ class _FeatureChip extends StatelessWidget {
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(icon, size: 15, color: AppTheme.primaryColor),
+          Icon(icon, size: 15, color: AppTheme.effectivePrimary),
           const SizedBox(width: 6),
           Text(label, style: const TextStyle(fontFamily: 'Poppins', fontSize: 12, fontWeight: FontWeight.w500, color: AppTheme.secondaryColor)),
         ],

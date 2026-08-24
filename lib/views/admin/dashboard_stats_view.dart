@@ -27,7 +27,7 @@ class DashboardStatsView extends StatelessWidget {
                 title: "Active Trips",
                 count: "3",
                 icon: Icons.directions_bus_filled,
-                color: AppTheme.primaryColor, // Mint Green
+                color: AppTheme.effectivePrimary, // Mint Green
               ),
               _buildStatCard(
                 title: "Total Students",
@@ -133,7 +133,7 @@ class DashboardStatsView extends StatelessWidget {
               ),
               Text(
                 title,
-                style: const TextStyle(
+                style: TextStyle(
                   fontSize: 14,
                   color: Colors.grey,
                 ),
@@ -148,7 +148,7 @@ class DashboardStatsView extends StatelessWidget {
   // --- WIDGET: ACTIVITY ROW ---
   Widget _buildActivityRow(String tripName, String time, String status) {
     Color statusColor;
-    if (status == "Active") statusColor = AppTheme.primaryColor;
+    if (status == "Active") statusColor = AppTheme.effectivePrimary;
     else if (status == "Completed") statusColor = Colors.grey;
     else statusColor = Colors.orange;
 

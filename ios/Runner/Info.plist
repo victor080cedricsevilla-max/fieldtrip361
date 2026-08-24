@@ -5,7 +5,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
-	<string>Fieldtrip361</string>
+	<string>FieldTrip360</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -13,7 +13,7 @@
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>fieldtrip361</string>
+	<string>FieldTrip360</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
@@ -52,6 +52,17 @@
 	<string>FieldTrip360 needs background location so geofence warnings and live tracking keep working even when the app is closed.</string>
 	<key>NSLocationAlwaysUsageDescription</key>
 	<string>FieldTrip360 needs background location so geofence warnings and live tracking keep working even when the app is closed.</string>
+	<!-- Camera: QR attendance scanning (teacher) and photographing signed
+	     waivers (student). iOS terminates the app outright if this is missing
+	     when the camera is opened, so it is not optional. -->
+	<key>NSCameraUsageDescription</key>
+	<string>FieldTrip360 uses the camera to scan attendance QR codes and to photograph signed waiver and medical forms.</string>
+	<!-- Photo library: choosing a profile photo, or picking an already-taken
+	     photo or PDF of a signed form. -->
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>FieldTrip360 needs access to your photos so you can upload a profile picture or a photo of a signed form.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>FieldTrip360 saves downloaded trip forms to your photo library so you can print them.</string>
 	<!-- Background modes required for continuous tracking + push messaging -->
 	<key>UIBackgroundModes</key>
 	<array>
@@ -59,6 +70,22 @@
 		<string>location</string>
 		<string>remote-notification</string>
 		<string>processing</string>
+	</array>
+	<!-- Declaring the "processing" background mode above obliges iOS to be told
+	     which task identifiers may run. This is the identifier
+	     flutter_background_service registers. -->
+	<key>BGTaskSchedulerPermittedIdentifiers</key>
+	<array>
+		<string>dev.flutter.background.refresh</string>
+	</array>
+	<!-- url_launcher must declare the schemes it may open before iOS will
+	     report them as available. -->
+	<key>LSApplicationQueriesSchemes</key>
+	<array>
+		<string>https</string>
+		<string>http</string>
+		<string>mailto</string>
+		<string>tel</string>
 	</array>
 </dict>
 </plist>

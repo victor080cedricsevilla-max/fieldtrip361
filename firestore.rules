@@ -25,6 +25,10 @@ service cloud.firestore {
       return isSignedIn() && (isTeacher() || myRole() == 'admin');
     }
 
+    function mySchoolId() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('schoolId', '');
+    }
+
     // ── Users ────────────────────────────────────────────────────────────────
 
     match /users/{userId} {
@@ -35,6 +39,14 @@ service cloud.firestore {
                     (request.auth.uid == userId
                     && !('role'   in request.resource.data.diff(resource.data).affectedKeys())
                     && !('status' in request.resource.data.diff(resource.data).affectedKeys())
+                    // Relationship and tenancy fields are server-owned. Letting an
+                    // owner edit these would let a parent append any student to
+                    // their own children[] and read that child's trips.
+                    && !('children'  in request.resource.data.diff(resource.data).affectedKeys())
+                    && !('parentIds' in request.resource.data.diff(resource.data).affectedKeys())
+                    && !('schoolId'  in request.resource.data.diff(resource.data).affectedKeys())
+                    && !('schoolIds' in request.resource.data.diff(resource.data).affectedKeys())
+                    && !('rosterId'  in request.resource.data.diff(resource.data).affectedKeys())
                     && (!('lat' in request.resource.data.diff(resource.data).affectedKeys())
                         || (request.resource.data.lat is number
                             && request.resource.data.lat >= -90
@@ -45,11 +57,11 @@ service cloud.firestore {
                             && request.resource.data.lng <= 180))
                     && (!('fcmTokens' in request.resource.data.diff(resource.data).affectedKeys())
                         || request.resource.data.fcmTokens.size() <= 10))
-                    // A parent may add themselves to a student's parentIds (max 2).
-                    || (myRole() == 'parent'
-                        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['parentIds'])
-                        && request.auth.uid in request.resource.data.parentIds
-                        && request.resource.data.parentIds.size() <= 2)
+                    // NOTE: parents used to be able to add themselves to a
+                    // student's parentIds from the client. That let anyone who
+                    // knew a student's code — including the student — mint a
+                    // parent link. Linking now happens only in
+                    // activateGuardianCode, against a code the school issued.
                     // A teacher/admin may remove a parent from a student's parentIds.
                     || (isTeacherOrAdmin()
                         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['parentIds'])
@@ -66,23 +78,109 @@ service cloud.firestore {
 
     }
 
+    // ── Schools ──────────────────────────────────────────────────────────────
+    // Created by the createSchoolSubscription function. Capacity and student
+    // counts are subscription-critical, so clients may only read them — every
+    // mutation goes through a Cloud Function (the Admin SDK bypasses rules).
+
+    match /schools/{schoolId} {
+      allow read: if isSignedIn() && mySchoolId() == schoolId;
+      allow write: if false;
+    }
+
+    // ── Roster — students registered to a school (CSV or manual) ─────────────
+    // Readable only by staff of the owning school; written by importRoster /
+    // claimRosterRecord / removeRosterEntry so capacity cannot be bypassed.
+
+    match /roster/{rosterId} {
+      allow read: if isTeacherOrAdmin() && resource.data.schoolId == mySchoolId();
+      allow write: if false;
+    }
+
+    // ── Guardians — school-provided parent/guardian information ─────────────
+    // Distinct from a parent *user account*: this record exists before, and
+    // possibly without, anyone signing up. Staff of the owning school read it;
+    // a linked parent reads their own. Every write goes through a Cloud Function
+    // (assignGuardian / activateGuardianCode / …) so a student can never create
+    // or alter a parent relationship.
+
+    match /guardians/{guardianId} {
+      allow read: if isSignedIn() && (
+        (isTeacherOrAdmin() && resource.data.schoolId == mySchoolId()) ||
+        resource.data.get('parentUid', '') == request.auth.uid
+      );
+      allow write: if false;
+    }
+
+    // ── Activation codes — never readable by any client ──────────────────────
+    // Only hashes are stored, but the documents still map codes to students, so
+    // clients get no access at all. Redemption happens in activateGuardianCode,
+    // which resolves the relationship server-side from the code alone.
+
+    match /activationCodes/{codeId} {
+      allow read, write: if false;
+    }
+
+    // ── Document submissions — filled forms students upload ─────────────────
+    // Blank templates live on the trip document itself (trips/{id}.documents),
+    // so there is no separate template collection. Students create their own
+    // submission; the AI verdict and any admin override are written by Cloud
+    // Functions, so clients can never set a status themselves.
+
+    match /documentSubmissions/{submissionId} {
+      allow read: if isSignedIn() && (
+        resource.data.studentId == request.auth.uid ||
+        (isTeacherOrAdmin() && resource.data.schoolId == mySchoolId())
+      );
+      allow create: if isSignedIn()
+                    && request.resource.data.studentId == request.auth.uid
+                    && request.resource.data.status == 'pending'
+                    && request.resource.data.storagePath is string
+                    && request.resource.data.tripId is string;
+      allow update, delete: if false;
+    }
+
     // ── Trips ────────────────────────────────────────────────────────────────
     // Cloud Function (onTripChatSync) maintains allMemberIds on every write.
     // Parents are matched via hasAny against their children[] array.
 
+    // A trip belongs to the school whose admin created it. Trips created before
+    // schools existed have no schoolId; those stay visible to any staff member
+    // so historic data does not disappear — run backfillTripSchoolIds to fix.
+    function tripSchoolOk() {
+      return !('schoolId' in resource.data)
+             || resource.data.schoolId == mySchoolId();
+    }
+
+    function tripMembers() {
+      return resource.data.get('allMemberIds', []);
+    }
+
     match /trips/{tripId} {
+      // Admins see their own school's trips. Everyone else — including teachers,
+      // who are deliberately not school-scoped — sees only trips they are
+      // assigned to. Parents match through their children.
       allow read: if isSignedIn() && (
-        isTeacherOrAdmin() ||
-        (!('allMemberIds' in resource.data)) ||
-        request.auth.uid in resource.data.allMemberIds ||
+        (isAdmin() && tripSchoolOk()) ||
+        request.auth.uid in tripMembers() ||
+        // Brief window right after creation, before the chat-sync function has
+        // written allMemberIds.
+        (isTeacherOrAdmin() && !('allMemberIds' in resource.data)) ||
         (myRole() == 'parent' &&
-          resource.data.allMemberIds.hasAny(
+          tripMembers().hasAny(
             get(/databases/$(database)/documents/users/$(request.auth.uid))
               .data.get('children', [])
           ))
       );
-      allow create, delete: if isAdmin();
-      allow update: if isTeacherOrAdmin();
+      allow create: if isAdmin()
+                    && request.resource.data.get('schoolId', '') == mySchoolId();
+      allow delete: if isAdmin() && tripSchoolOk();
+      // Teachers running a bus update trip state (start, attendance, stops).
+      allow update: if isSignedIn() && (
+        (isAdmin() && tripSchoolOk()) ||
+        (isTeacher() && request.auth.uid in tripMembers()) ||
+        (isTeacherOrAdmin() && !('allMemberIds' in resource.data))
+      );
 
       // Geofence alerts — studentId MUST equal the caller's UID.
       match /alerts/{alertId} {
@@ -156,6 +254,13 @@ service cloud.firestore {
                        .hasOnly(['status'])
                     && request.resource.data.status in ['approved', 'rejected'];
       allow delete: if isAdmin();
+    }
+
+    // ── Locations — GPS coordinates, separate from users to avoid read fanout ─
+
+    match /locations/{uid} {
+      allow read: if isSignedIn();
+      allow write: if isSignedIn() && request.auth.uid == uid;
     }
 
     // ── Activity logs — admin read/write ────────────────────────────────────

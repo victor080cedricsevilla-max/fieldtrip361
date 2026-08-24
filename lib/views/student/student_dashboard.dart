@@ -15,10 +15,12 @@ import '../../config/theme.dart';
 import '../../controllers/auth_controller.dart';
 import '../../utils/live_tracker.dart';
 import '../../utils/firestore_utils.dart';
+import '../../utils/trip_queries.dart';
 import '../auth/mobile_login_view.dart';
 import '../shared/settings_view.dart';
 import '../shared/chat_view.dart';
 import '../shared/notification_panel.dart';
+import 'student_documents_tab.dart';
 
 class MarkerGenerator {
   static Future<BitmapDescriptor> createCustomMarker(String name, Color color) async {
@@ -77,6 +79,7 @@ class _StudentDashboardState extends State<StudentDashboard> {
       const StudentTripsTab(),
       const StudentQRTab(),
       const ChatListView(),
+      const StudentDocumentsTab(),
       const StudentProfileTab(),
     ];
     _requestLocationPermission();
@@ -88,14 +91,14 @@ class _StudentDashboardState extends State<StudentDashboard> {
     final uid = FirebaseAuth.instance.currentUser?.uid;
     if (uid == null) return;
 
-    _geofenceTripSub = FirebaseFirestore.instance
-        .collection('trips')
-        .where('status', isEqualTo: 'in_progress')
-        .snapshots()
-        .listen((snap) {
+    // Scoped to trips this student is assigned to; the in_progress check moves
+    // into the loop because pairing it with the membership filter would need a
+    // composite index.
+    _geofenceTripSub = TripQueries.mine().listen((snap) {
       String? newTripId;
       outer:
       for (final doc in snap.docs) {
+        if (doc.data()['status'] != 'in_progress') continue;
         final buses = asList(doc.data()['buses']);
         for (final b in buses) {
           if (b is Map) {
@@ -170,7 +173,7 @@ class _StudentDashboardState extends State<StudentDashboard> {
                   children: [
                     Icon(Icons.location_off_rounded, color: Colors.white),
                     SizedBox(width: 10),
-                    Expanded(child: Text('⚠️ You have left the designated area! Return to the group immediately.')),
+                    Expanded(child: Text('âš ï¸ You have left the designated area! Return to the group immediately.')),
                   ],
                 ),
                 backgroundColor: Colors.orange.shade700,
@@ -198,14 +201,21 @@ class _StudentDashboardState extends State<StudentDashboard> {
     _dashPositionStream = Geolocator.getPositionStream(
       locationSettings: const LocationSettings(
         accuracy: LocationAccuracy.high,
-        distanceFilter: 3,
+        distanceFilter: 0,
       ),
-    ).listen((pos) {
-      _dashLastPos = pos;
-      _publishAndCheckGeofence(uid, pos);
-    });
-    _dashHeartbeatTimer = Timer.periodic(const Duration(seconds: 5), (_) {
-      final pos = _dashLastPos;
+    ).listen(
+      (pos) {
+        _dashLastPos = pos;
+        _publishAndCheckGeofence(uid, pos);
+      },
+      onError: (e) => debugPrint("GPS stream error (student dash): $e"),
+      cancelOnError: false,
+    );
+    _dashHeartbeatTimer = Timer.periodic(const Duration(seconds: 30), (_) async {
+      Position? pos = _dashLastPos;
+      if (pos == null) {
+        try { pos = await Geolocator.getLastKnownPosition(); } catch (_) {}
+      }
       if (pos != null) _publishAndCheckGeofence(uid, pos);
     });
   }
@@ -231,11 +241,11 @@ class _StudentDashboardState extends State<StudentDashboard> {
     if (!scanned) return;
 
     try {
-      await FirebaseFirestore.instance.collection('users').doc(uid).update({
+      await FirebaseFirestore.instance.collection('locations').doc(uid).set({
         'lat': pos.latitude,
         'lng': pos.longitude,
         'lastUpdate': FieldValue.serverTimestamp(),
-      });
+      }, SetOptions(merge: true));
     } catch (_) {}
 
     final activeStop = trip['activeStopIndex'];
@@ -398,29 +408,34 @@ class _StudentDashboardState extends State<StudentDashboard> {
           selectedIndex: _selectedIndex,
           onDestinationSelected: (i) => setState(() => _selectedIndex = i),
           backgroundColor: Colors.white,
-          indicatorColor: AppTheme.primaryColor.withValues(alpha: 0.12),
+          indicatorColor: AppTheme.effectivePrimary.withValues(alpha: 0.12),
           elevation: 0,
           labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
           height: 70,
-          destinations: const [
+          destinations: [
             NavigationDestination(
               icon: Icon(Icons.route_outlined),
-              selectedIcon: Icon(Icons.route, color: AppTheme.primaryColor),
+              selectedIcon: Icon(Icons.route, color: AppTheme.effectivePrimary),
               label: "Trips",
             ),
             NavigationDestination(
               icon: Icon(Icons.qr_code_outlined),
-              selectedIcon: Icon(Icons.qr_code, color: AppTheme.primaryColor),
+              selectedIcon: Icon(Icons.qr_code, color: AppTheme.effectivePrimary),
               label: "My QR",
             ),
             NavigationDestination(
               icon: Icon(Icons.chat_bubble_outline_rounded),
-              selectedIcon: Icon(Icons.chat_bubble_rounded, color: AppTheme.primaryColor),
+              selectedIcon: Icon(Icons.chat_bubble_rounded, color: AppTheme.effectivePrimary),
               label: "Chats",
             ),
             NavigationDestination(
+              icon: Icon(Icons.assignment_outlined),
+              selectedIcon: Icon(Icons.assignment, color: AppTheme.effectivePrimary),
+              label: "Forms",
+            ),
+            NavigationDestination(
               icon: Icon(Icons.person_outline),
-              selectedIcon: Icon(Icons.person, color: AppTheme.primaryColor),
+              selectedIcon: Icon(Icons.person, color: AppTheme.effectivePrimary),
               label: "Profile",
             ),
           ],
@@ -449,18 +464,18 @@ class StudentTripsTab extends StatelessWidget {
         ),
         actions: const [NotificationBell(), SizedBox(width: 8)],
       ),
-      body: StreamBuilder<QuerySnapshot>(
-        stream: FirebaseFirestore.instance
-            .collection('trips')
-            .where('status', isNotEqualTo: 'completed')
-            .snapshots(),
+      body: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+        stream: TripQueries.mine(),
         builder: (context, snapshot) {
           if (!snapshot.hasData) {
-            return const Center(child: CircularProgressIndicator(color: AppTheme.primaryColor));
+            return Center(child: CircularProgressIndicator(color: AppTheme.effectivePrimary));
           }
 
           final myTrips = snapshot.data!.docs.where((doc) {
-            final data = doc.data() as Map<String, dynamic>;
+            final data = doc.data();
+            // Completed trips are filtered here rather than in the query — a
+            // second filter beside the membership one would need an index.
+            if (data['status'] == 'completed') return false;
             final buses = asList(data['buses']);
             for (var bus in buses) {
               final List passengers = asList(bus['passengers']);
@@ -493,7 +508,7 @@ class StudentTripsTab extends StatelessWidget {
             itemCount: myTrips.length,
             itemBuilder: (context, index) {
               final doc = myTrips[index];
-              final data = doc.data() as Map<String, dynamic>;
+              final data = doc.data();
               final status = data['status'] ?? 'pending';
 
               return GestureDetector(
@@ -514,10 +529,10 @@ class StudentTripsTab extends StatelessWidget {
                         width: 48,
                         height: 48,
                         decoration: BoxDecoration(
-                          color: AppTheme.primaryColor.withValues(alpha: 0.1),
+                          color: AppTheme.effectivePrimary.withValues(alpha: 0.1),
                           borderRadius: BorderRadius.circular(12),
                         ),
-                        child: const Icon(Icons.directions_bus_rounded, color: AppTheme.primaryColor, size: 24),
+                        child: Icon(Icons.directions_bus_rounded, color: AppTheme.effectivePrimary, size: 24),
                       ),
                       const SizedBox(width: 14),
                       Expanded(
@@ -569,8 +584,8 @@ class _StatusChip extends StatelessWidget {
         label = 'Active';
         break;
       default:
-        bg = AppTheme.primaryColor.withValues(alpha: 0.1);
-        fg = AppTheme.primaryColor;
+        bg = AppTheme.effectivePrimary.withValues(alpha: 0.1);
+        fg = AppTheme.effectivePrimary;
         label = 'Upcoming';
     }
 
@@ -623,11 +638,11 @@ class _StudentTripDetailsState extends State<StudentTripDetails>
       } else if (resStr.contains('wifi')) {
         netStatus = "WiFi Active";
       }
-      FirebaseFirestore.instance.collection('users').doc(widget.myUid).update({
+      FirebaseFirestore.instance.collection('locations').doc(widget.myUid).set({
         'battery': batteryLevel,
         'lastActivity': netStatus,
         'lastUpdate': FieldValue.serverTimestamp(),
-      });
+      }, SetOptions(merge: true));
     });
   }
 
@@ -652,44 +667,52 @@ class _StudentTripDetailsState extends State<StudentTripDetails>
     } catch (e) {
       debugPrint("Initial location error: $e");
     }
-    // Tight distance filter so small movements (walking) actually emit.
     _positionStream = Geolocator.getPositionStream(
       locationSettings: const LocationSettings(
         accuracy: LocationAccuracy.high,
-        distanceFilter: 3,
+        distanceFilter: 0,
       ),
-    ).listen((Position pos) {
-      _lastKnownPos = pos;
-      _sendDataToDatabase(pos);
-    });
-    // Heartbeat: re-publish the last known position every few seconds so the
-    // server sees us as "alive" even when standing still or when the OS
-    // throttles getPositionStream. This is what makes the marker continue to
-    // update visibly on other devices.
-    _heartbeatTimer = Timer.periodic(const Duration(seconds: 5), (_) {
-      final pos = _lastKnownPos;
+    ).listen(
+      (Position pos) {
+        _lastKnownPos = pos;
+        _sendDataToDatabase(pos);
+      },
+      onError: (e) => debugPrint("GPS stream error (student trip): $e"),
+      cancelOnError: false,
+    );
+    _heartbeatTimer = Timer.periodic(const Duration(seconds: 30), (_) async {
+      Position? pos = _lastKnownPos;
+      if (pos == null) {
+        try { pos = await Geolocator.getLastKnownPosition(); } catch (_) {}
+      }
       if (pos != null) _sendDataToDatabase(pos);
     });
   }
 
   Future<void> _sendDataToDatabase(Position pos) async {
-    int batteryLevel = await _battery.batteryLevel;
-    var connectivityResult = await Connectivity().checkConnectivity();
+    int batteryLevel = 0;
+    try { batteryLevel = await _battery.batteryLevel; } catch (_) {}
     String netStatus = "Offline";
-    String resStr = connectivityResult.toString().toLowerCase();
-    if (resStr.contains('mobile') || resStr.contains('cellular')) {
-      netStatus = "Mobile Data";
-    } else if (resStr.contains('wifi')) {
-      netStatus = "WiFi Active";
+    try {
+      var connectivityResult = await Connectivity().checkConnectivity();
+      String resStr = connectivityResult.toString().toLowerCase();
+      if (resStr.contains('mobile') || resStr.contains('cellular')) {
+        netStatus = "Mobile Data";
+      } else if (resStr.contains('wifi')) {
+        netStatus = "WiFi Active";
+      }
+    } catch (_) {}
+    try {
+      await FirebaseFirestore.instance.collection('locations').doc(widget.myUid).set({
+        'lat': pos.latitude,
+        'lng': pos.longitude,
+        'battery': batteryLevel,
+        'lastActivity': netStatus,
+        'lastUpdate': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+    } catch (e) {
+      debugPrint("Firestore write error (student trip): $e");
     }
-    FirebaseFirestore.instance.collection('users').doc(widget.myUid).update({
-      'lat': pos.latitude,
-      'lng': pos.longitude,
-      'battery': batteryLevel,
-      'lastActivity': netStatus,
-      'lastUpdate': FieldValue.serverTimestamp(),
-    });
-
   }
 
 
@@ -736,16 +759,16 @@ class _StudentTripDetailsState extends State<StudentTripDetails>
                 child: Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    const Text("People on the bus",
+                    Text("People on the bus",
                         style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: AppTheme.secondaryColor)),
                     Container(
                       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                       decoration: BoxDecoration(
-                        color: AppTheme.primaryColor.withValues(alpha: 0.1),
+                        color: AppTheme.effectivePrimary.withValues(alpha: 0.1),
                         borderRadius: BorderRadius.circular(20),
                       ),
                       child: Text("${people.length} tracked",
-                          style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: AppTheme.primaryColor)),
+                          style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: AppTheme.effectivePrimary)),
                     ),
                   ],
                 ),
@@ -763,7 +786,7 @@ class _StudentTripDetailsState extends State<StudentTripDetails>
                     final bool isTeacher = person['role'] == 'teacher';
                     final Color avatarColor = isMe
                         ? Colors.green
-                        : (isTeacher ? Colors.red : AppTheme.primaryColor);
+                        : (isTeacher ? Colors.red : AppTheme.effectivePrimary);
                     return Padding(
                       padding: const EdgeInsets.symmetric(vertical: 10),
                       child: Row(
@@ -822,7 +845,7 @@ class _StudentTripDetailsState extends State<StudentTripDetails>
       stream: FirebaseFirestore.instance.collection('trips').doc(widget.tripId).snapshots(),
       builder: (context, tripSnap) {
         if (!tripSnap.hasData) {
-          return const Scaffold(body: Center(child: CircularProgressIndicator(color: AppTheme.primaryColor)));
+          return Scaffold(body: Center(child: CircularProgressIndicator(color: AppTheme.effectivePrimary)));
         }
 
         final currentTripData = tripSnap.data!.data() as Map<String, dynamic>;
@@ -833,6 +856,7 @@ class _StudentTripDetailsState extends State<StudentTripDetails>
         // Locate the student's own bus + seat number.
         Map<String, dynamic>? myBus;
         int? mySeat;
+        bool myQrScanned = false;
         for (final bus in buses) {
           final List passengers = asList(bus['passengers']);
           for (var p in passengers) {
@@ -842,20 +866,33 @@ class _StudentTripDetailsState extends State<StudentTripDetails>
               mySeat = seat is int
                   ? seat
                   : (seat is String ? int.tryParse(seat) : null);
+              final att = p['attendance'];
+              if (att is Map && att.values.any((v) => v == true)) myQrScanned = true;
               break;
             }
           }
           if (myBus != null) {
-            if (bus['mainTeacher'] != null) visibleUserIds.add(bus['mainTeacher']['id']);
-            if (bus['coTeacher'] != null) visibleUserIds.add(bus['coTeacher']['id']);
-            for (var p in passengers) { visibleUserIds.add(p['id']); }
+            // Teachers only visible after the student themselves has been scanned.
+            if (myQrScanned) {
+              if (bus['mainTeacher'] != null) visibleUserIds.add(bus['mainTeacher']['id']);
+              if (bus['coTeacher'] != null) visibleUserIds.add(bus['coTeacher']['id']);
+            }
+            // Other students only visible once THEY have been scanned.
+            for (var p in passengers) {
+              if (p is! Map) continue;
+              if (p['id'] == widget.myUid) continue; // already added above
+              final att = p['attendance'];
+              if (att is Map && att.values.any((v) => v == true)) {
+                visibleUserIds.add(p['id'].toString());
+              }
+            }
             break;
           }
         }
 
         final String busLabel = myBus?['busLabel']?.toString() ??
             myBus?['busNo']?.toString() ??
-            '—';
+            '--';
 
         return Scaffold(
           extendBodyBehindAppBar: true,
@@ -873,30 +910,50 @@ class _StudentTripDetailsState extends State<StudentTripDetails>
           ),
           body: StreamBuilder<QuerySnapshot>(
             stream: FirebaseFirestore.instance
-                .collection('users')
+                .collection('locations')
                 .where(FieldPath.documentId, whereIn: visibleUserIds)
                 .snapshots(),
             builder: (context, snapshot) {
               if (!snapshot.hasData) {
-                return const Center(child: CircularProgressIndicator(color: AppTheme.primaryColor));
+                return Center(child: CircularProgressIndicator(color: AppTheme.effectivePrimary));
+              }
+
+              // Build name/role cache from trip data — avoids streaming users.
+              final Map<String, Map<String, String>> nameCache = {};
+              for (final bus in asList(currentTripData['buses'])) {
+                if (bus is! Map) continue;
+                for (final key in ['mainTeacher', 'coTeacher']) {
+                  final t = bus[key];
+                  if (t is Map && t['id'] != null) {
+                    nameCache[t['id'].toString()] = {'name': t['name']?.toString() ?? '', 'role': 'teacher'};
+                  }
+                }
+                for (final p in asList(bus['passengers'])) {
+                  if (p is Map && p['id'] != null) {
+                    nameCache[p['id'].toString()] = {'name': p['name']?.toString() ?? '', 'role': 'student'};
+                  }
+                }
               }
 
               List<Map<String, dynamic>> peopleList = [];
               final Map<String, LatLng> targets = {};
 
               for (var doc in snapshot.data!.docs) {
-                final data = doc.data() as Map<String, dynamic>;
+                final locData = doc.data() as Map<String, dynamic>;
+                final profile = nameCache[doc.id] ?? _peopleInfo[doc.id] ?? {};
+                final data = {...profile, ...locData};
                 peopleList.add(data);
                 _peopleInfo[doc.id] = data;
-                if (data['lat'] is num && data['lng'] is num) {
-                  bool isMe = doc.id == widget.myUid;
-                  Color markerColor = isMe
+                if (locData['lat'] is num && locData['lng'] is num) {
+                  final bool isMe = doc.id == widget.myUid;
+                  final String role = profile['role'] ?? '';
+                  final Color markerColor = isMe
                       ? Colors.green
-                      : (data['role'] == 'teacher' ? Colors.red : AppTheme.primaryColor);
-                  _loadMarker(doc.id, data['name'], markerColor);
+                      : (role == 'teacher' ? Colors.red : AppTheme.effectivePrimary);
+                  _loadMarker(doc.id, profile['name'] ?? '', markerColor);
                   targets[doc.id] = LatLng(
-                    (data['lat'] as num).toDouble(),
-                    (data['lng'] as num).toDouble(),
+                    (locData['lat'] as num).toDouble(),
+                    (locData['lng'] as num).toDouble(),
                   );
                 }
               }
@@ -919,8 +976,8 @@ class _StudentTripDetailsState extends State<StudentTripDetails>
                     circleId: const CircleId("geofence"),
                     center: LatLng(stop['lat'], stop['lng']),
                     radius: (stop['geofenceRadius'] as num).toDouble(),
-                    fillColor: AppTheme.primaryColor.withValues(alpha: 0.15),
-                    strokeColor: AppTheme.primaryColor,
+                    fillColor: AppTheme.effectivePrimary.withValues(alpha: 0.15),
+                    strokeColor: AppTheme.effectivePrimary,
                     strokeWidth: 2,
                   ));
                 }
@@ -939,7 +996,10 @@ class _StudentTripDetailsState extends State<StudentTripDetails>
                       for (final entry in _peopleInfo.entries) {
                         final uid = entry.key;
                         final data = entry.value;
-                        final pos = _tracker.current(uid);
+                        // Own marker: use local GPS directly — no Firestore round-trip, zero lag.
+                        final LatLng? pos = (uid == widget.myUid && _lastKnownPos != null)
+                            ? LatLng(_lastKnownPos!.latitude, _lastKnownPos!.longitude)
+                            : _tracker.current(uid);
                         if (pos == null) continue;
                         final bool isMe = uid == widget.myUid;
                         markers.add(Marker(
@@ -998,20 +1058,20 @@ class _StudentTripDetailsState extends State<StudentTripDetails>
                               child: Container(
                                 padding: const EdgeInsets.all(12),
                                 decoration: BoxDecoration(
-                                  color: AppTheme.primaryColor.withValues(alpha: 0.08),
+                                  color: AppTheme.effectivePrimary.withValues(alpha: 0.08),
                                   borderRadius: BorderRadius.circular(12),
-                                  border: Border.all(color: AppTheme.primaryColor.withValues(alpha: 0.2)),
+                                  border: Border.all(color: AppTheme.effectivePrimary.withValues(alpha: 0.2)),
                                 ),
                                 child: Row(
                                   children: [
-                                    const Icon(Icons.place, color: AppTheme.primaryColor, size: 24),
+                                    Icon(Icons.place, color: AppTheme.effectivePrimary, size: 24),
                                     const SizedBox(width: 12),
                                     Expanded(
                                       child: Column(
                                         crossAxisAlignment: CrossAxisAlignment.start,
                                         children: [
-                                          const Text("Current Destination",
-                                              style: TextStyle(fontSize: 11, color: AppTheme.primaryColor, fontWeight: FontWeight.w600)),
+                                          Text("Current Destination",
+                                              style: TextStyle(fontSize: 11, color: AppTheme.effectivePrimary, fontWeight: FontWeight.w600)),
                                           Text(activeStopName,
                                               style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: AppTheme.secondaryColor)),
                                         ],
@@ -1052,11 +1112,11 @@ class _StudentTripDetailsState extends State<StudentTripDetails>
                               child: SizedBox(
                                 width: double.infinity,
                                 child: OutlinedButton.icon(
-                                  icon: const Icon(Icons.people_alt_outlined, size: 18),
+                                  icon: Icon(Icons.people_alt_outlined, size: 18),
                                   label: Text("People (${peopleList.length})"),
                                   style: OutlinedButton.styleFrom(
-                                    foregroundColor: AppTheme.primaryColor,
-                                    side: BorderSide(color: AppTheme.primaryColor.withValues(alpha: 0.4)),
+                                    foregroundColor: AppTheme.effectivePrimary,
+                                    side: BorderSide(color: AppTheme.effectivePrimary.withValues(alpha: 0.4)),
                                     padding: const EdgeInsets.symmetric(vertical: 12),
                                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                                   ),
@@ -1077,12 +1137,12 @@ class _StudentTripDetailsState extends State<StudentTripDetails>
                                     Container(
                                       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
                                       decoration: BoxDecoration(
-                                        color: AppTheme.primaryColor.withValues(alpha: 0.1),
+                                        color: AppTheme.effectivePrimary.withValues(alpha: 0.1),
                                         borderRadius: BorderRadius.circular(10),
                                       ),
                                       child: Text(
                                         "Total ${currentTripData['totalDuration']}",
-                                        style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: AppTheme.primaryColor),
+                                        style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: AppTheme.effectivePrimary),
                                       ),
                                     ),
                                 ],
@@ -1102,7 +1162,7 @@ class _StudentTripDetailsState extends State<StudentTripDetails>
                                       width: 32, height: 32,
                                       decoration: BoxDecoration(
                                         color: isActive
-                                            ? AppTheme.primaryColor
+                                            ? AppTheme.effectivePrimary
                                             : (isOrigin || isReturn ? Colors.green.shade100 : Colors.grey.shade100),
                                         shape: BoxShape.circle,
                                       ),
@@ -1125,7 +1185,7 @@ class _StudentTripDetailsState extends State<StudentTripDetails>
                                             stop['name']?.toString() ?? 'Stop ${i + 1}',
                                             style: TextStyle(
                                               fontWeight: isActive ? FontWeight.bold : FontWeight.w600,
-                                              color: isActive ? AppTheme.primaryColor : AppTheme.secondaryColor,
+                                              color: isActive ? AppTheme.effectivePrimary : AppTheme.secondaryColor,
                                             ),
                                           ),
                                           Row(
@@ -1137,15 +1197,15 @@ class _StudentTripDetailsState extends State<StudentTripDetails>
                                                 Container(
                                                   padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
                                                   decoration: BoxDecoration(
-                                                    color: AppTheme.primaryColor.withValues(alpha: 0.1),
+                                                    color: AppTheme.effectivePrimary.withValues(alpha: 0.1),
                                                     borderRadius: BorderRadius.circular(6),
                                                   ),
                                                   child: Text(
                                                     "ETA ${stop['etaFromPrev']}",
-                                                    style: const TextStyle(
+                                                    style: TextStyle(
                                                       fontSize: 10,
                                                       fontWeight: FontWeight.w600,
-                                                      color: AppTheme.primaryColor,
+                                                      color: AppTheme.effectivePrimary,
                                                     ),
                                                   ),
                                                 ),
@@ -1159,11 +1219,11 @@ class _StudentTripDetailsState extends State<StudentTripDetails>
                                       Container(
                                         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                                         decoration: BoxDecoration(
-                                          color: AppTheme.primaryColor.withValues(alpha: 0.1),
+                                          color: AppTheme.effectivePrimary.withValues(alpha: 0.1),
                                           borderRadius: BorderRadius.circular(10),
                                         ),
-                                        child: const Text("Current",
-                                            style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: AppTheme.primaryColor)),
+                                        child: Text("Current",
+                                            style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: AppTheme.effectivePrimary)),
                                       ),
                                   ],
                                 ),
@@ -1185,7 +1245,7 @@ class _StudentTripDetailsState extends State<StudentTripDetails>
   }
 }
 
-// ── Static identity QR ─────────────────────────────────────────────────────
+// â"€â"€ Static identity QR â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 String _computeStudentCode(String name, String lrn) {
   final initials = name
       .trim()
@@ -1210,7 +1270,7 @@ class StudentQRTab extends StatelessWidget {
         backgroundColor: Colors.white,
         elevation: 0,
         titleSpacing: 24,
-        title: const Text(
+        title: Text(
           "My QR Code",
           style: TextStyle(fontWeight: FontWeight.bold, fontSize: 22, color: AppTheme.secondaryColor),
         ),
@@ -1219,7 +1279,7 @@ class StudentQRTab extends StatelessWidget {
         future: FirebaseFirestore.instance.collection('users').doc(myUid).get(),
         builder: (context, snap) {
           if (!snap.hasData) {
-            return const Center(child: CircularProgressIndicator(color: AppTheme.primaryColor));
+            return Center(child: CircularProgressIndicator(color: AppTheme.effectivePrimary));
           }
           final data = snap.data!.data() as Map<String, dynamic>? ?? {};
           final String name = (data['name'] ?? '').toString();
@@ -1248,7 +1308,7 @@ class StudentQRTab extends StatelessWidget {
                   ),
                   const SizedBox(height: 4),
                   Text(
-                    "LRN: ${lrn.isEmpty ? '—' : lrn}",
+                    "LRN: ${lrn.isEmpty ? '--' : lrn}",
                     style: TextStyle(fontSize: 13, color: Colors.grey.shade500),
                   ),
                   const SizedBox(height: 28),
@@ -1265,7 +1325,7 @@ class StudentQRTab extends StatelessWidget {
                           padding: const EdgeInsets.all(12),
                           decoration: BoxDecoration(
                             color: Colors.white,
-                            border: Border.all(color: AppTheme.primaryColor.withValues(alpha: 0.2), width: 2),
+                            border: Border.all(color: AppTheme.effectivePrimary.withValues(alpha: 0.2), width: 2),
                             borderRadius: BorderRadius.circular(16),
                           ),
                           child: QrImageView(
@@ -1281,15 +1341,15 @@ class StudentQRTab extends StatelessWidget {
                         Container(
                           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                           decoration: BoxDecoration(
-                            color: AppTheme.primaryColor.withValues(alpha: 0.08),
+                            color: AppTheme.effectivePrimary.withValues(alpha: 0.08),
                             borderRadius: BorderRadius.circular(12),
                           ),
                           child: Text(
                             "Code: $code",
-                            style: const TextStyle(
+                            style: TextStyle(
                               fontSize: 20,
                               fontWeight: FontWeight.bold,
-                              color: AppTheme.primaryColor,
+                              color: AppTheme.effectivePrimary,
                               letterSpacing: 1.5,
                             ),
                           ),
@@ -1375,17 +1435,17 @@ class _EmergencyButtonDialogState extends State<EmergencyButtonDialog> {
     try {
       final userDoc = await FirebaseFirestore.instance.collection('users').doc(myUid).get();
       final userData = userDoc.data() as Map<String, dynamic>;
+      final locDoc = await FirebaseFirestore.instance.collection('locations').doc(myUid).get();
 
-      final tripsSnapshot = await FirebaseFirestore.instance
-          .collection('trips')
-          .where('status', isEqualTo: 'in_progress')
-          .get();
+      final tripsSnapshot = await TripQueries.mineOnce();
+      if (tripsSnapshot == null) return;
 
       String? teacherId;
       String? tripId;
 
       for (var doc in tripsSnapshot.docs) {
         final data = doc.data();
+        if (data['status'] != 'in_progress') continue;
         final buses = asList(data['buses']);
         for (var bus in buses) {
           final List passengers = asList(bus['passengers']);
@@ -1415,8 +1475,8 @@ class _EmergencyButtonDialogState extends State<EmergencyButtonDialog> {
         'studentName': userData['name'],
         'teacherId': teacherId,
         'tripId': tripId,
-        'lat': userData['lat'],
-        'lng': userData['lng'],
+        'lat': locDoc.data()?['lat'],
+        'lng': locDoc.data()?['lng'],
         'status': 'pending',
         'timestamp': FieldValue.serverTimestamp(),
       });
@@ -1567,7 +1627,7 @@ class StudentProfileTab extends StatelessWidget {
         future: FirebaseFirestore.instance.collection('users').doc(uid).get(),
         builder: (context, snapshot) {
           if (!snapshot.hasData) {
-            return const Center(child: CircularProgressIndicator(color: AppTheme.primaryColor));
+            return Center(child: CircularProgressIndicator(color: AppTheme.effectivePrimary));
           }
 
           final data = snapshot.data!.data() as Map<String, dynamic>;
@@ -1580,27 +1640,27 @@ class StudentProfileTab extends StatelessWidget {
               children: [
                 CircleAvatar(
                   radius: 44,
-                  backgroundColor: AppTheme.primaryColor.withValues(alpha: 0.12),
+                  backgroundColor: AppTheme.effectivePrimary.withValues(alpha: 0.12),
                   child: Text(
                     name.isNotEmpty ? name[0].toUpperCase() : '?',
-                    style: const TextStyle(fontSize: 36, fontWeight: FontWeight.bold, color: AppTheme.primaryColor),
+                    style: TextStyle(fontSize: 36, fontWeight: FontWeight.bold, color: AppTheme.effectivePrimary),
                   ),
                 ),
                 const SizedBox(height: 14),
                 Text(
                   name,
-                  style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: AppTheme.secondaryColor),
+                  style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: AppTheme.secondaryColor),
                 ),
                 const SizedBox(height: 4),
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
                   decoration: BoxDecoration(
-                    color: AppTheme.primaryColor.withValues(alpha: 0.1),
+                    color: AppTheme.effectivePrimary.withValues(alpha: 0.1),
                     borderRadius: BorderRadius.circular(20),
                   ),
-                  child: const Text(
+                  child: Text(
                     "Student",
-                    style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppTheme.primaryColor),
+                    style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppTheme.effectivePrimary),
                   ),
                 ),
 
@@ -1627,10 +1687,10 @@ class StudentProfileTab extends StatelessWidget {
                         builder: (_) => const SettingsView(allowEmergencySoundUpload: false),
                       ),
                     ),
-                    icon: const Icon(Icons.settings_outlined),
-                    label: const Text("Settings"),
+                    icon: Icon(Icons.settings_outlined),
+                    label: Text("Settings"),
                     style: ElevatedButton.styleFrom(
-                      backgroundColor: AppTheme.primaryColor,
+                      backgroundColor: AppTheme.effectivePrimary,
                       foregroundColor: Colors.white,
                       padding: const EdgeInsets.symmetric(vertical: 14),
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
@@ -1671,10 +1731,10 @@ class _StudentInfoTile extends StatelessWidget {
           Container(
             width: 36, height: 36,
             decoration: BoxDecoration(
-              color: AppTheme.primaryColor.withValues(alpha: 0.1),
+              color: AppTheme.effectivePrimary.withValues(alpha: 0.1),
               borderRadius: BorderRadius.circular(10),
             ),
-            child: Icon(icon, size: 18, color: AppTheme.primaryColor),
+            child: Icon(icon, size: 18, color: AppTheme.effectivePrimary),
           ),
           const SizedBox(width: 10),
           Expanded(
@@ -1724,10 +1784,10 @@ class _ProfileInfoCard extends StatelessWidget {
             width: 40,
             height: 40,
             decoration: BoxDecoration(
-              color: AppTheme.primaryColor.withValues(alpha: 0.1),
+              color: AppTheme.effectivePrimary.withValues(alpha: 0.1),
               borderRadius: BorderRadius.circular(10),
             ),
-            child: Icon(icon, size: 20, color: AppTheme.primaryColor),
+            child: Icon(icon, size: 20, color: AppTheme.effectivePrimary),
           ),
           const SizedBox(width: 14),
           Column(

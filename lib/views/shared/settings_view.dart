@@ -1,5 +1,5 @@
 import 'dart:io';
-// ignore: unnecessary_import — kIsWeb isn't actually re-exported by material.
+// ignore: unnecessary_import -- kIsWeb isn't actually re-exported by material.
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -8,6 +8,7 @@ import 'package:firebase_storage/firebase_storage.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:file_picker/file_picker.dart';
 import '../../config/theme.dart';
+import 'subscription_section.dart';
 
 /// Shared Settings screen used by teacher / student / parent.
 /// Set [allowEmergencySoundUpload] to false to hide that section (parent / student).
@@ -54,21 +55,20 @@ class _SettingsViewState extends State<SettingsView> {
     if (file == null) return;
 
     final uid = _auth.currentUser!.uid;
-    // Path includes an extension only for clarity; the actual content-type is
-    // sent below via SettableMetadata.
-    final ref = _storage.ref().child('profile_photos/$uid.jpg');
+    final ref = _storage.ref('profile_photos/$uid.jpg');
     try {
       _showSnack("Uploading photo…", Colors.blue);
 
-      // Read bytes — this works on every platform (web included).
-      // `putFile(File(path))` does NOT work on Flutter Web because XFile.path
-      // is a blob URL, and that's what produced the "object-not-found" error.
       final bytes = await file.readAsBytes();
-      final metadata = SettableMetadata(
-        contentType: file.mimeType ?? 'image/jpeg',
+      if (bytes.isEmpty) {
+        _showSnack("Could not read image data.", Colors.red);
+        return;
+      }
+      // Explicit content-type so Storage never rejects with type mismatch.
+      final task = await ref.putData(
+        bytes,
+        SettableMetadata(contentType: 'image/jpeg'),
       );
-      final task = await ref.putData(bytes, metadata);
-      // Grab the URL from the snapshot's own ref to avoid any race.
       final url = await task.ref.getDownloadURL();
 
       await _firestore.collection('users').doc(uid).update({'photoUrl': url});
@@ -278,8 +278,8 @@ class _SettingsViewState extends State<SettingsView> {
   @override
   Widget build(BuildContext context) {
     if (_loading) {
-      return const Scaffold(
-        body: Center(child: CircularProgressIndicator(color: AppTheme.primaryColor)),
+      return Scaffold(
+        body: Center(child: CircularProgressIndicator(color: AppTheme.effectivePrimary)),
       );
     }
     final String name = _userData['name'] ?? '';
@@ -287,31 +287,33 @@ class _SettingsViewState extends State<SettingsView> {
     final String? photoUrl = _userData['photoUrl'];
     final String role = (_userData['role'] ?? '').toString();
     final String? customSoundName = _userData['emergencySoundName'];
+    final Color currentThemeColor = AppTheme.effectivePrimary;
 
     return Scaffold(
       backgroundColor: const Color(0xFFF7F8FA),
       appBar: AppBar(
         backgroundColor: Colors.white,
         elevation: 0,
+        // Settings is reached from a dashboard tab, not pushed as a route, so
+        // there is nothing to go back to.
+        automaticallyImplyLeading: false,
+        titleSpacing: 20,
         title: const Text("Settings",
             style: TextStyle(
                 fontWeight: FontWeight.bold,
                 fontSize: 18,
                 color: AppTheme.secondaryColor)),
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back_ios_new_rounded,
-              size: 20, color: AppTheme.secondaryColor),
-          onPressed: () => Navigator.pop(context),
-        ),
       ),
       body: SingleChildScrollView(
         padding: const EdgeInsets.fromLTRB(20, 20, 20, 40),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            _section("Personal Information"),
-            const SizedBox(height: 12),
-            _card(
+            _collapsible(
+              icon: Icons.badge_outlined,
+              label: "Personal Information",
+              subtitle: name,
+              initiallyExpanded: true,
               child: Column(
                 children: [
                   Row(
@@ -323,17 +325,17 @@ class _SettingsViewState extends State<SettingsView> {
                             CircleAvatar(
                               radius: 36,
                               backgroundColor:
-                                  AppTheme.primaryColor.withValues(alpha: 0.12),
+                                  AppTheme.effectivePrimary.withValues(alpha: 0.12),
                               backgroundImage: (photoUrl != null && photoUrl.isNotEmpty)
                                   ? NetworkImage(photoUrl)
                                   : null,
                               child: (photoUrl == null || photoUrl.isEmpty)
                                   ? Text(
                                       name.isNotEmpty ? name[0].toUpperCase() : '?',
-                                      style: const TextStyle(
+                                      style: TextStyle(
                                           fontSize: 26,
                                           fontWeight: FontWeight.bold,
-                                          color: AppTheme.primaryColor),
+                                          color: AppTheme.effectivePrimary),
                                     )
                                   : null,
                             ),
@@ -343,7 +345,7 @@ class _SettingsViewState extends State<SettingsView> {
                               child: Container(
                                 padding: const EdgeInsets.all(6),
                                 decoration: BoxDecoration(
-                                  color: AppTheme.primaryColor,
+                                  color: AppTheme.effectivePrimary,
                                   shape: BoxShape.circle,
                                   border: Border.all(color: Colors.white, width: 2),
                                 ),
@@ -397,10 +399,10 @@ class _SettingsViewState extends State<SettingsView> {
                 ],
               ),
             ),
-            const SizedBox(height: 22),
-            _section("Account & Security"),
-            const SizedBox(height: 12),
-            _card(
+            _collapsible(
+              icon: Icons.shield_outlined,
+              label: "Account & Security",
+              subtitle: email,
               child: Column(
                 children: [
                   _tile(
@@ -419,11 +421,11 @@ class _SettingsViewState extends State<SettingsView> {
                 ],
               ),
             ),
-            if (widget.allowEmergencySoundUpload) ...[
-              const SizedBox(height: 22),
-              _section("Emergency Sound"),
-              const SizedBox(height: 12),
-              _card(
+            if (widget.allowEmergencySoundUpload)
+              _collapsible(
+                icon: Icons.notifications_active_outlined,
+                label: "Emergency Sound",
+                subtitle: customSoundName ?? "Default",
                 child: Column(
                   children: [
                     _tile(
@@ -442,35 +444,115 @@ class _SettingsViewState extends State<SettingsView> {
                         onTap: _resetEmergencySoundToDefault,
                       ),
                     ],
+                    const SizedBox(height: 8),
+                    Text(
+                      "Upload an MP3 or WAV to play instead of the default alarm.",
+                      style: TextStyle(color: Colors.grey.shade500, fontSize: 12),
+                    ),
                   ],
                 ),
               ),
-              const SizedBox(height: 8),
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 8),
-                child: Text(
-                  "Upload an MP3 or WAV to play instead of the default alarm.",
-                  style: TextStyle(color: Colors.grey.shade500, fontSize: 12),
-                ),
+            // Only a school admin has a plan to manage.
+            if (role == 'admin')
+              _collapsible(
+                icon: Icons.workspace_premium_outlined,
+                label: "Subscription",
+                subtitle: "Plan, capacity and upgrades",
+                child: const SubscriptionSection(),
               ),
-            ],
+            _collapsible(
+              icon: Icons.palette_outlined,
+              label: "App Theme Color",
+              subtitle:
+                  '#${currentThemeColor.toARGB32().toRadixString(16).substring(2).toUpperCase()}',
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Container(
+                        width: 44,
+                        height: 44,
+                        decoration: BoxDecoration(
+                          color: currentThemeColor,
+                          borderRadius: BorderRadius.circular(12),
+                          boxShadow: [BoxShadow(color: currentThemeColor.withValues(alpha: 0.4), blurRadius: 8, offset: const Offset(0, 3))],
+                        ),
+                      ),
+                      const SizedBox(width: 14),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text("Current color",
+                                style: TextStyle(fontSize: 12, color: Colors.grey, fontWeight: FontWeight.w500)),
+                            const SizedBox(height: 2),
+                            Text(
+                              '#${currentThemeColor.toARGB32().toRadixString(16).substring(2).toUpperCase()}',
+                              style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: currentThemeColor),
+                            ),
+                          ],
+                        ),
+                      ),
+                      TextButton.icon(
+                        onPressed: () => _showColorPicker(context),
+                        icon: Icon(Icons.palette_rounded, size: 16, color: currentThemeColor),
+                        label: Text("Change", style: TextStyle(color: currentThemeColor, fontWeight: FontWeight.w600)),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  Divider(color: Colors.grey.shade100),
+                  const SizedBox(height: 8),
+                  Text("Tap a color to preview (light colors are auto-darkened)",
+                      style: TextStyle(fontSize: 11, color: Colors.grey.shade400)),
+                  const SizedBox(height: 10),
+                  _ColorSwatchRow(
+                    current: currentThemeColor,
+                    onPick: (c) => _applyThemeColor(c),
+                  ),
+                ],
+              ),
+            ),
           ],
         ),
       ),
     );
   }
 
-  Widget _section(String label) {
-    return Text(label,
-        style: const TextStyle(
-            fontSize: 13,
-            fontWeight: FontWeight.w600,
-            color: AppTheme.secondaryColor,
-            letterSpacing: 0.3));
+  Future<void> _showColorPicker(BuildContext context) async {
+    final picked = await showDialog<Color>(
+      context: context,
+      builder: (ctx) => _ColorPickerDialog(current: AppTheme.effectivePrimary),
+    );
+    if (picked != null) _applyThemeColor(picked);
   }
 
-  Widget _card({required Widget child}) {
+  Future<void> _applyThemeColor(Color color) async {
+    AppTheme.setPrimaryColor(color);
+    final saved = AppTheme.effectivePrimary.toARGB32();
+    final uid = _auth.currentUser?.uid;
+    if (uid != null) {
+      await _firestore.collection('users').doc(uid).update({'themeColor': saved});
+    }
+    if (!mounted) return;
+    setState(() => _userData['themeColor'] = saved);
+  }
+
+  /// A settings group that folds away.
+  ///
+  /// The page grew past what fits on one screen once Subscription was added, so
+  /// each group collapses and shows a one-line summary in its header — the value
+  /// you usually came to check is visible without opening anything.
+  Widget _collapsible({
+    required IconData icon,
+    required String label,
+    String? subtitle,
+    bool initiallyExpanded = false,
+    required Widget child,
+  }) {
     return Container(
+      margin: const EdgeInsets.only(bottom: 14),
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(14),
@@ -481,8 +563,40 @@ class _SettingsViewState extends State<SettingsView> {
               offset: const Offset(0, 4))
         ],
       ),
-      padding: const EdgeInsets.all(14),
-      child: child,
+      clipBehavior: Clip.antiAlias,
+      child: Theme(
+        data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+        child: ExpansionTile(
+          initiallyExpanded: initiallyExpanded,
+          tilePadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
+          childrenPadding: const EdgeInsets.fromLTRB(14, 0, 14, 14),
+          leading: Container(
+            width: 38,
+            height: 38,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: AppTheme.effectivePrimary.withValues(alpha: 0.1),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Icon(icon, size: 19, color: AppTheme.effectivePrimary),
+          ),
+          title: Text(label,
+              style: const TextStyle(
+                  fontSize: 14.5,
+                  fontWeight: FontWeight.w600,
+                  color: AppTheme.secondaryColor)),
+          subtitle: (subtitle == null || subtitle.isEmpty)
+              ? null
+              : Padding(
+                  padding: const EdgeInsets.only(top: 2),
+                  child: Text(subtitle,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(fontSize: 11.5, color: Colors.grey.shade500)),
+                ),
+          children: [child],
+        ),
+      ),
     );
   }
 
@@ -504,10 +618,10 @@ class _SettingsViewState extends State<SettingsView> {
               width: 36,
               height: 36,
               decoration: BoxDecoration(
-                color: AppTheme.primaryColor.withValues(alpha: 0.1),
+                color: AppTheme.effectivePrimary.withValues(alpha: 0.1),
                 borderRadius: BorderRadius.circular(10),
               ),
-              child: Icon(icon, size: 18, color: AppTheme.primaryColor),
+              child: Icon(icon, size: 18, color: AppTheme.effectivePrimary),
             ),
             const SizedBox(width: 12),
             Expanded(
@@ -533,6 +647,193 @@ class _SettingsViewState extends State<SettingsView> {
           ],
         ),
       ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Color picker helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+const _kPresetColors = [
+  Color(0xFF00897B), // Teal
+  Color(0xFF1565C0), // Blue
+  Color(0xFF6A1B9A), // Purple
+  Color(0xFF283593), // Indigo
+  Color(0xFFC62828), // Red
+  Color(0xFFAD1457), // Pink
+  Color(0xFFE65100), // Orange
+  Color(0xFF2E7D32), // Green
+  Color(0xFF00838F), // Cyan
+  Color(0xFF4E342E), // Brown
+  Color(0xFF37474F), // Blue-grey
+  Color(0xFF558B2F), // Lime
+  Color(0xFF4527A0), // Deep Purple
+  Color(0xFFFF6F00), // Amber
+  Color(0xFFBF360C), // Deep Orange
+  Color(0xFF006064), // Dark Teal
+];
+
+class _ColorSwatchRow extends StatelessWidget {
+  final Color current;
+  final ValueChanged<Color> onPick;
+  const _ColorSwatchRow({required this.current, required this.onPick});
+
+  @override
+  Widget build(BuildContext context) {
+    return Wrap(
+      spacing: 10,
+      runSpacing: 10,
+      children: _kPresetColors.map((color) {
+        final isSelected = current.toARGB32() == color.toARGB32();
+        return GestureDetector(
+          onTap: () => onPick(color),
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 200),
+            width: 36,
+            height: 36,
+            decoration: BoxDecoration(
+              color: color,
+              shape: BoxShape.circle,
+              border: Border.all(
+                color: isSelected ? Colors.white : Colors.transparent,
+                width: 2,
+              ),
+              boxShadow: [
+                BoxShadow(
+                  color: color.withValues(alpha: isSelected ? 0.6 : 0.3),
+                  blurRadius: isSelected ? 8 : 4,
+                  offset: const Offset(0, 2),
+                ),
+              ],
+            ),
+            child: isSelected
+                ? const Icon(Icons.check_rounded, color: Colors.white, size: 18)
+                : null,
+          ),
+        );
+      }).toList(),
+    );
+  }
+}
+
+class _ColorPickerDialog extends StatefulWidget {
+  final Color current;
+  const _ColorPickerDialog({required this.current});
+
+  @override
+  State<_ColorPickerDialog> createState() => _ColorPickerDialogState();
+}
+
+class _ColorPickerDialogState extends State<_ColorPickerDialog> {
+  late Color _selected;
+  final _hexController = TextEditingController();
+
+  @override
+  void initState() {
+    super.initState();
+    _selected = widget.current;
+    _hexController.text = _toHex(_selected);
+  }
+
+  @override
+  void dispose() {
+    _hexController.dispose();
+    super.dispose();
+  }
+
+  String _toHex(Color c) =>
+      c.toARGB32().toRadixString(16).substring(2).toUpperCase();
+
+  void _pickPreset(Color c) {
+    setState(() {
+      _selected = c;
+      _hexController.text = _toHex(c);
+    });
+  }
+
+  void _applyHex(String hex) {
+    final clean = hex.replaceAll('#', '').trim();
+    if (clean.length == 6) {
+      final val = int.tryParse('FF$clean', radix: 16);
+      if (val != null) setState(() => _selected = Color(val));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      title: const Text("Choose Theme Color",
+          style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: AppTheme.secondaryColor)),
+      content: SizedBox(
+        width: 320,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Preview
+            Center(
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 200),
+                width: 64,
+                height: 64,
+                decoration: BoxDecoration(
+                  color: _selected,
+                  shape: BoxShape.circle,
+                  boxShadow: [BoxShadow(color: _selected.withValues(alpha: 0.5), blurRadius: 16, offset: const Offset(0, 4))],
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+            // Hex input
+            TextField(
+              controller: _hexController,
+              decoration: InputDecoration(
+                labelText: "Hex color",
+                prefixText: "#",
+                hintText: "e.g. 1565C0",
+                contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+                focusedBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(10),
+                  borderSide: BorderSide(color: _selected, width: 2),
+                ),
+                suffixIcon: Container(
+                  margin: const EdgeInsets.all(6),
+                  width: 30,
+                  height: 30,
+                  decoration: BoxDecoration(color: _selected, borderRadius: BorderRadius.circular(6)),
+                ),
+              ),
+              onChanged: _applyHex,
+              maxLength: 6,
+            ),
+            const SizedBox(height: 8),
+            Text("Preset colors", style: TextStyle(fontSize: 11, color: Colors.grey.shade500, fontWeight: FontWeight.w500)),
+            const SizedBox(height: 10),
+            _ColorSwatchRow(current: _selected, onPick: _pickPreset),
+            const SizedBox(height: 8),
+            Text("Light colors are auto-darkened for readability.",
+                style: TextStyle(fontSize: 10, color: Colors.grey.shade400)),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text("Cancel", style: TextStyle(color: Colors.grey)),
+        ),
+        ElevatedButton(
+          style: ElevatedButton.styleFrom(
+            backgroundColor: _selected,
+            foregroundColor: Colors.white,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+          ),
+          onPressed: () => Navigator.pop(context, _selected),
+          child: const Text("Apply"),
+        ),
+      ],
     );
   }
 }

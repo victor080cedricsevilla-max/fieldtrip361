@@ -23,7 +23,7 @@ import '../firebase_options.dart';
 /// scenarios.
 ///
 /// What the service does on every position update:
-///   1. Publishes lat/lng to `users/{uid}` so other phones see the marker move
+///   1. Publishes lat/lng to `locations/{uid}` so other phones see the marker move
 ///      whether or not this user has the app in front.
 ///   2. Looks at the user's active trip (a trip with status == 'in_progress'
 ///      where this UID is either a teacher or a passenger).
@@ -37,8 +37,15 @@ class BackgroundLocationService {
   static const String _channelDesc =
       'Trip status, geofence warnings and chat messages';
 
+  // Separate alarm channel so Android picks up the custom sound & max importance.
+  // Using a different ID from _channelId because Android caches channel settings
+  // on first creation and won't upgrade an existing channel's importance/sound.
+  static const String _alarmChannelId = 'fieldtrip_alarm';
+  static const String _alarmChannelName = 'FieldTrip360 Student Alarms';
+  static const String _alarmChannelDesc = 'Plays alarm when a student leaves the geofence';
+
   /// Configures the service once (call from `main` after Firebase init).
-  /// Doesn't start it — call [start] after a successful login.
+  /// Doesn't start it -- call [start] after a successful login.
   static Future<void> configure() async {
     final service = FlutterBackgroundService();
 
@@ -89,6 +96,17 @@ class BackgroundLocationService {
         importance: Importance.high,
       ),
     );
+    await androidImpl?.createNotificationChannel(
+      const AndroidNotificationChannel(
+        _alarmChannelId,
+        _alarmChannelName,
+        description: _alarmChannelDesc,
+        importance: Importance.max,
+        playSound: true,
+        sound: RawResourceAndroidNotificationSound('alarm'),
+        enableVibration: true,
+      ),
+    );
     await androidImpl?.requestNotificationsPermission();
   }
 
@@ -133,7 +151,7 @@ Future<bool> _onIosBackground(ServiceInstance service) async {
 
 @pragma('vm:entry-point')
 Future<void> _onStart(ServiceInstance service) async {
-  // Run inside its own isolate — every plugin needs to be re-initialized here.
+  // Run inside its own isolate -- every plugin needs to be re-initialized here.
   DartPluginRegistrant.ensureInitialized();
 
   // Firebase needs to be initialized in this isolate too.
@@ -155,6 +173,7 @@ Future<void> _onStart(ServiceInstance service) async {
   service.on('stopService').listen((_) async {
     await _positionSub?.cancel();
     await _tripSub?.cancel();
+    await _alertSub?.cancel();
     _heartbeat?.cancel();
     if (service is AndroidServiceInstance) {
       service.setAsBackgroundService();
@@ -171,26 +190,36 @@ Future<void> _onStart(ServiceInstance service) async {
   }
 
   // Local notifications must be fully set up in this isolate independently
-  // of the main isolate. Creating the channel again here is safe — Android
+  // of the main isolate. Creating the channel again here is safe -- Android
   // only registers it once and ignores duplicate create calls.
   final notifs = FlutterLocalNotificationsPlugin();
   await notifs.initialize(const InitializationSettings(
     android: AndroidInitializationSettings('@mipmap/ic_launcher'),
     iOS: DarwinInitializationSettings(),
   ));
-  await notifs
-      .resolvePlatformSpecificImplementation<
-          AndroidFlutterLocalNotificationsPlugin>()
-      ?.createNotificationChannel(
-        const AndroidNotificationChannel(
-          BackgroundLocationService._channelId,
-          BackgroundLocationService._channelName,
-          description: BackgroundLocationService._channelDesc,
-          importance: Importance.high,
-          playSound: true,
-          enableVibration: true,
-        ),
-      );
+  final bgAndroid = notifs.resolvePlatformSpecificImplementation<
+      AndroidFlutterLocalNotificationsPlugin>();
+  await bgAndroid?.createNotificationChannel(
+    const AndroidNotificationChannel(
+      BackgroundLocationService._channelId,
+      BackgroundLocationService._channelName,
+      description: BackgroundLocationService._channelDesc,
+      importance: Importance.high,
+      playSound: true,
+      enableVibration: true,
+    ),
+  );
+  await bgAndroid?.createNotificationChannel(
+    const AndroidNotificationChannel(
+      BackgroundLocationService._alarmChannelId,
+      BackgroundLocationService._alarmChannelName,
+      description: BackgroundLocationService._alarmChannelDesc,
+      importance: Importance.max,
+      playSound: true,
+      sound: RawResourceAndroidNotificationSound('alarm'),
+      enableVibration: true,
+    ),
+  );
 
   // Listen to the user's active trip so we know which geofence to check.
   Map<String, dynamic>? activeTripData;
@@ -208,15 +237,78 @@ Future<void> _onStart(ServiceInstance service) async {
     }
   } catch (_) {}
 
+  String? monitoredTripId;
+
+  void resubscribeAlerts(String? tripId) {
+    if (tripId == monitoredTripId) return;
+    _alertSub?.cancel();
+    monitoredTripId = tripId;
+    if (tripId == null || userRole != 'teacher') return;
+
+    final Set<String> seenIds = {};
+    bool firstLoad = true;
+
+    _alertSub = FirebaseFirestore.instance
+        .collection('trips')
+        .doc(tripId)
+        .collection('alerts')
+        .where('status', isEqualTo: 'pending')
+        .snapshots()
+        .listen((alertSnap) async {
+      for (final change in alertSnap.docChanges) {
+        if (change.type != DocumentChangeType.added) continue;
+        if (seenIds.contains(change.doc.id)) continue;
+        seenIds.add(change.doc.id);
+        final d = change.doc.data()!;
+        // On first load: only notify for alerts created in the last 10 minutes
+        // so the teacher gets missed alerts but not stale ones from hours ago.
+        if (firstLoad) {
+          final ts = d['createdAt'];
+          if (ts == null) continue;
+          final created = (ts as Timestamp).toDate();
+          if (DateTime.now().difference(created).inMinutes > 10) continue;
+        }
+        final studentName = (d['studentName'] as String?) ?? 'A student';
+        await notifs.show(
+          change.doc.hashCode.remainder(100000),
+          'Student Out of Bounds',
+          '$studentName has left the designated area!',
+          const NotificationDetails(
+            android: AndroidNotificationDetails(
+              BackgroundLocationService._alarmChannelId,
+              BackgroundLocationService._alarmChannelName,
+              channelDescription: BackgroundLocationService._alarmChannelDesc,
+              importance: Importance.max,
+              priority: Priority.max,
+              playSound: true,
+              sound: RawResourceAndroidNotificationSound('alarm'),
+              enableVibration: true,
+            ),
+            iOS: DarwinNotificationDetails(
+              presentAlert: true,
+              presentSound: true,
+              sound: 'alarm.mp3',
+            ),
+          ),
+        );
+      }
+      firstLoad = false;
+    });
+  }
+
+  // Scoped to trips this user belongs to — the rules only permit membership
+  // reads, and the in_progress check happens in the loop because a second
+  // filter would require a composite index.
   _tripSub = FirebaseFirestore.instance
       .collection('trips')
-      .where('status', isEqualTo: 'in_progress')
+      .where('allMemberIds', arrayContains: uid)
       .snapshots()
       .listen((snap) {
     activeTripData = null;
     activeTripId = null;
     for (final doc in snap.docs) {
       final data = doc.data();
+      if (data['status'] != 'in_progress') continue;
       final buses = asList(data['buses']);
       bool inTrip = false;
       for (final b in buses) {
@@ -240,13 +332,21 @@ Future<void> _onStart(ServiceInstance service) async {
         break;
       }
     }
+    resubscribeAlerts(activeTripId);
   });
 
   Position? lastPos;
+  DateTime? lastWriteTime;
 
-  Future<void> publish(Position pos) async {
+  Future<void> publish(Position pos, {bool fromHeartbeat = false}) async {
     if (uid == null) return;
     lastPos = pos;
+
+    // Heartbeat: skip if GPS already wrote within the last 25 s.
+    if (fromHeartbeat && lastWriteTime != null &&
+        DateTime.now().difference(lastWriteTime!) < const Duration(seconds: 25)) {
+      return;
+    }
 
     // Students only publish location after being QR-scanned on the active trip.
     // activeTripData is null when there is no in_progress trip for this user,
@@ -273,16 +373,17 @@ Future<void> _onStart(ServiceInstance service) async {
     }
 
     try {
-      await FirebaseFirestore.instance.collection('users').doc(uid).update({
+      await FirebaseFirestore.instance.collection('locations').doc(uid).set({
         'lat': pos.latitude,
         'lng': pos.longitude,
         'lastUpdate': FieldValue.serverTimestamp(),
-      });
+      }, SetOptions(merge: true));
+      lastWriteTime = DateTime.now();
     } catch (e) {
       debugPrint('[bg] publish failed: $e');
     }
 
-    // Geofence check (students only — teachers don't need a warning when
+    // Geofence check (students only -- teachers don't need a warning when
     // they themselves step out, since they're the ones supervising).
     final trip = activeTripData;
     if (trip == null) return;
@@ -304,7 +405,7 @@ Future<void> _onStart(ServiceInstance service) async {
       centerLng,
     );
 
-    // Only students trigger geofence alerts — teachers are the supervisors.
+    // Only students trigger geofence alerts -- teachers are the supervisors.
     if (userRole != 'student') return;
 
     if (distance > radius && !wasOutOfBounds) {
@@ -339,7 +440,7 @@ Future<void> _onStart(ServiceInstance service) async {
       } catch (e) {
         debugPrint('[bg] alert write failed: $e');
       }
-      // Always show the local notification — even if an alert doc already
+      // Always show the local notification -- even if an alert doc already
       // exists the student should still be reminded on their screen.
       final notifId = DateTime.now().millisecondsSinceEpoch.remainder(100000);
       await notifs.show(
@@ -362,28 +463,29 @@ Future<void> _onStart(ServiceInstance service) async {
       );
     } else if (distance <= radius && wasOutOfBounds) {
       wasOutOfBounds = false;
-      // Optional: notify "back in zone" — keep it quiet for now.
+      // Optional: notify "back in zone" -- keep it quiet for now.
     }
   }
 
   _positionSub = Geolocator.getPositionStream(
     locationSettings: const LocationSettings(
       accuracy: LocationAccuracy.high,
-      distanceFilter: 3,
+      distanceFilter: 5,
     ),
   ).listen(publish, onError: (e) => debugPrint('[bg] pos error: $e'));
 
-  // Heartbeat so observers see updates even when standing still or when the
-  // OS coalesces getPositionStream events.
-  _heartbeat = Timer.periodic(const Duration(seconds: 5), (_) async {
+  // Heartbeat keeps presence alive when stationary. The guard inside publish()
+  // skips the write if GPS already fired in the last 25 s.
+  _heartbeat = Timer.periodic(const Duration(seconds: 30), (_) async {
     final pos = lastPos;
-    if (pos != null) await publish(pos);
+    if (pos != null) await publish(pos, fromHeartbeat: true);
   });
 }
 
 // Top-level so the cancel() calls in the `stopService` handler can reach them.
 StreamSubscription<Position>? _positionSub;
 StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _tripSub;
+StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _alertSub;
 Timer? _heartbeat;
 
 extension _ChannelExposed on BackgroundLocationService {}

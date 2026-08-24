@@ -19,7 +19,7 @@
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
 
     <application
-        android:label="fieldtrip361"
+        android:label="FieldTrip360"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
 

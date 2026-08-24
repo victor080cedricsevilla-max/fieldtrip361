@@ -1,54 +1,66 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 
-/// Global, lightweight theme-mode controller. Anyone can `listen` to
-/// [AppTheme.mode] to rebuild on theme changes. Toggle from the Settings
-/// screen via [AppTheme.setMode]. Persisted to SharedPreferences-style storage
-/// would be ideal, but for now it lives in-memory for the session.
 class _ThemeModeNotifier extends ValueNotifier<ThemeMode> {
   _ThemeModeNotifier() : super(ThemeMode.light);
 }
 
+class _ColorNotifier extends ValueNotifier<Color> {
+  _ColorNotifier() : super(const Color(0xFF00C4B4));
+}
+
 class AppTheme {
-  // --- COLORS ---
-  static const Color primaryColor = Color(0xFF00C4B4);
+  // --- STATIC COLORS (non-primary, always constant) ---
   static const Color secondaryColor = Color(0xFF2C3E50);
   static const Color accentColor = Color(0xFFFFB74D);
-
   static const Color background = Colors.white;
   static const Color errorColor = Color(0xFFEF4444);
   static const Color darkText = Color(0xFF1F2937);
-
-  // Dark-mode palette
   static const Color darkBg = Color(0xFF0F1419);
   static const Color darkSurface = Color(0xFF1A1F26);
   static const Color darkSurfaceHigh = Color(0xFF242B33);
   static const Color darkText2 = Color(0xFFE5E7EB);
 
-  /// Listenable theme mode. Wrap `MaterialApp` like:
-  /// `ValueListenableBuilder<ThemeMode>(valueListenable: AppTheme.mode, builder: ...)`.
-  static final _ThemeModeNotifier mode = _ThemeModeNotifier();
+  // --- PRIMARY COLOR ---
+  /// Compile-time default -- used everywhere `const` is required.
+  static const Color primaryColor = Color(0xFF00C4B4);
 
+  /// Runtime dynamic color -- the theme and all non-const widgets use this.
+  static final _ColorNotifier primaryColorNotifier = _ColorNotifier();
+
+  /// The effective primary color at runtime (may differ from the const default).
+  static Color get effectivePrimary => primaryColorNotifier.value;
+
+  /// Update the dynamic theme color.
+  /// Auto-darkens if lightness > 0.65 so white text stays readable.
+  static void setPrimaryColor(Color color) {
+    final hsl = HSLColor.fromColor(color);
+    primaryColorNotifier.value =
+        hsl.lightness > 0.65 ? hsl.withLightness(0.38).toColor() : color;
+  }
+
+  /// Listenable theme mode.
+  static final _ThemeModeNotifier mode = _ThemeModeNotifier();
   static void setMode(ThemeMode m) => mode.value = m;
   static void toggleMode() {
     mode.value = mode.value == ThemeMode.dark ? ThemeMode.light : ThemeMode.dark;
   }
 
-  static ThemeData get lightTheme {
+  static ThemeData get lightTheme => lightThemeWithColor(effectivePrimary);
+
+  static ThemeData lightThemeWithColor(Color primary) {
     return ThemeData(
       useMaterial3: true,
       scaffoldBackgroundColor: background,
-      primaryColor: primaryColor,
+      primaryColor: primary,
 
-      // --- TEXT THEME ---
       textTheme: GoogleFonts.poppinsTextTheme().apply(
         bodyColor: darkText,
         displayColor: secondaryColor,
       ),
 
-      // --- COLOR SCHEME ---
-      colorScheme: const ColorScheme.light(
-        primary: primaryColor,
+      colorScheme: ColorScheme.light(
+        primary: primary,
         secondary: secondaryColor,
         error: errorColor,
         surface: background,
@@ -56,7 +68,6 @@ class AppTheme {
         onPrimary: Colors.white,
       ),
 
-      // --- APP BAR THEME ---
       appBarTheme: AppBarTheme(
         backgroundColor: Colors.white,
         elevation: 0,
@@ -69,14 +80,12 @@ class AppTheme {
         ),
       ),
 
-      // --- INPUT DECORATION ---
       inputDecorationTheme: InputDecorationTheme(
         filled: true,
         fillColor: Colors.grey[50],
         contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
         labelStyle: TextStyle(color: Colors.grey[600]),
         hintStyle: TextStyle(color: Colors.grey[400]),
-        
         border: OutlineInputBorder(
           borderRadius: BorderRadius.circular(12),
           borderSide: BorderSide(color: Colors.grey[300]!),
@@ -87,7 +96,7 @@ class AppTheme {
         ),
         focusedBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(12),
-          borderSide: const BorderSide(color: primaryColor, width: 2),
+          borderSide: BorderSide(color: primary, width: 2),
         ),
         errorBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(12),
@@ -95,10 +104,9 @@ class AppTheme {
         ),
       ),
 
-      // --- BUTTONS ---
       elevatedButtonTheme: ElevatedButtonThemeData(
         style: ElevatedButton.styleFrom(
-          backgroundColor: primaryColor,
+          backgroundColor: primary,
           foregroundColor: Colors.white,
           elevation: 2,
           padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
@@ -112,7 +120,6 @@ class AppTheme {
         ),
       ),
 
-      // --- CARD THEME ---
       cardTheme: CardThemeData(
         color: Colors.white,
         elevation: 2,
@@ -122,47 +129,37 @@ class AppTheme {
         ),
       ),
 
-      // --- DIALOGS ---
       dialogTheme: DialogThemeData(
         backgroundColor: Colors.white,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         titleTextStyle: GoogleFonts.poppins(
-          fontSize: 20, 
-          fontWeight: FontWeight.bold, 
-          color: darkText
+          fontSize: 20,
+          fontWeight: FontWeight.bold,
+          color: darkText,
         ),
       ),
 
-      // --- DATE PICKER ---
       datePickerTheme: DatePickerThemeData(
         backgroundColor: Colors.white,
-        headerBackgroundColor: primaryColor,
+        headerBackgroundColor: primary,
         headerForegroundColor: Colors.white,
         dayStyle: GoogleFonts.poppins(),
       ),
 
-      // --- TIME PICKER (FIXED VISIBILITY) ---
       timePickerTheme: TimePickerThemeData(
         backgroundColor: Colors.white,
-        dialHandColor: primaryColor,
-        dialBackgroundColor: primaryColor.withValues(alpha: 0.1),
-        
-        // Ito ang magpapa-puti sa text kapag selected, at dark pag hindi
+        dialHandColor: primary,
+        dialBackgroundColor: primary.withValues(alpha: 0.1),
         dialTextColor: WidgetStateColor.resolveWith((states) =>
             states.contains(WidgetState.selected) ? Colors.white : secondaryColor),
-        
-        // Kulay ng "AM/PM" buttons
         dayPeriodTextColor: WidgetStateColor.resolveWith((states) =>
             states.contains(WidgetState.selected) ? Colors.white : secondaryColor),
         dayPeriodColor: WidgetStateColor.resolveWith((states) =>
-            states.contains(WidgetState.selected) ? primaryColor : Colors.grey.shade200),
-            
-        // Kulay ng Malaking Oras sa taas
+            states.contains(WidgetState.selected) ? primary : Colors.grey.shade200),
         hourMinuteTextColor: WidgetStateColor.resolveWith((states) =>
-            states.contains(WidgetState.selected) ? Colors.white : primaryColor),
+            states.contains(WidgetState.selected) ? Colors.white : primary),
         hourMinuteColor: WidgetStateColor.resolveWith((states) =>
-            states.contains(WidgetState.selected) ? primaryColor : primaryColor.withValues(alpha: 0.1)),
-            
+            states.contains(WidgetState.selected) ? primary : primary.withValues(alpha: 0.1)),
         hourMinuteTextStyle: GoogleFonts.poppins(fontSize: 40, fontWeight: FontWeight.bold),
         helpTextStyle: GoogleFonts.poppins(color: secondaryColor),
       ),
@@ -179,7 +176,7 @@ class AppTheme {
         bodyColor: darkText2,
         displayColor: darkText2,
       ),
-      colorScheme: const ColorScheme.dark(
+      colorScheme: ColorScheme.dark(
         primary: primaryColor,
         secondary: accentColor,
         error: errorColor,
@@ -214,7 +211,7 @@ class AppTheme {
         ),
         focusedBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(12),
-          borderSide: const BorderSide(color: primaryColor, width: 2),
+          borderSide: BorderSide(color: primaryColor, width: 2),
         ),
       ),
       elevatedButtonTheme: ElevatedButtonThemeData(

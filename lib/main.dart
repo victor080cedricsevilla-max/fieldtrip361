@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
@@ -5,6 +6,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'firebase_options.dart';
 import 'config/theme.dart';
 import 'utils/background_location_service.dart';
@@ -16,7 +18,7 @@ import 'views/teacher/teacher_dashboard.dart';
 import 'views/student/student_dashboard.dart';
 import 'views/parent/parent_dashboard.dart';
 
-/// Top-level handler required by firebase_messaging — runs in its own isolate
+/// Top-level handler required by firebase_messaging -- runs in its own isolate
 /// when a push arrives while the app is killed or backgrounded.
 @pragma('vm:entry-point')
 Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
@@ -50,9 +52,6 @@ Future<void> _showLocalChatNotification(RemoteMessage msg) async {
 }
 
 void main() async {
-  // Run everything inside a guarded zone so a failure in one of the new
-  // services doesn't kill the entire app at startup — we still want the UI
-  // to come up even if notifications or the background service can't init.
   WidgetsFlutterBinding.ensureInitialized();
 
   try {
@@ -121,24 +120,92 @@ void main() async {
   runApp(const FieldTrip360App());
 }
 
-class FieldTrip360App extends StatelessWidget {
+class FieldTrip360App extends StatefulWidget {
   const FieldTrip360App({super.key});
 
   @override
+  State<FieldTrip360App> createState() => _FieldTrip360AppState();
+}
+
+class _FieldTrip360AppState extends State<FieldTrip360App> {
+  final _navigatorKey = GlobalKey<NavigatorState>();
+  StreamSubscription<DocumentSnapshot>? _sessionSub;
+
+  @override
+  void initState() {
+    super.initState();
+    FirebaseAuth.instance.authStateChanges().listen((user) async {
+      // Cancel any previous session watcher.
+      await _sessionSub?.cancel();
+      _sessionSub = null;
+
+      if (user == null) return;
+
+      // Load saved theme color.
+      try {
+        final snap = await FirebaseFirestore.instance
+            .collection('users')
+            .doc(user.uid)
+            .get();
+        final colorInt = snap.data()?['themeColor'];
+        if (colorInt is int) AppTheme.setPrimaryColor(Color(colorInt));
+      } catch (_) {}
+
+      // Real-time session displacement: if another device logs in and writes
+      // a different activeSession token, sign this device out immediately.
+      if (!kIsWeb) {
+        final prefs = await SharedPreferences.getInstance();
+        final localToken = prefs.getString('activeSession');
+        if (localToken == null) return; // no local token yet (first login not complete)
+
+        _sessionSub = FirebaseFirestore.instance
+            .collection('users')
+            .doc(user.uid)
+            .snapshots()
+            .listen((docSnap) async {
+          if (!docSnap.exists) return;
+          final remoteToken = docSnap.data()?['activeSession'] as String?;
+          if (remoteToken == null) return;
+          if (remoteToken == localToken) return; // still the active device
+
+          // Token mismatch: another device took over — force sign out.
+          await _sessionSub?.cancel();
+          _sessionSub = null;
+          try { await BackgroundLocationService.stop(); } catch (_) {}
+          await prefs.remove('activeSession');
+          await FirebaseAuth.instance.signOut();
+          _navigatorKey.currentState
+              ?.pushNamedAndRemoveUntil('/mobile-login', (_) => false);
+        });
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _sessionSub?.cancel();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'FieldTrip360',
-      debugShowCheckedModeBanner: false,
-      theme: AppTheme.lightTheme,
-      home: kIsWeb ? const LoginView() : const MobileLoginView(),
-      routes: {
-        '/admin-login': (context) => const LoginView(),
-        '/mobile-login': (context) => const MobileLoginView(),
-        '/admin/dashboard': (context) => const AdminDashboard(),
-        '/teacher/dashboard': (context) => const TeacherDashboard(),
-        '/student/dashboard': (context) => const StudentDashboard(),
-        '/parent/dashboard': (context) => const ParentDashboard(),
-      },
+    return ValueListenableBuilder<Color>(
+      valueListenable: AppTheme.primaryColorNotifier,
+      builder: (context, _, __) => MaterialApp(
+        navigatorKey: _navigatorKey,
+        title: 'FieldTrip360',
+        debugShowCheckedModeBanner: false,
+        theme: AppTheme.lightTheme,
+        home: kIsWeb ? const LoginView() : const MobileLoginView(),
+        routes: {
+          '/admin-login': (context) => const LoginView(),
+          '/mobile-login': (context) => const MobileLoginView(),
+          '/admin/dashboard': (context) => const AdminDashboard(),
+          '/teacher/dashboard': (context) => const TeacherDashboard(),
+          '/student/dashboard': (context) => const StudentDashboard(),
+          '/parent/dashboard': (context) => const ParentDashboard(),
+        },
+      ),
     );
   }
 }

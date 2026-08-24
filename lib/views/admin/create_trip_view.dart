@@ -3,13 +3,26 @@ import 'package:flutter/cupertino.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:http/http.dart' as http;
+import 'package:file_picker/file_picker.dart';
 import 'dart:convert';
+import 'dart:typed_data';
 import '../../config/theme.dart';
+import '../../utils/document_service.dart';
 import '../../utils/utils.dart';
 import '../../utils/chat_sync.dart';
 import '../../utils/firestore_utils.dart';
+import '../../utils/school_context.dart';
 import '../../models/directions_model.dart';
 import '../../repositories/directions_repository.dart';
+
+/// A blank form the admin picked in the trip form but that has not been
+/// uploaded yet — the upload waits until the trip has an id to file it under.
+class _PickedTemplate {
+  final Uint8List bytes;
+  final String fileName;
+  final String contentType;
+  const _PickedTemplate(this.bytes, this.fileName, this.contentType);
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ROOT WIDGET
@@ -40,6 +53,24 @@ class _CreateTripViewState extends State<CreateTripView> {
   List<Map<String, dynamic>> _buses = [];
   bool _isSaving = false;
 
+  /// Whether parents are pushed a warning when their child leaves a stop's safe
+  /// zone. Teachers and the student are always alerted regardless.
+  bool _notifyParentsOnGeofence = true;
+
+  /// Blank forms for this trip. Files chosen in the form are held in memory and
+  /// only uploaded on save, once the trip has an id to file them under.
+  final Map<String, _PickedTemplate> _pickedTemplates = {};
+
+  /// Templates already stored on the trip being edited, keyed by document type.
+  final Map<String, Map<String, dynamic>> _existingTemplates = {};
+
+  /// Storage paths of templates replaced or detached during this edit, deleted
+  /// once the trip saves successfully.
+  final List<String> _removedTemplatePaths = [];
+
+  bool _hasTemplate(String type) =>
+      _pickedTemplates.containsKey(type) || _existingTemplates.containsKey(type);
+
   bool get _isEditing => widget.existingDocId != null;
 
   @override
@@ -58,6 +89,13 @@ class _CreateTripViewState extends State<CreateTripView> {
     _titleController.text = (data['title'] ?? '').toString();
     _descriptionController.text = (data['description'] ?? '').toString();
     _dateController.text = (data['date'] ?? '').toString();
+    // Trips created before this setting existed default to on.
+    _notifyParentsOnGeofence = data['notifyParentsOnGeofence'] != false;
+
+    _existingTemplates
+      ..clear()
+      ..addAll(DocumentService.templatesOfTrip(data));
+    _pickedTemplates.clear();
 
     final List rawStops = (data['stops'] as List?) ?? const [];
     _stops = rawStops.map<Map<String, dynamic>>((s) {
@@ -138,6 +176,9 @@ class _CreateTripViewState extends State<CreateTripView> {
     _titleController.clear();
     _descriptionController.clear();
     _dateController.clear();
+    _notifyParentsOnGeofence = true;
+    _pickedTemplates.clear();
+    _existingTemplates.clear();
     _stops = [
       {
         "name": TextEditingController(text: "School (Origin)"),
@@ -202,55 +243,49 @@ class _CreateTripViewState extends State<CreateTripView> {
     DateTime initialDateTime = DateTime(2023, 1, 1, initialTime.hour, roundedMinute);
     TimeOfDay? selectedTime;
 
-    return await showModalBottomSheet<TimeOfDay>(
+    return await showDialog<TimeOfDay>(
       context: context,
-      backgroundColor: Colors.transparent,
-      builder: (builder) {
-        return Container(
-          height: 320,
-          decoration: const BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-          ),
-          child: Column(
-            children: [
-              Container(
-                margin: const EdgeInsets.only(top: 12, bottom: 4),
-                width: 40, height: 4,
-                decoration: BoxDecoration(color: Colors.grey.shade300, borderRadius: BorderRadius.circular(10)),
-              ),
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    GestureDetector(
-                      onTap: () => Navigator.pop(context),
-                      child: Text("Cancel", style: TextStyle(color: Colors.grey.shade500, fontWeight: FontWeight.w500)),
-                    ),
-                    const Text("Select Time",
-                        style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15, color: AppTheme.secondaryColor)),
-                    GestureDetector(
-                      onTap: () {
-                        selectedTime ??= TimeOfDay.fromDateTime(initialDateTime);
-                        Navigator.pop(context, selectedTime);
-                      },
-                      child: const Text("Done",
-                          style: TextStyle(color: AppTheme.primaryColor, fontWeight: FontWeight.bold)),
-                    ),
-                  ],
+      builder: (ctx) {
+        return Dialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          child: SizedBox(
+            height: 300,
+            child: Column(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      GestureDetector(
+                        onTap: () => Navigator.pop(ctx),
+                        child: Text("Cancel", style: TextStyle(color: Colors.grey.shade500, fontWeight: FontWeight.w500)),
+                      ),
+                      const Text(
+                        "Select Time",
+                        style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15, color: AppTheme.secondaryColor),
+                      ),
+                      GestureDetector(
+                        onTap: () {
+                          selectedTime ??= TimeOfDay.fromDateTime(initialDateTime);
+                          Navigator.pop(ctx, selectedTime);
+                        },
+                        child: Text("Done", style: TextStyle(color: AppTheme.effectivePrimary, fontWeight: FontWeight.bold)),
+                      ),
+                    ],
+                  ),
                 ),
-              ),
-              Divider(color: Colors.grey.shade100, height: 1),
-              Expanded(
-                child: CupertinoDatePicker(
-                  mode: CupertinoDatePickerMode.time,
-                  minuteInterval: 15,
-                  initialDateTime: initialDateTime,
-                  onDateTimeChanged: (dt) => selectedTime = TimeOfDay.fromDateTime(dt),
+                Divider(color: Colors.grey.shade100, height: 1),
+                Expanded(
+                  child: CupertinoDatePicker(
+                    mode: CupertinoDatePickerMode.time,
+                    minuteInterval: 15,
+                    initialDateTime: initialDateTime,
+                    onDateTimeChanged: (dt) => selectedTime = TimeOfDay.fromDateTime(dt),
+                  ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         );
       },
@@ -345,6 +380,7 @@ class _CreateTripViewState extends State<CreateTripView> {
     }
     LatLng center = LatLng(_stops[index]['lat'], _stops[index]['lng']);
     double currentRadius = double.tryParse(_stops[index]['radius'].text) ?? 200;
+    final radiusTextController = TextEditingController(text: currentRadius.toStringAsFixed(0));
 
     showDialog(
       context: context,
@@ -354,7 +390,7 @@ class _CreateTripViewState extends State<CreateTripView> {
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
           content: SizedBox(
             width: 560,
-            height: 500,
+            height: 520,
             child: Column(
               children: [
                 Expanded(
@@ -369,8 +405,8 @@ class _CreateTripViewState extends State<CreateTripView> {
                           circleId: const CircleId("geofence"),
                           center: center,
                           radius: currentRadius,
-                          fillColor: AppTheme.primaryColor.withValues(alpha: 0.2),
-                          strokeColor: AppTheme.primaryColor,
+                          fillColor: AppTheme.effectivePrimary.withValues(alpha: 0.2),
+                          strokeColor: AppTheme.effectivePrimary,
                           strokeWidth: 2,
                         ),
                       },
@@ -380,30 +416,60 @@ class _CreateTripViewState extends State<CreateTripView> {
                 Expanded(
                   flex: 2,
                   child: Padding(
-                    padding: const EdgeInsets.fromLTRB(24, 20, 24, 0),
+                    padding: const EdgeInsets.fromLTRB(24, 16, 24, 0),
                     child: Column(
                       children: [
-                        const Text("Geofence Zone Radius",
+                        Text("Geofence Zone Radius",
                             style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14, color: AppTheme.secondaryColor)),
-                        const SizedBox(height: 8),
-                        Text(
-                          "${currentRadius.toStringAsFixed(0)} m",
-                          style: const TextStyle(fontSize: 32, fontWeight: FontWeight.bold, color: AppTheme.primaryColor),
+                        const SizedBox(height: 10),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: TextField(
+                                controller: radiusTextController,
+                                keyboardType: TextInputType.number,
+                                textAlign: TextAlign.center,
+                                style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: AppTheme.effectivePrimary),
+                                decoration: InputDecoration(
+                                  suffixText: "m",
+                                  suffixStyle: TextStyle(fontSize: 16, color: AppTheme.effectivePrimary),
+                                  contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+                                  focusedBorder: OutlineInputBorder(
+                                    borderRadius: BorderRadius.circular(10),
+                                    borderSide: BorderSide(color: AppTheme.effectivePrimary, width: 2),
+                                  ),
+                                ),
+                                onChanged: (v) {
+                                  final val = double.tryParse(v);
+                                  if (val != null && val >= 1 && val <= 4000) {
+                                    setModalState(() => currentRadius = val);
+                                  }
+                                },
+                              ),
+                            ),
+                          ],
                         ),
+                        const SizedBox(height: 4),
                         SliderTheme(
                           data: SliderTheme.of(context).copyWith(
-                            activeTrackColor: AppTheme.primaryColor,
-                            thumbColor: AppTheme.primaryColor,
-                            inactiveTrackColor: AppTheme.primaryColor.withValues(alpha: 0.15),
-                            overlayColor: AppTheme.primaryColor.withValues(alpha: 0.1),
+                            activeTrackColor: AppTheme.effectivePrimary,
+                            thumbColor: AppTheme.effectivePrimary,
+                            inactiveTrackColor: AppTheme.effectivePrimary.withValues(alpha: 0.15),
+                            overlayColor: AppTheme.effectivePrimary.withValues(alpha: 0.1),
                             trackHeight: 4,
                           ),
                           child: Slider(
-                            value: currentRadius,
+                            value: currentRadius.clamp(1, 4000),
                             min: 1,
                             max: 4000,
                             divisions: 3999,
-                            onChanged: (v) => setModalState(() => currentRadius = v),
+                            onChanged: (v) {
+                              setModalState(() => currentRadius = v);
+                              radiusTextController.text = v.toStringAsFixed(0);
+                              radiusTextController.selection = TextSelection.collapsed(
+                                  offset: radiusTextController.text.length);
+                            },
                           ),
                         ),
                         Row(
@@ -435,7 +501,7 @@ class _CreateTripViewState extends State<CreateTripView> {
           ],
         ),
       ),
-    );
+    ).then((_) => radiusTextController.dispose());
   }
 
   // ── Map Preview ────────────────────────────────────────────────────────────
@@ -469,8 +535,8 @@ class _CreateTripViewState extends State<CreateTripView> {
         circleId: CircleId("geofence_$i"),
         center: position,
         radius: radius,
-        fillColor: AppTheme.primaryColor.withValues(alpha: 0.15),
-        strokeColor: AppTheme.primaryColor,
+        fillColor: AppTheme.effectivePrimary.withValues(alpha: 0.15),
+        strokeColor: AppTheme.effectivePrimary,
         strokeWidth: 2,
       ));
     }
@@ -486,11 +552,11 @@ class _CreateTripViewState extends State<CreateTripView> {
       barrierDismissible: false,
       builder: (_) => AlertDialog(
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        content: const SizedBox(
+        content: SizedBox(
           height: 72,
           child: Row(
             children: [
-              CircularProgressIndicator(color: AppTheme.primaryColor),
+              CircularProgressIndicator(color: AppTheme.effectivePrimary),
               SizedBox(width: 20),
               Text("Loading route preview…"),
             ],
@@ -512,7 +578,7 @@ class _CreateTripViewState extends State<CreateTripView> {
     if (info != null && info.polylinePoints.isNotEmpty) {
       polylines.add(Polyline(
         polylineId: const PolylineId('overview_polyline'),
-        color: AppTheme.primaryColor,
+        color: AppTheme.effectivePrimary,
         width: 4,
         points: info.polylinePoints.map((e) => LatLng(e.latitude, e.longitude)).toList(),
       ));
@@ -538,10 +604,10 @@ class _CreateTripViewState extends State<CreateTripView> {
                     Container(
                       width: 40, height: 40,
                       decoration: BoxDecoration(
-                        color: AppTheme.primaryColor.withValues(alpha: 0.1),
+                        color: AppTheme.effectivePrimary.withValues(alpha: 0.1),
                         borderRadius: BorderRadius.circular(10),
                       ),
-                      child: const Icon(Icons.map_outlined, color: AppTheme.primaryColor, size: 20),
+                      child: Icon(Icons.map_outlined, color: AppTheme.effectivePrimary, size: 20),
                     ),
                     const SizedBox(width: 12),
                     Expanded(
@@ -594,6 +660,13 @@ class _CreateTripViewState extends State<CreateTripView> {
         _showSnack("Select a location for every stop.", Colors.red);
         return;
       }
+    }
+    if (!_hasTemplate(DocType.waiver)) {
+      _showSnack(
+        "Attach a Parental Consent Waiver template before saving this trip.",
+        Colors.red,
+      );
+      return;
     }
     final Set<String> seenLabels = {};
     for (var bus in _buses) {
@@ -684,39 +757,61 @@ class _CreateTripViewState extends State<CreateTripView> {
         };
       }).toList();
 
-      final String tripId;
-      if (_isEditing) {
-        tripId = widget.existingDocId!;
-        final Map<String, dynamic> updatePayload = {
-          'title': _titleController.text,
-          'description': _descriptionController.text,
-          'date': _dateController.text,
-          'stops': stopsData,
-          'buses': busesData,
-          'totalDuration': totalDuration,
-          'legDurationSeconds': legDurationSeconds,
-          'updatedAt': FieldValue.serverTimestamp(),
-        };
-        if (routePoints.isNotEmpty) updatePayload['route'] = routePoints;
-        await FirebaseFirestore.instance
-            .collection('trips')
-            .doc(tripId)
-            .update(updatePayload);
-      } else {
-        final tripRef = await FirebaseFirestore.instance.collection('trips').add({
-          'title': _titleController.text,
-          'description': _descriptionController.text,
-          'date': _dateController.text,
-          'stops': stopsData,
-          'route': routePoints,
-          'buses': busesData,
-          'status': 'pending',
-          'totalDuration': totalDuration,
-          'legDurationSeconds': legDurationSeconds,
-          'createdAt': FieldValue.serverTimestamp(),
-        });
-        tripId = tripRef.id;
+      // The trip id is minted up front so newly attached blank forms can be
+      // filed under it before the document itself is written.
+      final schoolId = await SchoolContext.schoolId();
+      final trips = FirebaseFirestore.instance.collection('trips');
+      final tripRef = _isEditing ? trips.doc(widget.existingDocId!) : trips.doc();
+      final String tripId = tripRef.id;
+
+      final Map<String, dynamic> documents = {};
+      for (final type in DocType.all) {
+        final picked = _pickedTemplates[type];
+        if (picked != null) {
+          final replaced = _existingTemplates[type]?['storagePath'] as String?;
+          documents[type] = await DocumentService.uploadTripTemplate(
+            schoolId: schoolId ?? 'unassigned',
+            tripId: tripId,
+            type: type,
+            bytes: picked.bytes,
+            fileName: picked.fileName,
+            contentType: picked.contentType,
+          );
+          if (replaced != null) _removedTemplatePaths.add(replaced);
+        } else if (_existingTemplates.containsKey(type)) {
+          documents[type] = _existingTemplates[type];
+        }
       }
+
+      final Map<String, dynamic> payload = {
+        'title': _titleController.text,
+        'description': _descriptionController.text,
+        'date': _dateController.text,
+        'stops': stopsData,
+        'buses': busesData,
+        'totalDuration': totalDuration,
+        'legDurationSeconds': legDurationSeconds,
+        'notifyParentsOnGeofence': _notifyParentsOnGeofence,
+        'documents': documents,
+        if (schoolId != null) 'schoolId': schoolId,
+      };
+
+      if (_isEditing) {
+        payload['updatedAt'] = FieldValue.serverTimestamp();
+        if (routePoints.isNotEmpty) payload['route'] = routePoints;
+        await tripRef.update(payload);
+      } else {
+        payload['route'] = routePoints;
+        payload['status'] = 'pending';
+        payload['createdAt'] = FieldValue.serverTimestamp();
+        await tripRef.set(payload);
+      }
+
+      // Drop blank forms that were replaced or detached — best effort only.
+      for (final path in _removedTemplatePaths) {
+        await DocumentService.deleteFile(path);
+      }
+      _removedTemplatePaths.clear();
 
       // Create/refresh the group chat for every bus on this trip.
       // Mirrors the Cloud Function `onTripChatSync` so chats appear
@@ -783,6 +878,227 @@ class _CreateTripViewState extends State<CreateTripView> {
     "passengers": <Map<String, dynamic>>[],
   }));
 
+  /// Per-trip switch for pushing geofence warnings to parents. Teachers and the
+  /// student are always alerted — this only controls the parent copy.
+  Widget _buildParentAlertToggle() {
+    final on = _notifyParentsOnGeofence;
+    final accent = on ? AppTheme.effectivePrimary : Colors.grey.shade400;
+
+    return Container(
+      decoration: BoxDecoration(
+        color: on ? AppTheme.effectivePrimary.withValues(alpha: 0.05) : Colors.grey.shade50,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: on ? AppTheme.effectivePrimary.withValues(alpha: 0.3) : Colors.grey.shade300,
+        ),
+      ),
+      padding: const EdgeInsets.fromLTRB(14, 12, 8, 12),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.only(top: 2),
+            child: Icon(
+              on ? Icons.notifications_active_rounded : Icons.notifications_off_rounded,
+              size: 20,
+              color: accent,
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  "Send geofence warnings to parents",
+                  style: TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                    color: AppTheme.secondaryColor,
+                  ),
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  on
+                      ? "Parents are alerted when their child leaves a stop's safe zone."
+                      : "Only teachers and the student are alerted. Parents still receive "
+                          "departure, arrival and trip-completed updates.",
+                  style: TextStyle(fontSize: 11.5, color: Colors.grey.shade600, height: 1.45),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 8),
+          Switch(
+            value: on,
+            onChanged: (v) => setState(() => _notifyParentsOnGeofence = v),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Blank forms students must print, sign and upload before this trip.
+  /// Whatever is attached here becomes the requirement — a student is kept out
+  /// of the bus group chat until every attached form is approved.
+  Widget _buildTripDocuments() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Container(
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: AppTheme.effectivePrimary.withValues(alpha: 0.05),
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: AppTheme.effectivePrimary.withValues(alpha: 0.2)),
+          ),
+          child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Icon(Icons.info_outline_rounded, size: 17, color: AppTheme.effectivePrimary),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                "Students assigned to this trip download these forms, sign them on paper, "
+                "and upload a photo. Each upload is checked automatically — and a student "
+                "only joins the bus group chat once every attached form is approved.",
+                style: TextStyle(fontSize: 11.5, color: Colors.grey.shade700, height: 1.5),
+              ),
+            ),
+          ]),
+        ),
+        const SizedBox(height: 14),
+        for (final type in DocType.all) ...[
+          _templateRow(type, required: type == DocType.waiver),
+          if (type != DocType.all.last) const SizedBox(height: 10),
+        ],
+      ],
+    );
+  }
+
+  Widget _templateRow(String type, {required bool required}) {
+    final picked = _pickedTemplates[type];
+    final existing = _existingTemplates[type];
+    final has = picked != null || existing != null;
+    final fileName = picked?.fileName ?? (existing?['fileName'] ?? '').toString();
+
+    return Container(
+      padding: const EdgeInsets.fromLTRB(14, 12, 12, 12),
+      decoration: BoxDecoration(
+        color: has ? Colors.white : Colors.grey.shade50,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: has
+              ? AppTheme.effectivePrimary.withValues(alpha: 0.35)
+              : (required ? Colors.orange.shade200 : Colors.grey.shade300),
+        ),
+      ),
+      child: Row(children: [
+        Icon(DocType.icon(type), size: 20,
+            color: has ? AppTheme.effectivePrimary : Colors.grey.shade400),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Row(children: [
+              Text(DocType.label(type),
+                  style: const TextStyle(
+                      fontSize: 13.5, fontWeight: FontWeight.w600,
+                      color: AppTheme.secondaryColor)),
+              const SizedBox(width: 8),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                decoration: BoxDecoration(
+                  color: required
+                      ? Colors.orange.withValues(alpha: 0.14)
+                      : Colors.grey.withValues(alpha: 0.14),
+                  borderRadius: BorderRadius.circular(999),
+                ),
+                child: Text(
+                  required ? 'Required' : 'Optional',
+                  style: TextStyle(
+                    fontSize: 9.5, fontWeight: FontWeight.w700,
+                    color: required ? Colors.orange.shade900 : Colors.grey.shade700,
+                  ),
+                ),
+              ),
+            ]),
+            const SizedBox(height: 3),
+            Text(
+              has ? fileName : 'No file attached — ${DocType.blurb(type)}',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 11.5,
+                color: has ? Colors.grey.shade700 : Colors.grey.shade500,
+                fontStyle: has ? FontStyle.normal : FontStyle.italic,
+              ),
+            ),
+          ]),
+        ),
+        const SizedBox(width: 8),
+        if (has && !required)
+          IconButton(
+            onPressed: () => _clearTemplate(type),
+            icon: const Icon(Icons.close_rounded, size: 18),
+            color: Colors.grey.shade400,
+            tooltip: 'Remove',
+          ),
+        OutlinedButton(
+          onPressed: () => _pickTemplate(type),
+          style: OutlinedButton.styleFrom(
+            minimumSize: const Size(0, 36),
+            foregroundColor: AppTheme.effectivePrimary,
+            side: BorderSide(color: AppTheme.effectivePrimary),
+          ),
+          child: Text(has ? 'Replace' : 'Attach'),
+        ),
+      ]),
+    );
+  }
+
+  /// Lets the admin choose a blank form for this trip. Held in memory until
+  /// save, when the trip id becomes the storage folder.
+  Future<void> _pickTemplate(String type) async {
+    FilePickerResult? picked;
+    try {
+      picked = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: const ['pdf', 'jpg', 'jpeg', 'png'],
+        withData: true,
+      );
+    } catch (_) {
+      picked = await FilePicker.platform.pickFiles(withData: true);
+    }
+    if (picked == null || picked.files.isEmpty) return;
+
+    final file = picked.files.first;
+    final bytes = file.bytes;
+    if (bytes == null) {
+      _showSnack("Could not read that file.", Colors.red);
+      return;
+    }
+    if (bytes.lengthInBytes > 10 * 1024 * 1024) {
+      _showSnack("Templates must be under 10 MB.", Colors.red);
+      return;
+    }
+
+    final ext = file.name.split('.').last.toLowerCase();
+    final contentType = ext == 'pdf'
+        ? 'application/pdf'
+        : (ext == 'png' ? 'image/png' : 'image/jpeg');
+
+    setState(() {
+      _pickedTemplates[type] = _PickedTemplate(bytes, file.name, contentType);
+    });
+  }
+
+  void _clearTemplate(String type) {
+    setState(() {
+      _pickedTemplates.remove(type);
+      final removed = _existingTemplates.remove(type);
+      final path = removed?['storagePath'] as String?;
+      if (path != null) _removedTemplatePaths.add(path);
+    });
+  }
+
   void _showSnack(String msg, Color color) {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
       behavior: SnackBarBehavior.floating,
@@ -811,10 +1127,10 @@ class _CreateTripViewState extends State<CreateTripView> {
                     Container(
                       width: 38, height: 38,
                       decoration: BoxDecoration(
-                        color: AppTheme.primaryColor.withValues(alpha: 0.1),
+                        color: AppTheme.effectivePrimary.withValues(alpha: 0.1),
                         borderRadius: BorderRadius.circular(10),
                       ),
-                      child: const Icon(Icons.person_search_rounded, size: 18, color: AppTheme.primaryColor),
+                      child: Icon(Icons.person_search_rounded, size: 18, color: AppTheme.effectivePrimary),
                     ),
                     const SizedBox(width: 12),
                     Expanded(
@@ -840,14 +1156,17 @@ class _CreateTripViewState extends State<CreateTripView> {
                   ),
                   onChanged: (v) => setStateModal(() {}),
                 ),
-                const SizedBox(height: 12),
+                SizedBox(height: 12),
                 Expanded(
                   child: StreamBuilder<QuerySnapshot>(
                     stream: FirebaseFirestore.instance.collection('users').snapshots(),
                     builder: (context, snapshot) {
                       if (!snapshot.hasData) {
-                        return const Center(child: CircularProgressIndicator(color: AppTheme.primaryColor));
+                        return Center(child: CircularProgressIndicator(color: AppTheme.effectivePrimary));
                       }
+                      // Teachers are deliberately NOT scoped to a school: every
+                      // school searches the full teacher list and assigns them
+                      // manually. Students are school-scoped; staff are not.
                       final list = snapshot.data!.docs.where((d) {
                         final data = d.data() as Map<String, dynamic>;
                         final r = (data['role'] ?? '').toString().toLowerCase().trim();
@@ -891,9 +1210,9 @@ class _CreateTripViewState extends State<CreateTripView> {
                                 children: [
                                   CircleAvatar(
                                     radius: 20,
-                                    backgroundColor: AppTheme.primaryColor.withValues(alpha: 0.12),
+                                    backgroundColor: AppTheme.effectivePrimary.withValues(alpha: 0.12),
                                     child: Text(d['name'][0].toUpperCase(),
-                                        style: const TextStyle(color: AppTheme.primaryColor, fontWeight: FontWeight.bold)),
+                                        style: TextStyle(color: AppTheme.effectivePrimary, fontWeight: FontWeight.bold)),
                                   ),
                                   const SizedBox(width: 12),
                                   Expanded(
@@ -901,13 +1220,13 @@ class _CreateTripViewState extends State<CreateTripView> {
                                       crossAxisAlignment: CrossAxisAlignment.start,
                                       children: [
                                         Text(d['name'],
-                                            style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14, color: AppTheme.secondaryColor)),
+                                            style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14, color: AppTheme.secondaryColor)),
                                         Text(d['email'] ?? '',
                                             style: TextStyle(fontSize: 11, color: Colors.grey.shade500)),
                                       ],
                                     ),
                                   ),
-                                  const Icon(Icons.chevron_right_rounded, color: AppTheme.primaryColor, size: 20),
+                                  Icon(Icons.chevron_right_rounded, color: AppTheme.effectivePrimary, size: 20),
                                 ],
                               ),
                             ),
@@ -949,10 +1268,10 @@ class _CreateTripViewState extends State<CreateTripView> {
       child: Container(
         padding: const EdgeInsets.all(14),
         decoration: BoxDecoration(
-          color: selected != null ? AppTheme.primaryColor.withValues(alpha: 0.04) : Colors.grey.shade50,
+          color: selected != null ? AppTheme.effectivePrimary.withValues(alpha: 0.04) : Colors.grey.shade50,
           borderRadius: BorderRadius.circular(12),
           border: Border.all(
-            color: selected != null ? AppTheme.primaryColor.withValues(alpha: 0.3) : Colors.grey.shade200,
+            color: selected != null ? AppTheme.effectivePrimary.withValues(alpha: 0.3) : Colors.grey.shade200,
           ),
         ),
         child: Row(
@@ -960,12 +1279,12 @@ class _CreateTripViewState extends State<CreateTripView> {
             CircleAvatar(
               radius: 16,
               backgroundColor: selected != null
-                  ? AppTheme.primaryColor.withValues(alpha: 0.12)
+                  ? AppTheme.effectivePrimary.withValues(alpha: 0.12)
                   : Colors.grey.shade200,
               child: Icon(
                 selected != null ? Icons.check_rounded : Icons.person_add_outlined,
                 size: 16,
-                color: selected != null ? AppTheme.primaryColor : Colors.grey.shade400,
+                color: selected != null ? AppTheme.effectivePrimary : Colors.grey.shade400,
               ),
             ),
             const SizedBox(width: 10),
@@ -1010,10 +1329,10 @@ class _CreateTripViewState extends State<CreateTripView> {
                 Container(
                   width: 44, height: 44,
                   decoration: BoxDecoration(
-                    color: AppTheme.primaryColor.withValues(alpha: 0.1),
+                    color: AppTheme.effectivePrimary.withValues(alpha: 0.1),
                     borderRadius: BorderRadius.circular(12),
                   ),
-                  child: const Icon(Icons.add_road_rounded, color: AppTheme.primaryColor, size: 22),
+                  child: Icon(Icons.add_road_rounded, color: AppTheme.effectivePrimary, size: 22),
                 ),
                 const SizedBox(width: 14),
                 const Column(
@@ -1075,8 +1394,18 @@ class _CreateTripViewState extends State<CreateTripView> {
                     ),
                     validator: (v) => v!.isEmpty ? "Required" : null,
                   ),
+                  const SizedBox(height: 16),
+                  _buildParentAlertToggle(),
                 ],
               ),
+            ),
+
+            const SizedBox(height: 20),
+
+            _SectionCard(
+              icon: Icons.assignment_outlined,
+              title: "Trip Documents",
+              child: _buildTripDocuments(),
             ),
 
             const SizedBox(height: 20),
@@ -1127,10 +1456,10 @@ class _CreateTripViewState extends State<CreateTripView> {
                             Container(
                               width: 36, height: 36,
                               decoration: BoxDecoration(
-                                color: AppTheme.primaryColor.withValues(alpha: 0.1),
+                                color: AppTheme.effectivePrimary.withValues(alpha: 0.1),
                                 borderRadius: BorderRadius.circular(10),
                               ),
-                              child: const Icon(Icons.directions_bus_rounded, size: 18, color: AppTheme.primaryColor),
+                              child: Icon(Icons.directions_bus_rounded, size: 18, color: AppTheme.effectivePrimary),
                             ),
                             const SizedBox(width: 10),
                             Expanded(
@@ -1198,7 +1527,7 @@ class _CreateTripViewState extends State<CreateTripView> {
                             ),
                             child: Row(
                               children: [
-                                Icon(Icons.group_outlined, size: 18, color: AppTheme.primaryColor),
+                                Icon(Icons.group_outlined, size: 18, color: AppTheme.effectivePrimary),
                                 const SizedBox(width: 10),
                                 Expanded(
                                   child: Text(
@@ -1217,7 +1546,7 @@ class _CreateTripViewState extends State<CreateTripView> {
                                   decoration: BoxDecoration(
                                     color: atOrOver
                                         ? Colors.red.withValues(alpha: 0.1)
-                                        : AppTheme.primaryColor.withValues(alpha: 0.1),
+                                        : AppTheme.effectivePrimary.withValues(alpha: 0.1),
                                     borderRadius: BorderRadius.circular(10),
                                   ),
                                   child: Text(
@@ -1225,7 +1554,7 @@ class _CreateTripViewState extends State<CreateTripView> {
                                     style: TextStyle(
                                       fontSize: 11,
                                       fontWeight: FontWeight.bold,
-                                      color: atOrOver ? Colors.red.shade600 : AppTheme.primaryColor,
+                                      color: atOrOver ? Colors.red.shade600 : AppTheme.effectivePrimary,
                                     ),
                                   ),
                                 ),
@@ -1268,13 +1597,13 @@ class _CreateTripViewState extends State<CreateTripView> {
                       ),
                     ),
                   ),
-                  const SizedBox(width: 8),
+                  SizedBox(width: 8),
                   GestureDetector(
                     onTap: _addStop,
                     child: Container(
                       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
                       decoration: BoxDecoration(
-                        color: AppTheme.primaryColor,
+                        color: AppTheme.effectivePrimary,
                         borderRadius: BorderRadius.circular(20),
                       ),
                       child: const Row(
@@ -1304,7 +1633,7 @@ class _CreateTripViewState extends State<CreateTripView> {
                       color: Colors.white,
                       borderRadius: BorderRadius.circular(14),
                       border: Border.all(
-                        color: hasLoc ? AppTheme.primaryColor.withValues(alpha: 0.25) : Colors.grey.shade200,
+                        color: hasLoc ? AppTheme.effectivePrimary.withValues(alpha: 0.25) : Colors.grey.shade200,
                       ),
                     ),
                     child: Column(
@@ -1341,15 +1670,15 @@ class _CreateTripViewState extends State<CreateTripView> {
                                 ),
                               ),
                               if (hasLoc) ...[
-                                const SizedBox(width: 8),
+                                SizedBox(width: 8),
                                 Container(
                                   padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
                                   decoration: BoxDecoration(
-                                    color: AppTheme.primaryColor.withValues(alpha: 0.1),
+                                    color: AppTheme.effectivePrimary.withValues(alpha: 0.1),
                                     borderRadius: BorderRadius.circular(8),
                                   ),
-                                  child: const Text("Located",
-                                      style: TextStyle(fontSize: 10, fontWeight: FontWeight.w600, color: AppTheme.primaryColor)),
+                                  child: Text("Located",
+                                      style: TextStyle(fontSize: 10, fontWeight: FontWeight.w600, color: AppTheme.effectivePrimary)),
                                 ),
                               ],
                               const Spacer(),
@@ -1413,12 +1742,12 @@ class _CreateTripViewState extends State<CreateTripView> {
                                       icon: Icon(
                                         hasLoc ? Icons.check_circle_rounded : Icons.add_location_alt_outlined,
                                         size: 16,
-                                        color: hasLoc ? AppTheme.primaryColor : Colors.grey.shade500,
+                                        color: hasLoc ? AppTheme.effectivePrimary : Colors.grey.shade500,
                                       ),
                                       label: Text(
                                         hasLoc ? "Change Location" : "Set Location",
                                         style: TextStyle(
-                                          color: hasLoc ? AppTheme.primaryColor : Colors.grey.shade600,
+                                          color: hasLoc ? AppTheme.effectivePrimary : Colors.grey.shade600,
                                           fontWeight: FontWeight.w500,
                                           fontSize: 13,
                                         ),
@@ -1426,10 +1755,10 @@ class _CreateTripViewState extends State<CreateTripView> {
                                       style: OutlinedButton.styleFrom(
                                         padding: const EdgeInsets.symmetric(vertical: 12),
                                         side: BorderSide(
-                                          color: hasLoc ? AppTheme.primaryColor.withValues(alpha: 0.4) : Colors.grey.shade300,
+                                          color: hasLoc ? AppTheme.effectivePrimary.withValues(alpha: 0.4) : Colors.grey.shade300,
                                         ),
                                         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                                        backgroundColor: hasLoc ? AppTheme.primaryColor.withValues(alpha: 0.04) : null,
+                                        backgroundColor: hasLoc ? AppTheme.effectivePrimary.withValues(alpha: 0.04) : null,
                                       ),
                                     ),
                                   ),
@@ -1534,10 +1863,10 @@ class _SectionCard extends StatelessWidget {
                 Container(
                   width: 34, height: 34,
                   decoration: BoxDecoration(
-                    color: AppTheme.primaryColor.withValues(alpha: 0.1),
+                    color: AppTheme.effectivePrimary.withValues(alpha: 0.1),
                     borderRadius: BorderRadius.circular(9),
                   ),
-                  child: Icon(icon, size: 17, color: AppTheme.primaryColor),
+                  child: Icon(icon, size: 17, color: AppTheme.effectivePrimary),
                 ),
                 const SizedBox(width: 10),
                 Expanded(
@@ -1635,6 +1964,14 @@ class __AdminStudentSelectorState extends State<_AdminStudentSelector> {
   final Map<String, int?> _seatAssignments = {};
   bool _isLoading = true;
 
+  /// Roster entries whose student has not signed up yet, and the reason the
+  /// lookup failed — both feed the empty state so it can explain itself.
+  int _pendingRoster = 0;
+  String? _fetchError;
+
+  /// Active "Grade · Section" filter, or null for the whole roster.
+  String? _sectionFilter;
+
   @override
   void initState() {
     super.initState();
@@ -1650,30 +1987,165 @@ class __AdminStudentSelectorState extends State<_AdminStudentSelector> {
 
   Future<void> _fetchStudents() async {
     try {
-      final snapshot = await FirebaseFirestore.instance.collection('users').where('role', isEqualTo: 'student').get();
-      final students = snapshot.docs.where((doc) {
-        final role = (doc.data()['role'] ?? '').toString().toLowerCase().trim();
-        return role == 'student';
-      }).map((doc) => {
+      // Only students on this admin's school roster can be assigned to a trip.
+      // Accounts created before schools existed carry no schoolId — those admins
+      // keep the original unscoped list so their existing trips still work.
+      final schoolId = await SchoolContext.schoolId();
+      Query<Map<String, dynamic>> query = FirebaseFirestore.instance
+          .collection('users')
+          .where('role', isEqualTo: 'student');
+      if (schoolId != null) {
+        query = query.where('schoolId', isEqualTo: schoolId);
+      }
+
+      final snapshot = await query.get();
+      final students = snapshot.docs.map((doc) => {
         'id': doc.id,
         'name': doc.data()['name'] ?? 'Unknown',
         'studentId': doc.data()['studentId'] ?? doc.data()['lrn'] ?? 'N/A',
+        // Carried so a whole section can be assigned in one go instead of
+        // ticking students individually.
+        'gradeLevel': (doc.data()['gradeLevel'] ?? '').toString(),
+        'section': (doc.data()['section'] ?? '').toString(),
       }).toList();
+
+      // Roster entries still waiting on a sign-up. Without this the picker can
+      // only say "no students found", which is indistinguishable from an error
+      // even when the roster is full.
+      var pending = 0;
+      if (schoolId != null) {
+        final roster = await FirebaseFirestore.instance
+            .collection('roster')
+            .where('schoolId', isEqualTo: schoolId)
+            .get();
+        pending = roster.docs.where((d) => d.data()['status'] != 'claimed').length;
+      }
+
+      if (!mounted) return;
       setState(() {
         _allStudents = students;
         _filteredStudents = students;
+        _pendingRoster = pending;
+        _fetchError = null;
         _isLoading = false;
       });
     } catch (e) {
-      setState(() => _isLoading = false);
+      if (!mounted) return;
+      // Surfaced in the picker — a swallowed error here looked exactly like an
+      // empty roster, which sent us chasing the wrong problem.
+      setState(() {
+        _fetchError = e.toString();
+        _isLoading = false;
+      });
     }
+  }
+
+  /// Explains *why* the picker is empty, rather than a bare "no students found".
+  Widget _buildNoStudents() {
+    final String message;
+    final IconData icon;
+
+    if (_fetchError != null) {
+      icon = Icons.error_outline_rounded;
+      message = "Could not load students.\n\n$_fetchError";
+    } else if (_pendingRoster > 0) {
+      icon = Icons.hourglass_empty_rounded;
+      message = "$_pendingRoster ${_pendingRoster == 1 ? "student is" : "students are"} "
+          "on your roster but ${_pendingRoster == 1 ? "has" : "have"} not created "
+          "an account yet.\n\nThey appear here once they register with the email on "
+          "the roster. If they already have an account, use the link button on the "
+          "Students page.";
+    } else {
+      icon = Icons.person_off_outlined;
+      message = "No students are registered to your school yet.\n\n"
+          "Add them on the Students page — import a CSV or add them one at a time.";
+    }
+
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 40, color: Colors.grey.shade300),
+            const SizedBox(height: 12),
+            Text(
+              message,
+              textAlign: TextAlign.center,
+              style: TextStyle(fontSize: 12.5, color: Colors.grey.shade600, height: 1.5),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Distinct "Grade · Section" groups present in the roster, for the filter.
+  List<String> get _sectionOptions {
+    final set = <String>{};
+    for (final s in _allStudents) {
+      final label = _groupLabel(s);
+      if (label.isNotEmpty) set.add(label);
+    }
+    final list = set.toList()..sort();
+    return list;
+  }
+
+  String _groupLabel(Map<String, dynamic> s) {
+    final grade = (s['gradeLevel'] ?? '').toString().trim();
+    final section = (s['section'] ?? '').toString().trim();
+    return [grade, section].where((v) => v.isNotEmpty).join(' · ');
   }
 
   void _filterStudents() {
     final query = _searchController.text.toLowerCase();
     setState(() {
-      _filteredStudents =
-          _allStudents.where((s) => s['name'].toString().toLowerCase().contains(query)).toList();
+      _filteredStudents = _allStudents.where((s) {
+        final matchesName = s['name'].toString().toLowerCase().contains(query);
+        final matchesGroup = _sectionFilter == null || _groupLabel(s) == _sectionFilter;
+        return matchesName && matchesGroup;
+      }).toList();
+    });
+  }
+
+  /// Selects everyone currently listed, stopping at the bus capacity rather
+  /// than silently overfilling it.
+  void _selectAllFiltered() {
+    final toAdd = _filteredStudents
+        .map((s) => s['id'].toString())
+        .where((id) => !_selectedIds.contains(id))
+        .toList();
+
+    final room = widget.capacity - _selectedIds.length;
+    final taking = toAdd.take(room < 0 ? 0 : room).toList();
+
+    setState(() {
+      for (final id in taking) {
+        _selectedIds.add(id);
+        _seatAssignments[id] = null; // any seat; assigned on save
+      }
+    });
+
+    if (taking.length < toAdd.length) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        behavior: SnackBarBehavior.floating,
+        backgroundColor: Colors.orange,
+        content: Text(
+          "Bus is full — added ${taking.length} of ${toAdd.length}. "
+          "${toAdd.length - taking.length} could not fit in ${widget.capacity} seats.",
+        ),
+      ));
+    }
+  }
+
+  /// Clears only what is currently listed, leaving other sections selected.
+  void _clearFiltered() {
+    setState(() {
+      for (final s in _filteredStudents) {
+        final id = s['id'].toString();
+        _selectedIds.remove(id);
+        _seatAssignments.remove(id);
+      }
     });
   }
 
@@ -1785,10 +2257,10 @@ class __AdminStudentSelectorState extends State<_AdminStudentSelector> {
                 Container(
                   width: 38, height: 38,
                   decoration: BoxDecoration(
-                    color: AppTheme.primaryColor.withValues(alpha: 0.1),
+                    color: AppTheme.effectivePrimary.withValues(alpha: 0.1),
                     borderRadius: BorderRadius.circular(10),
                   ),
-                  child: const Icon(Icons.group_outlined, size: 18, color: AppTheme.primaryColor),
+                  child: Icon(Icons.group_outlined, size: 18, color: AppTheme.effectivePrimary),
                 ),
                 const SizedBox(width: 12),
                 const Expanded(
@@ -1820,35 +2292,90 @@ class __AdminStudentSelectorState extends State<_AdminStudentSelector> {
                 hintText: "Search student name…",
               ),
             ),
+            if (_sectionOptions.isNotEmpty) ...[
+              const SizedBox(height: 12),
+              Row(children: [
+                Expanded(
+                  child: DropdownButtonFormField<String?>(
+                    initialValue: _sectionFilter,
+                    isDense: true,
+                    decoration: InputDecoration(
+                      isDense: true,
+                      prefixIcon: const Icon(Icons.filter_alt_outlined, size: 18),
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(9)),
+                    ),
+                    items: [
+                      const DropdownMenuItem<String?>(
+                        value: null,
+                        child: Text('All sections', style: TextStyle(fontSize: 13)),
+                      ),
+                      for (final opt in _sectionOptions)
+                        DropdownMenuItem<String?>(
+                          value: opt,
+                          child: Text(opt, style: const TextStyle(fontSize: 13)),
+                        ),
+                    ],
+                    onChanged: (v) {
+                      setState(() => _sectionFilter = v);
+                      _filterStudents();
+                    },
+                  ),
+                ),
+                const SizedBox(width: 8),
+                // Assigning a whole section is the common case; ticking 40 boxes
+                // one at a time is not.
+                TextButton.icon(
+                  onPressed: _filteredStudents.isEmpty ? null : _selectAllFiltered,
+                  icon: const Icon(Icons.done_all_rounded, size: 17),
+                  label: Text(
+                    _sectionFilter == null
+                        ? 'Select all'
+                        : 'Select section (${_filteredStudents.length})',
+                    style: const TextStyle(fontSize: 12.5),
+                  ),
+                  style: TextButton.styleFrom(
+                    minimumSize: const Size(0, 40),
+                    foregroundColor: AppTheme.effectivePrimary,
+                  ),
+                ),
+              ]),
+            ],
             Padding(
               padding: const EdgeInsets.only(top: 10),
               child: Row(
                 children: [
-                  const Icon(Icons.check_circle_rounded, size: 14, color: AppTheme.primaryColor),
-                  const SizedBox(width: 6),
-                  Text(
-                    "${_selectedIds.length}/${widget.capacity} selected · Bus ${widget.busLabel}",
-                    style: const TextStyle(
-                        fontSize: 12, fontWeight: FontWeight.w600, color: AppTheme.primaryColor),
+                  Icon(Icons.check_circle_rounded, size: 14, color: AppTheme.effectivePrimary),
+                  SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      "${_selectedIds.length}/${widget.capacity} selected · Bus ${widget.busLabel}",
+                      style: TextStyle(
+                          fontSize: 12, fontWeight: FontWeight.w600, color: AppTheme.effectivePrimary),
+                    ),
                   ),
+                  if (_filteredStudents.any((s) => _selectedIds.contains(s['id'].toString())))
+                    TextButton(
+                      onPressed: _clearFiltered,
+                      style: TextButton.styleFrom(
+                        minimumSize: const Size(0, 28),
+                        padding: const EdgeInsets.symmetric(horizontal: 8),
+                        foregroundColor: Colors.grey.shade600,
+                      ),
+                      child: Text(
+                        _sectionFilter == null ? 'Clear all' : 'Clear section',
+                        style: const TextStyle(fontSize: 11.5),
+                      ),
+                    ),
                 ],
               ),
             ),
-            const SizedBox(height: 8),
+            SizedBox(height: 8),
             Expanded(
               child: _isLoading
-                  ? const Center(child: CircularProgressIndicator(color: AppTheme.primaryColor))
+                  ? Center(child: CircularProgressIndicator(color: AppTheme.effectivePrimary))
                   : _filteredStudents.isEmpty
-                      ? Center(
-                          child: Column(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Icon(Icons.person_off_outlined, size: 40, color: Colors.grey.shade300),
-                              const SizedBox(height: 10),
-                              Text("No students found", style: TextStyle(color: Colors.grey.shade400)),
-                            ],
-                          ),
-                        )
+                      ? _buildNoStudents()
                       : ListView.separated(
                           itemCount: _filteredStudents.length,
                           separatorBuilder: (_, __) => Divider(color: Colors.grey.shade100, height: 1),
@@ -1868,23 +2395,23 @@ class __AdminStudentSelectorState extends State<_AdminStudentSelector> {
                                       duration: const Duration(milliseconds: 150),
                                       width: 22, height: 22,
                                       decoration: BoxDecoration(
-                                        color: isSelected ? AppTheme.primaryColor : Colors.transparent,
+                                        color: isSelected ? AppTheme.effectivePrimary : Colors.transparent,
                                         borderRadius: BorderRadius.circular(6),
                                         border: Border.all(
-                                          color: isSelected ? AppTheme.primaryColor : Colors.grey.shade300,
+                                          color: isSelected ? AppTheme.effectivePrimary : Colors.grey.shade300,
                                           width: 1.5,
                                         ),
                                       ),
                                       child: isSelected
-                                          ? const Icon(Icons.check_rounded, size: 14, color: Colors.white)
+                                          ? Icon(Icons.check_rounded, size: 14, color: Colors.white)
                                           : null,
                                     ),
-                                    const SizedBox(width: 12),
+                                    SizedBox(width: 12),
                                     CircleAvatar(
                                       radius: 16,
-                                      backgroundColor: AppTheme.primaryColor.withValues(alpha: 0.1),
+                                      backgroundColor: AppTheme.effectivePrimary.withValues(alpha: 0.1),
                                       child: Text(s['name'][0].toUpperCase(),
-                                          style: const TextStyle(color: AppTheme.primaryColor, fontWeight: FontWeight.bold, fontSize: 13)),
+                                          style: TextStyle(color: AppTheme.effectivePrimary, fontWeight: FontWeight.bold, fontSize: 13)),
                                     ),
                                     const SizedBox(width: 10),
                                     Expanded(
@@ -1911,12 +2438,12 @@ class __AdminStudentSelectorState extends State<_AdminStudentSelector> {
                                           decoration: BoxDecoration(
                                             color: seat == null
                                                 ? Colors.grey.shade100
-                                                : AppTheme.primaryColor.withValues(alpha: 0.12),
+                                                : AppTheme.effectivePrimary.withValues(alpha: 0.12),
                                             borderRadius: BorderRadius.circular(8),
                                             border: Border.all(
                                               color: seat == null
                                                   ? Colors.grey.shade300
-                                                  : AppTheme.primaryColor.withValues(alpha: 0.4),
+                                                  : AppTheme.effectivePrimary.withValues(alpha: 0.4),
                                             ),
                                           ),
                                           child: Row(
@@ -1926,7 +2453,7 @@ class __AdminStudentSelectorState extends State<_AdminStudentSelector> {
                                                   size: 14,
                                                   color: seat == null
                                                       ? Colors.grey.shade500
-                                                      : AppTheme.primaryColor),
+                                                      : AppTheme.effectivePrimary),
                                               const SizedBox(width: 4),
                                               Text(
                                                 seat == null ? "Any" : "Seat $seat",
@@ -1935,7 +2462,7 @@ class __AdminStudentSelectorState extends State<_AdminStudentSelector> {
                                                   fontWeight: FontWeight.w600,
                                                   color: seat == null
                                                       ? Colors.grey.shade600
-                                                      : AppTheme.primaryColor,
+                                                      : AppTheme.effectivePrimary,
                                                 ),
                                               ),
                                             ],
@@ -2013,11 +2540,11 @@ class _SeatPickerDialogState extends State<_SeatPickerDialog> {
                   width: 38,
                   height: 38,
                   decoration: BoxDecoration(
-                    color: AppTheme.primaryColor.withValues(alpha: 0.1),
+                    color: AppTheme.effectivePrimary.withValues(alpha: 0.1),
                     borderRadius: BorderRadius.circular(10),
                   ),
-                  child: const Icon(Icons.event_seat_outlined,
-                      size: 18, color: AppTheme.primaryColor),
+                  child: Icon(Icons.event_seat_outlined,
+                      size: 18, color: AppTheme.effectivePrimary),
                 ),
                 const SizedBox(width: 12),
                 Expanded(
@@ -2044,20 +2571,20 @@ class _SeatPickerDialogState extends State<_SeatPickerDialog> {
                     padding: const EdgeInsets.all(6),
                     decoration: BoxDecoration(
                         color: Colors.grey.shade100, shape: BoxShape.circle),
-                    child: const Icon(Icons.close,
+                    child: Icon(Icons.close,
                         size: 16, color: AppTheme.secondaryColor),
                   ),
                 ),
               ],
             ),
-            const SizedBox(height: 14),
+            SizedBox(height: 14),
             // Legend
             Row(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
                 _legendDot(Colors.grey.shade200, "Free"),
-                const SizedBox(width: 14),
-                _legendDot(AppTheme.primaryColor, "Selected"),
+                SizedBox(width: 14),
+                _legendDot(AppTheme.effectivePrimary, "Selected"),
                 const SizedBox(width: 14),
                 _legendDot(Colors.red.shade300, "Taken"),
               ],
@@ -2087,7 +2614,7 @@ class _SeatPickerDialogState extends State<_SeatPickerDialog> {
                     final Color bg;
                     final Color fg;
                     if (isSelected) {
-                      bg = AppTheme.primaryColor;
+                      bg = AppTheme.effectivePrimary;
                       fg = Colors.white;
                     } else if (isTaken) {
                       bg = Colors.red.shade100;
@@ -2109,7 +2636,7 @@ class _SeatPickerDialogState extends State<_SeatPickerDialog> {
                           borderRadius: BorderRadius.circular(8),
                           border: Border.all(
                             color: isSelected
-                                ? AppTheme.primaryColor
+                                ? AppTheme.effectivePrimary
                                 : Colors.grey.shade200,
                           ),
                         ),

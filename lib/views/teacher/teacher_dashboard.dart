@@ -18,9 +18,11 @@ import '../../controllers/auth_controller.dart';
 import '../../utils/chat_sync.dart';
 import '../../utils/firestore_utils.dart';
 import '../../utils/live_tracker.dart';
+import '../../utils/trip_queries.dart';
 import '../auth/mobile_login_view.dart';
 import '../shared/settings_view.dart';
 import '../shared/chat_view.dart';
+import 'teacher_documents_tab.dart';
 
 /// Shared emergency-sound playback so any teacher screen can stop the alarm
 /// regardless of who started it.
@@ -100,6 +102,8 @@ class _TeacherDashboardState extends State<TeacherDashboard> {
   late final List<Widget> _pages;
   StreamSubscription<QuerySnapshot>? _emergencySubscription;
   StreamSubscription<QuerySnapshot>? _geofenceTripSub;
+  final _sosNotifier = ValueNotifier<List<Map<String, dynamic>>>([]);
+  bool _sosDialogOpen = false;
   StreamSubscription<QuerySnapshot>? _geofenceAlertSub;
   String? _watchedTripId;
   final Set<String> _activeGeofenceStudents = {};
@@ -107,7 +111,13 @@ class _TeacherDashboardState extends State<TeacherDashboard> {
   @override
   void initState() {
     super.initState();
-    _pages = [const TeacherTripsTab(), const TeacherStudentsTab(), const ChatListView(), const TeacherProfileTab()];
+    _pages = [
+      const TeacherTripsTab(),
+      const TeacherStudentsTab(),
+      const TeacherDocumentsTab(),
+      const ChatListView(),
+      const TeacherProfileTab(),
+    ];
     _requestLocationPermission();
     _listenForEmergencies();
     _listenForGeofenceAlerts();
@@ -121,29 +131,128 @@ class _TeacherDashboardState extends State<TeacherDashboard> {
         .where('status', isEqualTo: 'pending')
         .snapshots()
         .listen((snapshot) {
-      for (var change in snapshot.docChanges) {
+      final newEntries = <Map<String, dynamic>>[];
+      for (final change in snapshot.docChanges) {
         if (change.type == DocumentChangeType.added) {
-          _showEmergencyAlarm(change.doc);
+          final data = change.doc.data() as Map<String, dynamic>;
+          newEntries.add({
+            'ref': change.doc.reference,
+            'name': (data['studentName'] as String?) ?? 'Student',
+          });
         }
       }
+      if (newEntries.isEmpty) return;
+      _sosNotifier.value = [..._sosNotifier.value, ...newEntries];
+      if (!_sosDialogOpen) {
+        _sosDialogOpen = true;
+        _showConsolidatedSosDialog();
+      }
+    });
+  }
+
+  void _showConsolidatedSosDialog() {
+    _playEmergencyAlarm();
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => ValueListenableBuilder<List<Map<String, dynamic>>>(
+        valueListenable: _sosNotifier,
+        builder: (_, entries, __) => AlertDialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          backgroundColor: Colors.red.shade50,
+          title: Row(
+            children: [
+              const Icon(Icons.warning_amber_rounded, color: Colors.red, size: 32),
+              const SizedBox(width: 8),
+              const Expanded(
+                child: Text(
+                  "SOS ALERT",
+                  style: TextStyle(color: Colors.red, fontWeight: FontWeight.bold, fontSize: 18),
+                ),
+              ),
+              if (entries.length > 1)
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  decoration: BoxDecoration(color: Colors.red, borderRadius: BorderRadius.circular(12)),
+                  child: Text('${entries.length}', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                ),
+            ],
+          ),
+          content: SizedBox(
+            width: double.maxFinite,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  entries.length == 1
+                      ? '${entries.first['name']} has pressed the emergency button!'
+                      : '${entries.length} students need help:',
+                  style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w500),
+                ),
+                if (entries.length > 1) ...[
+                  const SizedBox(height: 10),
+                  ...entries.map((e) => Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 3),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.person_rounded, size: 16, color: Colors.red),
+                        const SizedBox(width: 8),
+                        Text(e['name'] as String, style: const TextStyle(fontWeight: FontWeight.w600)),
+                      ],
+                    ),
+                  )),
+                ],
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                for (final e in _sosNotifier.value) {
+                  (e['ref'] as DocumentReference).update({'status': 'dismissed'});
+                }
+                _stopEmergencySound();
+                _sosNotifier.value = [];
+                Navigator.pop(ctx);
+              },
+              child: const Text("Dismiss All", style: TextStyle(color: Colors.grey)),
+            ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+              onPressed: () {
+                for (final e in _sosNotifier.value) {
+                  (e['ref'] as DocumentReference).update({'status': 'accepted'});
+                }
+                _stopEmergencySound();
+                _sosNotifier.value = [];
+                Navigator.pop(ctx);
+              },
+              child: const Text("Accept & Rescue", style: TextStyle(color: Colors.white)),
+            ),
+          ],
+        ),
+      ),
+    ).then((_) {
+      _sosDialogOpen = false;
+      _sosNotifier.value = [];
     });
   }
 
   /// Watches in-progress trips for this teacher. When a student leaves the
   /// geofence (a new alert doc is written to trips/{id}/alerts), plays the
-  /// alarm and shows a dialog — regardless of which tab is active.
+  /// alarm and shows a dialog -- regardless of which tab is active.
   void _listenForGeofenceAlerts() {
     final uid = FirebaseAuth.instance.currentUser?.uid;
     if (uid == null) return;
 
-    _geofenceTripSub = FirebaseFirestore.instance
-        .collection('trips')
-        .where('status', isEqualTo: 'in_progress')
-        .snapshots()
-        .listen((snap) {
+    // Scoped to trips this teacher is assigned to; the in_progress check moves
+    // into the loop because a second filter would require a composite index.
+    _geofenceTripSub = TripQueries.mine().listen((snap) {
       String? newTripId;
       outer:
       for (final doc in snap.docs) {
+        if (doc.data()['status'] != 'in_progress') continue;
         final buses = asList(doc.data()['buses']);
         for (final b in buses) {
           if (b is Map) {
@@ -162,7 +271,7 @@ class _TeacherDashboardState extends State<TeacherDashboard> {
       if (newTripId == null) return;
       // isFirstSnapshot + seenIds live in the closure so they reset each time
       // we set up a new listener (new tripId). On the very first snapshot
-      // Firestore sends ALL existing docs as "added" — we collect their IDs
+      // Firestore sends ALL existing docs as "added" -- we collect their IDs
       // and skip them. Only truly new docs (added after we started listening)
       // will trigger the alarm.
       bool isFirstSnapshot = true;
@@ -174,19 +283,23 @@ class _TeacherDashboardState extends State<TeacherDashboard> {
           .where('status', isEqualTo: 'pending')
           .snapshots()
           .listen((alertSnap) {
-        if (isFirstSnapshot) {
-          isFirstSnapshot = false;
-          for (final d in alertSnap.docs) seenIds.add(d.id);
-          return;
-        }
         for (final change in alertSnap.docChanges) {
-          if (change.type == DocumentChangeType.added &&
-              !seenIds.contains(change.doc.id)) {
-            seenIds.add(change.doc.id);
-            final data = change.doc.data() as Map<String, dynamic>;
-            _showGeofenceAlert(change.doc.reference, data);
+          if (change.type != DocumentChangeType.added) continue;
+          if (seenIds.contains(change.doc.id)) continue;
+          seenIds.add(change.doc.id);
+          final data = change.doc.data() as Map<String, dynamic>;
+          // On first snapshot, only alarm for alerts created in the last 10 minutes
+          // so the teacher sees alerts they missed while the app was closed, but
+          // old resolved alerts from earlier in the trip don't trigger the alarm.
+          if (isFirstSnapshot) {
+            final ts = data['createdAt'];
+            if (ts == null) continue;
+            final created = (ts as Timestamp).toDate();
+            if (DateTime.now().difference(created).inMinutes > 10) continue;
           }
+          _showGeofenceAlert(change.doc.reference, data);
         }
+        isFirstSnapshot = false;
       });
     });
   }
@@ -242,51 +355,6 @@ class _TeacherDashboardState extends State<TeacherDashboard> {
     ).then((_) => _activeGeofenceStudents.remove(studentId));
   }
 
-  void _showEmergencyAlarm(DocumentSnapshot doc) {
-    final data = doc.data() as Map<String, dynamic>;
-
-    _playEmergencyAlarm();
-
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (ctx) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        backgroundColor: Colors.red.shade50,
-        title: Row(
-          children: [
-            const Icon(Icons.warning_amber_rounded, color: Colors.red, size: 32),
-            const SizedBox(width: 8),
-            const Text("EMERGENCY ALERT", style: TextStyle(color: Colors.red, fontWeight: FontWeight.bold, fontSize: 18)),
-          ],
-        ),
-        content: Text(
-          "${data['studentName']} has pressed the emergency button!",
-          style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w500),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () {
-              doc.reference.update({'status': 'dismissed'});
-              _stopEmergencySound();
-              Navigator.pop(ctx);
-            },
-            child: const Text("Dismiss", style: TextStyle(color: Colors.grey)),
-          ),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
-            onPressed: () {
-              doc.reference.update({'status': 'accepted'});
-              FlutterRingtonePlayer().stop();
-              Navigator.pop(ctx);
-            },
-            child: const Text("Accept & Rescue", style: TextStyle(color: Colors.white)),
-          ),
-        ],
-      ),
-    );
-  }
-
   Future<void> _requestLocationPermission() async {
     LocationPermission permission = await Geolocator.checkPermission();
     if (permission == LocationPermission.denied) {
@@ -299,6 +367,7 @@ class _TeacherDashboardState extends State<TeacherDashboard> {
     _emergencySubscription?.cancel();
     _geofenceTripSub?.cancel();
     _geofenceAlertSub?.cancel();
+    _sosNotifier.dispose();
     super.dispose();
   }
 
@@ -361,28 +430,33 @@ class _TeacherDashboardState extends State<TeacherDashboard> {
           selectedIndex: _selectedIndex,
           onDestinationSelected: (i) => setState(() => _selectedIndex = i),
           backgroundColor: Colors.white,
-          indicatorColor: AppTheme.primaryColor.withValues(alpha: 0.12),
+          indicatorColor: AppTheme.effectivePrimary.withValues(alpha: 0.12),
           elevation: 0,
           labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
-          destinations: const [
+          destinations: [
             NavigationDestination(
               icon: Icon(Icons.route_outlined),
-              selectedIcon: Icon(Icons.route, color: AppTheme.primaryColor),
+              selectedIcon: Icon(Icons.route, color: AppTheme.effectivePrimary),
               label: "Trips",
             ),
             NavigationDestination(
               icon: Icon(Icons.people_outline_rounded),
-              selectedIcon: Icon(Icons.people_rounded, color: AppTheme.primaryColor),
+              selectedIcon: Icon(Icons.people_rounded, color: AppTheme.effectivePrimary),
               label: "Students",
             ),
             NavigationDestination(
+              icon: Icon(Icons.assignment_outlined),
+              selectedIcon: Icon(Icons.assignment, color: AppTheme.effectivePrimary),
+              label: "Forms",
+            ),
+            NavigationDestination(
               icon: Icon(Icons.chat_bubble_outline_rounded),
-              selectedIcon: Icon(Icons.chat_bubble_rounded, color: AppTheme.primaryColor),
+              selectedIcon: Icon(Icons.chat_bubble_rounded, color: AppTheme.effectivePrimary),
               label: "Chats",
             ),
             NavigationDestination(
               icon: Icon(Icons.person_outline),
-              selectedIcon: Icon(Icons.person, color: AppTheme.primaryColor),
+              selectedIcon: Icon(Icons.person, color: AppTheme.effectivePrimary),
               label: "Profile",
             ),
           ],
@@ -405,20 +479,18 @@ class TeacherTripsTab extends StatelessWidget {
         backgroundColor: Colors.white,
         elevation: 0,
         titleSpacing: 24,
-        title: const Text("My Trips", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 22, color: AppTheme.secondaryColor)),
+        title: Text("My Trips", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 22, color: AppTheme.secondaryColor)),
       ),
-      body: StreamBuilder<QuerySnapshot>(
-        stream: FirebaseFirestore.instance
-            .collection('trips')
-            .where('status', isNotEqualTo: 'completed')
-            .snapshots(),
+      body: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+        stream: TripQueries.mine(),
         builder: (context, snapshot) {
           if (!snapshot.hasData) {
-            return const Center(child: CircularProgressIndicator(color: AppTheme.primaryColor));
+            return Center(child: CircularProgressIndicator(color: AppTheme.effectivePrimary));
           }
 
           final myTrips = snapshot.data!.docs.where((doc) {
-            final data = doc.data() as Map<String, dynamic>;
+            final data = doc.data();
+            if (data['status'] == 'completed') return false;
             final buses = asList(data['buses']);
             for (var bus in buses) {
               if (bus?['mainTeacher']?['id'] == myUid || bus?['coTeacher']?['id'] == myUid) return true;
@@ -446,7 +518,7 @@ class TeacherTripsTab extends StatelessWidget {
             itemCount: myTrips.length,
             itemBuilder: (context, index) {
               final doc = myTrips[index];
-              final data = doc.data() as Map<String, dynamic>;
+              final data = doc.data();
               final status = data['status'] ?? 'pending';
 
               return GestureDetector(
@@ -467,10 +539,10 @@ class TeacherTripsTab extends StatelessWidget {
                         width: 48,
                         height: 48,
                         decoration: BoxDecoration(
-                          color: AppTheme.primaryColor.withValues(alpha: 0.1),
+                          color: AppTheme.effectivePrimary.withValues(alpha: 0.1),
                           borderRadius: BorderRadius.circular(12),
                         ),
-                        child: const Icon(Icons.directions_bus_rounded, color: AppTheme.primaryColor, size: 24),
+                        child: Icon(Icons.directions_bus_rounded, color: AppTheme.effectivePrimary, size: 24),
                       ),
                       const SizedBox(width: 14),
                       Expanded(
@@ -520,8 +592,8 @@ class _StatusChip extends StatelessWidget {
         label = 'Active';
         break;
       default:
-        bg = AppTheme.primaryColor.withValues(alpha: 0.1);
-        fg = AppTheme.primaryColor;
+        bg = AppTheme.effectivePrimary.withValues(alpha: 0.1);
+        fg = AppTheme.effectivePrimary;
         label = 'Upcoming';
     }
 
@@ -565,17 +637,20 @@ class _TeacherTripDetailsState extends State<TeacherTripDetails> {
         .where('status', isEqualTo: 'pending')
         .snapshots()
         .listen((snapshot) {
-      if (isFirstSnapshot) {
-        isFirstSnapshot = false;
-        for (final d in snapshot.docs) seenIds.add(d.id);
-        return;
-      }
-      for (var change in snapshot.docChanges) {
-        if (change.type == DocumentChangeType.added && !seenIds.contains(change.doc.id)) {
-          seenIds.add(change.doc.id);
-          _showGeofenceAlarm(change.doc);
+      for (final change in snapshot.docChanges) {
+        if (change.type != DocumentChangeType.added) continue;
+        if (seenIds.contains(change.doc.id)) continue;
+        seenIds.add(change.doc.id);
+        final data = change.doc.data() as Map<String, dynamic>;
+        if (isFirstSnapshot) {
+          final ts = data['createdAt'];
+          if (ts == null) continue;
+          final created = (ts as Timestamp).toDate();
+          if (DateTime.now().difference(created).inMinutes > 10) continue;
         }
+        _showGeofenceAlarm(change.doc);
       }
+      isFirstSnapshot = false;
     });
   }
 
@@ -753,7 +828,7 @@ class _TeacherTripDetailsState extends State<TeacherTripDetails> {
                 Container(
                   padding: const EdgeInsets.symmetric(vertical: 20),
                   child: _isProcessingQR
-                      ? const CircularProgressIndicator(color: AppTheme.primaryColor)
+                      ? CircularProgressIndicator(color: AppTheme.effectivePrimary)
                       : Row(
                           mainAxisAlignment: MainAxisAlignment.center,
                           children: [
@@ -860,7 +935,7 @@ class _TeacherTripDetailsState extends State<TeacherTripDetails> {
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx),
-            child: const Text("OK", style: TextStyle(color: AppTheme.secondaryColor)),
+            child: Text("OK", style: TextStyle(color: AppTheme.secondaryColor)),
           ),
         ],
       ),
@@ -873,7 +948,7 @@ class _TeacherTripDetailsState extends State<TeacherTripDetails> {
       stream: FirebaseFirestore.instance.collection('trips').doc(widget.tripId).snapshots(),
       builder: (context, snapshot) {
         if (!snapshot.hasData) {
-          return const Scaffold(body: Center(child: CircularProgressIndicator(color: AppTheme.primaryColor)));
+          return Scaffold(body: Center(child: CircularProgressIndicator(color: AppTheme.effectivePrimary)));
         }
 
         final data = snapshot.data!.data() as Map<String, dynamic>;
@@ -969,20 +1044,20 @@ class _TeacherTripDetailsState extends State<TeacherTripDetails> {
                     child: Container(
                       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
                       decoration: BoxDecoration(
-                        color: AppTheme.primaryColor.withValues(alpha: 0.08),
+                        color: AppTheme.effectivePrimary.withValues(alpha: 0.08),
                         borderRadius: BorderRadius.circular(10),
                       ),
                       child: Row(
                         children: [
-                          const Icon(Icons.schedule_rounded,
-                              size: 16, color: AppTheme.primaryColor),
+                          Icon(Icons.schedule_rounded,
+                              size: 16, color: AppTheme.effectivePrimary),
                           const SizedBox(width: 8),
                           Text(
                             "Estimated total trip time: ${data['totalDuration']}",
-                            style: const TextStyle(
+                            style: TextStyle(
                               fontSize: 12,
                               fontWeight: FontWeight.w600,
-                              color: AppTheme.primaryColor,
+                              color: AppTheme.effectivePrimary,
                             ),
                           ),
                         ],
@@ -1086,7 +1161,7 @@ class _TeacherTripDetailsState extends State<TeacherTripDetails> {
                       color: Colors.white,
                       borderRadius: BorderRadius.circular(16),
                       border: Border.all(
-                        color: isActive ? AppTheme.primaryColor : Colors.transparent,
+                        color: isActive ? AppTheme.effectivePrimary : Colors.transparent,
                         width: 2,
                       ),
                       boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.05), blurRadius: 10, offset: const Offset(0, 4))],
@@ -1100,11 +1175,11 @@ class _TeacherTripDetailsState extends State<TeacherTripDetails> {
                           width: 38,
                           height: 38,
                           decoration: BoxDecoration(
-                            color: isActive ? AppTheme.primaryColor.withValues(alpha: 0.12) : Colors.grey.shade100,
+                            color: isActive ? AppTheme.effectivePrimary.withValues(alpha: 0.12) : Colors.grey.shade100,
                             shape: BoxShape.circle,
                           ),
                           child: Icon(Icons.location_on_rounded,
-                              color: isActive ? AppTheme.primaryColor : Colors.grey.shade400, size: 20),
+                              color: isActive ? AppTheme.effectivePrimary : Colors.grey.shade400, size: 20),
                         ),
                         title: Text(stop['name'],
                             style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14, color: AppTheme.secondaryColor)),
@@ -1117,15 +1192,15 @@ class _TeacherTripDetailsState extends State<TeacherTripDetails> {
                               Container(
                                 padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
                                 decoration: BoxDecoration(
-                                  color: AppTheme.primaryColor.withValues(alpha: 0.1),
+                                  color: AppTheme.effectivePrimary.withValues(alpha: 0.1),
                                   borderRadius: BorderRadius.circular(6),
                                 ),
                                 child: Text(
                                   "ETA ${stop['etaFromPrev']}",
-                                  style: const TextStyle(
+                                  style: TextStyle(
                                     fontSize: 10,
                                     fontWeight: FontWeight.w600,
-                                    color: AppTheme.primaryColor,
+                                    color: AppTheme.effectivePrimary,
                                   ),
                                 ),
                               ),
@@ -1144,15 +1219,15 @@ class _TeacherTripDetailsState extends State<TeacherTripDetails> {
                                     ? Container(
                                         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
                                         decoration: BoxDecoration(
-                                          color: (isAtDest ? Colors.orange : AppTheme.primaryColor).withValues(alpha: 0.1),
+                                          color: (isAtDest ? Colors.orange : AppTheme.effectivePrimary).withValues(alpha: 0.1),
                                           borderRadius: BorderRadius.circular(20),
                                         ),
                                         child: Row(mainAxisSize: MainAxisSize.min, children: [
-                                          Icon(Icons.swipe_right_alt_rounded, size: 14, color: isAtDest ? Colors.orange.shade700 : AppTheme.primaryColor),
+                                          Icon(Icons.swipe_right_alt_rounded, size: 14, color: isAtDest ? Colors.orange.shade700 : AppTheme.effectivePrimary),
                                           const SizedBox(width: 4),
                                           Text(
                                             isAtDest ? "Depart" : (isOriginStop ? "Start" : "Arrive"),
-                                            style: TextStyle(fontWeight: FontWeight.w600, fontSize: 12, color: isAtDest ? Colors.orange.shade700 : AppTheme.primaryColor),
+                                            style: TextStyle(fontWeight: FontWeight.w600, fontSize: 12, color: isAtDest ? Colors.orange.shade700 : AppTheme.effectivePrimary),
                                           ),
                                         ]),
                                       )
@@ -1174,7 +1249,7 @@ class _TeacherTripDetailsState extends State<TeacherTripDetails> {
                                 if (canStartOrArrive) ...[
                                   _SlideToConfirm(
                                     label: isOriginStop ? "Slide to Start" : "Slide to Arrive",
-                                    color: AppTheme.primaryColor,
+                                    color: AppTheme.effectivePrimary,
                                     onConfirmed: () => _arriveAtStop(context, stops, statuses, i),
                                   ),
                                   const SizedBox(height: 14),
@@ -1205,11 +1280,11 @@ class _TeacherTripDetailsState extends State<TeacherTripDetails> {
                                     const SizedBox(width: 10),
                                     Expanded(
                                       child: OutlinedButton.icon(
-                                        icon: const Icon(Icons.map_outlined, size: 18),
-                                        label: const Text("View Map"),
+                                        icon: Icon(Icons.map_outlined, size: 18),
+                                        label: Text("View Map"),
                                         style: OutlinedButton.styleFrom(
-                                          foregroundColor: AppTheme.primaryColor,
-                                          side: BorderSide(color: AppTheme.primaryColor.withValues(alpha: 0.4)),
+                                          foregroundColor: AppTheme.effectivePrimary,
+                                          side: BorderSide(color: AppTheme.effectivePrimary.withValues(alpha: 0.4)),
                                           padding: const EdgeInsets.symmetric(vertical: 12),
                                           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                                         ),
@@ -1233,16 +1308,16 @@ class _TeacherTripDetailsState extends State<TeacherTripDetails> {
                                 Row(
                                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                                   children: [
-                                    const Text("Attendance", style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13, color: AppTheme.secondaryColor)),
+                                    Text("Attendance", style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13, color: AppTheme.secondaryColor)),
                                     Container(
                                       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
                                       decoration: BoxDecoration(
-                                        color: AppTheme.primaryColor.withValues(alpha: 0.1),
+                                        color: AppTheme.effectivePrimary.withValues(alpha: 0.1),
                                         borderRadius: BorderRadius.circular(20),
                                       ),
                                       child: Text(
                                         "$presentCount / ${assignedStudents.length}",
-                                        style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: AppTheme.primaryColor),
+                                        style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: AppTheme.effectivePrimary),
                                       ),
                                     ),
                                   ],
@@ -1257,7 +1332,7 @@ class _TeacherTripDetailsState extends State<TeacherTripDetails> {
                                       children: [
                                         Icon(
                                           isPresent ? Icons.check_circle_rounded : Icons.radio_button_unchecked_rounded,
-                                          color: isPresent ? AppTheme.primaryColor : Colors.grey.shade300,
+                                          color: isPresent ? AppTheme.effectivePrimary : Colors.grey.shade300,
                                           size: 18,
                                         ),
                                         const SizedBox(width: 10),
@@ -1365,11 +1440,11 @@ class _DestinationMapDialogState extends State<DestinationMapDialog> {
                     width: 36,
                     height: 36,
                     decoration: BoxDecoration(
-                      color: AppTheme.primaryColor.withValues(alpha: 0.1),
+                      color: AppTheme.effectivePrimary.withValues(alpha: 0.1),
                       borderRadius: BorderRadius.circular(10),
                     ),
-                    child: const Icon(Icons.location_on_rounded,
-                        color: AppTheme.primaryColor, size: 18),
+                    child: Icon(Icons.location_on_rounded,
+                        color: AppTheme.effectivePrimary, size: 18),
                   ),
                   const SizedBox(width: 12),
                   Expanded(
@@ -1387,9 +1462,9 @@ class _DestinationMapDialogState extends State<DestinationMapDialog> {
                         if ((widget.stop['etaFromPrev'] ?? '').toString().isNotEmpty)
                           Text(
                             "ETA from previous: ${widget.stop['etaFromPrev']}",
-                            style: const TextStyle(
+                            style: TextStyle(
                               fontSize: 12,
-                              color: AppTheme.primaryColor,
+                              color: AppTheme.effectivePrimary,
                               fontWeight: FontWeight.w600,
                             ),
                           ),
@@ -1417,8 +1492,8 @@ class _DestinationMapDialogState extends State<DestinationMapDialog> {
                               circleId: const CircleId('dest_geofence'),
                               center: dest,
                               radius: radius,
-                              fillColor: AppTheme.primaryColor.withValues(alpha: 0.15),
-                              strokeColor: AppTheme.primaryColor,
+                              fillColor: AppTheme.effectivePrimary.withValues(alpha: 0.15),
+                              strokeColor: AppTheme.effectivePrimary,
                               strokeWidth: 2,
                             ),
                           }
@@ -1565,7 +1640,7 @@ class _TeacherSeatMapDialogState extends State<TeacherSeatMapDialog> {
     }
   }
 
-  /// Format a student's name as "C. Sevilla" — initials of all name parts
+  /// Format a student's name as "C. Sevilla" -- initials of all name parts
   /// except the last word, then the last word as the surname.
   /// "Cedric Sevilla" -> "C. Sevilla"
   /// "Juan Dela Cruz" -> "J. D. Cruz"
@@ -1606,25 +1681,25 @@ class _TeacherSeatMapDialogState extends State<TeacherSeatMapDialog> {
                     width: 36,
                     height: 36,
                     decoration: BoxDecoration(
-                      color: AppTheme.primaryColor.withValues(alpha: 0.1),
+                      color: AppTheme.effectivePrimary.withValues(alpha: 0.1),
                       borderRadius: BorderRadius.circular(10),
                     ),
-                    child: const Icon(Icons.event_seat_outlined,
-                        color: AppTheme.primaryColor, size: 18),
+                    child: Icon(Icons.event_seat_outlined,
+                        color: AppTheme.effectivePrimary, size: 18),
                   ),
                   const SizedBox(width: 12),
                   Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text("Bus $busLabel — Seat Map",
+                        Text("Bus $busLabel -- Seat Map",
                             style: const TextStyle(
                                 fontSize: 16,
                                 fontWeight: FontWeight.bold,
                                 color: AppTheme.secondaryColor)),
                         Text(
                           "${occupied.length}/$_capacity occupied"
-                          "${unseated > 0 ? " · $unseated unseated" : ""}",
+                          "${unseated > 0 ? " Â· $unseated unseated" : ""}",
                           style: const TextStyle(fontSize: 12, color: Colors.grey),
                         ),
                       ],
@@ -1670,12 +1745,12 @@ class _TeacherSeatMapDialogState extends State<TeacherSeatMapDialog> {
                           height: 86,
                           decoration: BoxDecoration(
                             color: taken
-                                ? AppTheme.primaryColor.withValues(alpha: 0.12)
+                                ? AppTheme.effectivePrimary.withValues(alpha: 0.12)
                                 : Colors.grey.shade100,
                             borderRadius: BorderRadius.circular(10),
                             border: Border.all(
                               color: taken
-                                  ? AppTheme.primaryColor.withValues(alpha: 0.4)
+                                  ? AppTheme.effectivePrimary.withValues(alpha: 0.4)
                                   : Colors.grey.shade300,
                             ),
                           ),
@@ -1690,7 +1765,7 @@ class _TeacherSeatMapDialogState extends State<TeacherSeatMapDialog> {
                                   fontWeight: FontWeight.bold,
                                   fontSize: 16,
                                   color: taken
-                                      ? AppTheme.primaryColor
+                                      ? AppTheme.effectivePrimary
                                       : Colors.grey.shade500,
                                 ),
                               ),
@@ -1701,11 +1776,11 @@ class _TeacherSeatMapDialogState extends State<TeacherSeatMapDialog> {
                                   textAlign: TextAlign.center,
                                   maxLines: 2,
                                   overflow: TextOverflow.ellipsis,
-                                  style: const TextStyle(
+                                  style: TextStyle(
                                     fontSize: 10,
                                     height: 1.1,
                                     fontWeight: FontWeight.w600,
-                                    color: AppTheme.primaryColor,
+                                    color: AppTheme.effectivePrimary,
                                   ),
                                 ),
                               ],
@@ -1800,13 +1875,13 @@ class _TeacherSeatMapDialogState extends State<TeacherSeatMapDialog> {
                     return ListTile(
                       title: Text(
                         p['name']?.toString() ?? '',
-                        style: const TextStyle(fontSize: 13),
+                        style: TextStyle(fontSize: 13),
                       ),
                       trailing: currentSeat != null
                           ? Text("Seat $currentSeat",
-                              style: const TextStyle(
+                              style: TextStyle(
                                 fontSize: 11,
-                                color: AppTheme.primaryColor,
+                                color: AppTheme.effectivePrimary,
                                 fontWeight: FontWeight.w600,
                               ))
                           : Text("Any",
@@ -1914,12 +1989,12 @@ class _TeacherSeatPickerState extends State<_TeacherSeatPicker> {
                         height: 40,
                         decoration: BoxDecoration(
                           color: isSelected
-                              ? AppTheme.primaryColor
+                              ? AppTheme.effectivePrimary
                               : (isTaken ? Colors.red.shade100 : Colors.grey.shade100),
                           borderRadius: BorderRadius.circular(8),
                           border: Border.all(
                             color: isSelected
-                                ? AppTheme.primaryColor
+                                ? AppTheme.effectivePrimary
                                 : Colors.grey.shade200,
                           ),
                         ),
@@ -1992,10 +2067,10 @@ class _ActionButton extends StatelessWidget {
               width: 44,
               height: 44,
               decoration: BoxDecoration(
-                color: AppTheme.primaryColor.withValues(alpha: 0.1),
+                color: AppTheme.effectivePrimary.withValues(alpha: 0.1),
                 borderRadius: BorderRadius.circular(12),
               ),
-              child: Icon(icon, color: AppTheme.primaryColor, size: 22),
+              child: Icon(icon, color: AppTheme.effectivePrimary, size: 22),
             ),
             const SizedBox(height: 8),
             Text(label, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppTheme.secondaryColor)),
@@ -2025,8 +2100,15 @@ class _TeacherMapScreenState extends State<TeacherMapScreen>
   StreamSubscription<Position>? _positionStream;
   StreamSubscription<QuerySnapshot>? _alertSubMap;
   StreamSubscription<DocumentSnapshot>? _tripStatusSub;
+  StreamSubscription<QuerySnapshot>? _sosSub;
   Timer? _heartbeatTimer;
   Position? _lastKnownPos;
+  double? _nextStopLat;
+  double? _nextStopLng;
+  String? _nextStopName;
+  bool _atStop = false;
+  String _liveEta = '';
+  Set<String> _pendingSosIds = {};
   final String myUid = FirebaseAuth.instance.currentUser!.uid;
   final Battery _battery = Battery();
   late final LiveTracker _tracker = LiveTracker(vsync: this);
@@ -2034,9 +2116,117 @@ class _TeacherMapScreenState extends State<TeacherMapScreen>
   @override
   void initState() {
     super.initState();
+    // Pre-populate name/role from trip data so the map works before locations stream fires.
+    for (final s in widget.assignedStudents) {
+      if (s is! Map) continue;
+      final id = s['id']?.toString();
+      if (id == null || id.isEmpty) continue;
+      _peopleInfo[id] = {'name': s['name']?.toString() ?? '', 'role': 'student'};
+    }
+    _fetchMyName();
     _startLocationUpdates();
     _listenForAlerts();
     _watchTripStatus();
+    _listenForSosAlerts();
+  }
+
+  Future<void> _fetchMyName() async {
+    try {
+      final snap = await FirebaseFirestore.instance.collection('users').doc(myUid).get();
+      final name = snap.data()?['name']?.toString() ?? '';
+      if (mounted) {
+        setState(() {
+          _peopleInfo[myUid] = {...(_peopleInfo[myUid] ?? {}), 'name': name, 'role': 'teacher'};
+        });
+      }
+    } catch (_) {}
+  }
+
+  void _listenForSosAlerts() {
+    _sosSub = FirebaseFirestore.instance
+        .collection('emergencies')
+        .where('tripId', isEqualTo: widget.tripId)
+        .where('status', whereIn: ['pending', 'accepted'])
+        .snapshots()
+        .listen((snap) {
+      if (!mounted) return;
+      setState(() {
+        _pendingSosIds = snap.docs
+            .map((d) => (d.data()['studentId'] as String?) ?? '')
+            .where((id) => id.isNotEmpty)
+            .toSet();
+      });
+    });
+  }
+
+  // activeStopIndex >= 0 → bus is AT that stop (waiting).
+  // activeStopIndex == -1 → bus is in transit; find the next pending stop.
+  void _updateNextStop(List stops, List? stopStatuses, int activeStopIndex) {
+    if (activeStopIndex >= 0 && activeStopIndex < stops.length) {
+      // At a stop: show the NEXT pending destination, status = "Waiting".
+      _atStop = true;
+      for (int i = activeStopIndex + 1; i < stops.length; i++) {
+        final s = (stopStatuses != null && i < stopStatuses.length)
+            ? stopStatuses[i].toString()
+            : 'pending';
+        if (s == 'pending') {
+          final stop = stops[i];
+          if (stop is Map && stop['lat'] is num && stop['lng'] is num) {
+            _nextStopLat = (stop['lat'] as num).toDouble();
+            _nextStopLng = (stop['lng'] as num).toDouble();
+            _nextStopName = stop['name']?.toString() ?? 'Next Stop';
+            return;
+          }
+        }
+      }
+      // Last stop — no further destination.
+      _nextStopLat = null;
+      _nextStopLng = null;
+      _nextStopName = null;
+      return;
+    }
+    // In transit: show first pending stop with ETA.
+    _atStop = false;
+    for (int i = 0; i < stops.length; i++) {
+      final s = (stopStatuses != null && i < stopStatuses.length)
+          ? stopStatuses[i].toString()
+          : 'pending';
+      if (s == 'pending') {
+        final stop = stops[i];
+        if (stop is Map && stop['lat'] is num && stop['lng'] is num) {
+          _nextStopLat = (stop['lat'] as num).toDouble();
+          _nextStopLng = (stop['lng'] as num).toDouble();
+          _nextStopName = stop['name']?.toString() ?? 'Next Stop';
+          return;
+        }
+      }
+    }
+    _nextStopLat = null;
+    _nextStopLng = null;
+    _nextStopName = null;
+  }
+
+  void _computeEta(Position pos) {
+    if (_atStop || _nextStopLat == null || _nextStopLng == null) {
+      if (mounted) setState(() => _liveEta = '');
+      return;
+    }
+    final distM = Geolocator.distanceBetween(
+      pos.latitude, pos.longitude, _nextStopLat!, _nextStopLng!,
+    );
+    final speed = (pos.speed > 0.5) ? pos.speed : 8.33; // default 30 km/h
+    final mins = (distM / speed / 60).round();
+    String eta;
+    if (mins < 1) {
+      eta = 'Arriving';
+    } else if (mins < 60) {
+      eta = '~$mins min';
+    } else {
+      final h = mins ~/ 60;
+      final m = mins % 60;
+      eta = '~${h}h ${m}m';
+    }
+    if (mounted) setState(() => _liveEta = eta);
   }
 
   void _watchTripStatus() {
@@ -2046,21 +2236,27 @@ class _TeacherMapScreenState extends State<TeacherMapScreen>
         .snapshots()
         .listen((snap) {
       if (!snap.exists) return;
-      final status = snap.data()?['status'] as String?;
+      final data = snap.data()!;
+      _updateNextStop(
+        asList(data['stops']),
+        data['stopStatuses'] as List?,
+        (data['activeStopIndex'] as int?) ?? -1,
+      );
+      final status = data['status'] as String?;
       if (status == 'completed' && mounted) {
         showDialog(
           context: context,
           barrierDismissible: false,
           builder: (ctx) => AlertDialog(
             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-            title: const Text('Trip Ended',
+            title: Text('Trip Ended',
                 style: TextStyle(fontWeight: FontWeight.bold, color: AppTheme.secondaryColor)),
-            content: const Text(
+            content: Text(
               'This trip has been completed. Location tracking has stopped.',
             ),
             actions: [
               ElevatedButton(
-                style: ElevatedButton.styleFrom(backgroundColor: AppTheme.primaryColor),
+                style: ElevatedButton.styleFrom(backgroundColor: AppTheme.effectivePrimary),
                 onPressed: () {
                   Navigator.pop(ctx);
                   if (mounted) Navigator.pop(context);
@@ -2137,49 +2333,83 @@ class _TeacherMapScreenState extends State<TeacherMapScreen>
   }
 
   bool _didInitialZoom = false;
+  DateTime? _lastWriteTime;
+  int _cachedBattery = 0;
+  String _cachedNetStatus = 'Offline';
+  DateTime? _lastBatteryCheck;
 
-  Future<void> _publishPosition(Position pos) async {
-    int batteryLevel = await _battery.batteryLevel;
-    var connectivityResult = await Connectivity().checkConnectivity();
-    String netStatus = "Offline";
-    if (connectivityResult.toString().contains('mobile')) netStatus = "Mobile Data";
-    else if (connectivityResult.toString().contains('wifi')) netStatus = "WiFi Active";
+  Future<void> _publishPosition(Position pos, {bool fromHeartbeat = false}) async {
+    // Heartbeat: skip if a GPS write already happened in the last 25 s to avoid
+    // writing the same coords twice in quick succession.
+    if (fromHeartbeat && _lastWriteTime != null &&
+        DateTime.now().difference(_lastWriteTime!) < const Duration(seconds: 25)) {
+      return;
+    }
 
-    FirebaseFirestore.instance.collection('users').doc(myUid).update({
-      'lat': pos.latitude,
-      'lng': pos.longitude,
-      'battery': batteryLevel,
-      'lastActivity': netStatus,
-      'lastUpdate': FieldValue.serverTimestamp(),
-    });
+    // Refresh battery + connectivity at most once per 60 s (these are slow
+    // async operations and almost never change between GPS events).
+    if (_lastBatteryCheck == null ||
+        DateTime.now().difference(_lastBatteryCheck!) >= const Duration(seconds: 60)) {
+      _lastBatteryCheck = DateTime.now();
+      try { _cachedBattery = await _battery.batteryLevel; } catch (_) {}
+      try {
+        final conn = await Connectivity().checkConnectivity();
+        final s = conn.toString();
+        if (s.contains('mobile')) {
+          _cachedNetStatus = 'Mobile Data';
+        } else if (s.contains('wifi')) {
+          _cachedNetStatus = 'WiFi Active';
+        } else {
+          _cachedNetStatus = 'Offline';
+        }
+      } catch (_) {}
+    }
+
+    _lastWriteTime = DateTime.now();
+    try {
+      await FirebaseFirestore.instance.collection('locations').doc(myUid).set({
+        'lat': pos.latitude,
+        'lng': pos.longitude,
+        'battery': _cachedBattery,
+        'lastActivity': _cachedNetStatus,
+        'lastUpdate': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+    } catch (e) {
+      debugPrint("Firestore write error (teacher): $e");
+    }
   }
 
   void _startLocationUpdates() {
-    // Tight distance filter so walking movements register.
     _positionStream = Geolocator.getPositionStream(
       locationSettings: const LocationSettings(
         accuracy: LocationAccuracy.high,
-        distanceFilter: 3,
+        distanceFilter: 0,
       ),
-    ).listen((Position pos) async {
-      _lastKnownPos = pos;
-      await _publishPosition(pos);
+    ).listen(
+      (Position pos) async {
+        _lastKnownPos = pos;
+        _computeEta(pos);
+        await _publishPosition(pos);
 
-      // Auto-zoom to teacher's location the first time we get a fix.
-      if (!_didInitialZoom && _mapController != null) {
-        _didInitialZoom = true;
-        _mapController!.animateCamera(
-          CameraUpdate.newLatLngZoom(LatLng(pos.latitude, pos.longitude), 17),
-        );
+        // Auto-zoom to teacher's location the first time we get a fix.
+        if (!_didInitialZoom && _mapController != null) {
+          _didInitialZoom = true;
+          _mapController!.animateCamera(
+            CameraUpdate.newLatLngZoom(LatLng(pos.latitude, pos.longitude), 17),
+          );
+        }
+      },
+      onError: (e) => debugPrint("GPS stream error (teacher): $e"),
+      cancelOnError: false,
+    );
+    // Heartbeat keeps presence alive when standing still. The guard inside
+    // _publishPosition prevents double-writing if GPS already fired recently.
+    _heartbeatTimer = Timer.periodic(const Duration(seconds: 30), (_) async {
+      Position? pos = _lastKnownPos;
+      if (pos == null) {
+        try { pos = await Geolocator.getLastKnownPosition(); } catch (_) {}
       }
-    });
-    // Heartbeat: re-publishes the last position every 5s so observers keep
-    // seeing fresh updates even when the device is mostly still or when the
-    // OS coalesces getPositionStream events. This is what keeps marker
-    // movement smooth on the other side instead of jumping in big chunks.
-    _heartbeatTimer = Timer.periodic(const Duration(seconds: 5), (_) {
-      final pos = _lastKnownPos;
-      if (pos != null) _publishPosition(pos);
+      if (pos != null) _publishPosition(pos, fromHeartbeat: true);
     });
   }
 
@@ -2206,6 +2436,7 @@ class _TeacherMapScreenState extends State<TeacherMapScreen>
     _heartbeatTimer?.cancel();
     _alertSubMap?.cancel();
     _tripStatusSub?.cancel();
+    _sosSub?.cancel();
     _positionStream?.cancel();
     _tracker.dispose();
     super.dispose();
@@ -2224,7 +2455,7 @@ class _TeacherMapScreenState extends State<TeacherMapScreen>
         ),
         title: const Text("Live Map", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18, color: AppTheme.secondaryColor)),
       ),
-      // Outer stream: live trip doc → determines which students have been scanned.
+      // Outer stream: live trip doc â†' determines which students have been scanned.
       body: StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
         stream: FirebaseFirestore.instance
             .collection('trips')
@@ -2262,47 +2493,57 @@ class _TeacherMapScreenState extends State<TeacherMapScreen>
                   radius: stop['geofenceRadius'] is num
                       ? (stop['geofenceRadius'] as num).toDouble()
                       : 200.0,
-                  fillColor: AppTheme.primaryColor.withValues(alpha: 0.15),
-                  strokeColor: AppTheme.primaryColor,
+                  fillColor: AppTheme.effectivePrimary.withValues(alpha: 0.15),
+                  strokeColor: AppTheme.effectivePrimary,
                   strokeWidth: 2,
                 ));
               }
             }
           }
 
-          // Inner stream: only scanned students + teacher.
-          // ValueKey forces re-subscription when the scanned set changes.
+          // Inner stream: only scanned students + teacher — reads from locations
+          // collection (not users) so GPS writes don't trigger session/theme watchers.
           final queryIds = [...scannedIds, myUid];
           return StreamBuilder<QuerySnapshot>(
             key: ValueKey(queryIds.join(',')),
             stream: FirebaseFirestore.instance
-                .collection('users')
+                .collection('locations')
                 .where(FieldPath.documentId, whereIn: queryIds)
                 .snapshots(),
-            builder: (context, userSnap) {
-              if (!userSnap.hasData) {
-                return const Center(child: CircularProgressIndicator(color: AppTheme.primaryColor));
+            builder: (context, locSnap) {
+              if (!locSnap.hasData) {
+                return Center(child: CircularProgressIndicator(color: AppTheme.effectivePrimary));
               }
 
               List<Map<String, dynamic>> peopleList = [];
               final Map<String, LatLng> targets = {};
 
-              for (var doc in userSnap.data!.docs) {
-                final data = doc.data() as Map<String, dynamic>;
-                peopleList.add(data);
-                _peopleInfo[doc.id] = data;
-                if (data['lat'] is num && data['lng'] is num) {
+              for (var doc in locSnap.data!.docs) {
+                final locData = doc.data() as Map<String, dynamic>;
+                final profile = _peopleInfo[doc.id] ?? {};
+                final merged = {...profile, ...locData, '_uid': doc.id};
+                peopleList.add(merged);
+                _peopleInfo[doc.id] = merged;
+                if (locData['lat'] is num && locData['lng'] is num) {
                   final isMe = doc.id == myUid;
-                  _loadMarker(doc.id, data['name'], isMe ? Colors.red : AppTheme.primaryColor);
+                  _loadMarker(doc.id, profile['name']?.toString() ?? '', isMe ? Colors.red : AppTheme.effectivePrimary);
                   targets[doc.id] = LatLng(
-                    (data['lat'] as num).toDouble(),
-                    (data['lng'] as num).toDouble(),
+                    (locData['lat'] as num).toDouble(),
+                    (locData['lng'] as num).toDouble(),
                   );
                 }
               }
 
               // Drop stale entries for students removed from the query.
               _peopleInfo.removeWhere((id, _) => !queryIds.contains(id));
+
+              // SOS students bubble to the top.
+              peopleList.sort((a, b) {
+                final aHasSos = _pendingSosIds.contains(a['_uid'] as String? ?? '');
+                final bHasSos = _pendingSosIds.contains(b['_uid'] as String? ?? '');
+                if (aHasSos == bHasSos) return 0;
+                return aHasSos ? -1 : 1;
+              });
 
               WidgetsBinding.instance.addPostFrameCallback((_) {
                 if (mounted) _tracker.setTargets(targets);
@@ -2317,7 +2558,10 @@ class _TeacherMapScreenState extends State<TeacherMapScreen>
                       for (final entry in _peopleInfo.entries) {
                         final uid = entry.key;
                         final data = entry.value;
-                        final pos = _tracker.current(uid);
+                        // Own marker: use local GPS directly — no Firestore round-trip, zero lag.
+                        final LatLng? pos = (uid == myUid && _lastKnownPos != null)
+                            ? LatLng(_lastKnownPos!.latitude, _lastKnownPos!.longitude)
+                            : _tracker.current(uid);
                         if (pos == null) continue;
                         markers.add(Marker(
                           markerId: MarkerId(uid),
@@ -2342,6 +2586,61 @@ class _TeacherMapScreenState extends State<TeacherMapScreen>
                       );
                     },
                   ),
+                  if (_nextStopName != null)
+                    Positioned(
+                      top: kToolbarHeight + MediaQuery.of(context).padding.top + 8,
+                      left: 16,
+                      right: 16,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(12),
+                          boxShadow: const [BoxShadow(color: Colors.black12, blurRadius: 8, offset: Offset(0, 2))],
+                        ),
+                        child: Row(
+                          children: [
+                            Icon(
+                              _atStop ? Icons.location_on_rounded : Icons.navigation_rounded,
+                              color: _atStop ? Colors.orange : AppTheme.effectivePrimary,
+                              size: 18,
+                            ),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    _nextStopName!,
+                                    style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: AppTheme.secondaryColor),
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                  Text(
+                                    _atStop ? 'Next destination' : 'Next stop',
+                                    style: TextStyle(fontSize: 10, color: Colors.grey.shade500),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                              decoration: BoxDecoration(
+                                color: (_atStop ? Colors.orange : AppTheme.effectivePrimary).withValues(alpha: 0.1),
+                                borderRadius: BorderRadius.circular(20),
+                              ),
+                              child: Text(
+                                _atStop ? 'Waiting' : _liveEta,
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.bold,
+                                  color: _atStop ? Colors.orange : AppTheme.effectivePrimary,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
                   Positioned(
                     right: 16,
                     bottom: 200,
@@ -2350,7 +2649,7 @@ class _TeacherMapScreenState extends State<TeacherMapScreen>
                       backgroundColor: Colors.white,
                       onPressed: _zoomToMe,
                       tooltip: "Center on my location",
-                      child: const Icon(Icons.my_location_rounded, color: AppTheme.primaryColor),
+                      child: Icon(Icons.my_location_rounded, color: AppTheme.effectivePrimary),
                     ),
                   ),
                   DraggableScrollableSheet(
@@ -2388,14 +2687,14 @@ class _TeacherMapScreenState extends State<TeacherMapScreen>
                                     padding: const EdgeInsets.symmetric(
                                         horizontal: 10, vertical: 4),
                                     decoration: BoxDecoration(
-                                      color: AppTheme.primaryColor.withValues(alpha: 0.1),
+                                      color: AppTheme.effectivePrimary.withValues(alpha: 0.1),
                                       borderRadius: BorderRadius.circular(20),
                                     ),
                                     child: Text("${peopleList.length} tracked",
-                                        style: const TextStyle(
+                                        style: TextStyle(
                                             fontSize: 11,
                                             fontWeight: FontWeight.w600,
-                                            color: AppTheme.primaryColor)),
+                                            color: AppTheme.effectivePrimary)),
                                   ),
                                 ],
                               ),
@@ -2409,83 +2708,106 @@ class _TeacherMapScreenState extends State<TeacherMapScreen>
                                     Divider(color: Colors.grey.shade100, height: 1),
                                 itemBuilder: (context, index) {
                                   final person = peopleList[index];
-                                  final int battery = person['battery'] ?? 0;
-                                  final String activity =
-                                      person['lastActivity'] ?? "Unknown";
-                                  final bool isMe = person['name'] ==
-                                      (FirebaseAuth.instance.currentUser
-                                              ?.displayName ??
-                                          '');
-                                  final Color avatarColor =
-                                      isMe ? Colors.red : AppTheme.primaryColor;
-                                  return Padding(
-                                    padding:
-                                        const EdgeInsets.symmetric(vertical: 10),
-                                    child: Row(
-                                      children: [
-                                        CircleAvatar(
-                                          radius: 22,
-                                          backgroundColor:
-                                              avatarColor.withValues(alpha: 0.12),
-                                          child: Text(
-                                              person['name'][0].toUpperCase(),
-                                              style: TextStyle(
-                                                  color: avatarColor,
-                                                  fontWeight: FontWeight.bold,
-                                                  fontSize: 16)),
-                                        ),
-                                        const SizedBox(width: 12),
-                                        Expanded(
-                                          child: Column(
-                                            crossAxisAlignment:
-                                                CrossAxisAlignment.start,
+                                  final String uid = person['_uid'] ?? '';
+                                  final int battery = (person['battery'] as num?)?.toInt() ?? 0;
+                                  final String activity = person['lastActivity'] ?? 'Unknown';
+                                  final bool isMe = uid == myUid;
+                                  final bool hasSos = _pendingSosIds.contains(uid);
+                                  final Color avatarColor = hasSos ? Colors.red : (isMe ? Colors.red : AppTheme.effectivePrimary);
+
+                                  // Activity icon
+                                  IconData actIcon;
+                                  Color actColor;
+                                  if (activity.contains('WiFi')) {
+                                    actIcon = Icons.wifi_rounded;
+                                    actColor = Colors.green;
+                                  } else if (activity.contains('Mobile')) {
+                                    actIcon = Icons.signal_cellular_alt_rounded;
+                                    actColor = Colors.blue;
+                                  } else {
+                                    actIcon = Icons.wifi_off_rounded;
+                                    actColor = Colors.red;
+                                  }
+
+                                  return InkWell(
+                                    borderRadius: BorderRadius.circular(12),
+                                    onTap: () {
+                                      final pos = _tracker.current(uid);
+                                      if (pos != null) {
+                                        _mapController?.animateCamera(
+                                          CameraUpdate.newLatLngZoom(pos, 18),
+                                        );
+                                      }
+                                    },
+                                    child: Padding(
+                                      padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 4),
+                                      child: Row(
+                                        children: [
+                                          CircleAvatar(
+                                            radius: 22,
+                                            backgroundColor: avatarColor.withValues(alpha: 0.12),
+                                            child: Text(
+                                              (person['name'] as String? ?? '?')[0].toUpperCase(),
+                                              style: TextStyle(color: avatarColor, fontWeight: FontWeight.bold, fontSize: 16),
+                                            ),
+                                          ),
+                                          const SizedBox(width: 12),
+                                          Expanded(
+                                            child: Column(
+                                              crossAxisAlignment: CrossAxisAlignment.start,
+                                              children: [
+                                                Text(
+                                                  person['name']?.toString() ?? '',
+                                                  style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14, color: AppTheme.secondaryColor),
+                                                ),
+                                                const SizedBox(height: 2),
+                                                Row(
+                                                  children: [
+                                                    Icon(actIcon, size: 11, color: actColor),
+                                                    const SizedBox(width: 3),
+                                                    Flexible(
+                                                      child: Text(
+                                                        activity,
+                                                        style: TextStyle(fontSize: 10, color: actColor),
+                                                        overflow: TextOverflow.ellipsis,
+                                                      ),
+                                                    ),
+                                                  ],
+                                                ),
+                                              ],
+                                            ),
+                                          ),
+                                          Column(
+                                            crossAxisAlignment: CrossAxisAlignment.end,
                                             children: [
-                                              Text(person['name'],
-                                                  style: const TextStyle(
-                                                      fontWeight: FontWeight.w600,
-                                                      fontSize: 14,
-                                                      color: AppTheme.secondaryColor)),
+                                              Row(children: [
+                                                Icon(
+                                                  battery > 20 ? Icons.battery_full_rounded : Icons.battery_alert_rounded,
+                                                  color: battery > 20 ? Colors.green : Colors.red,
+                                                  size: 14,
+                                                ),
+                                                const SizedBox(width: 3),
+                                                Text(
+                                                  '$battery%',
+                                                  style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 12, color: AppTheme.secondaryColor),
+                                                ),
+                                              ]),
                                               const SizedBox(height: 2),
                                               Text(
-                                                  person['role']
-                                                      .toString()
-                                                      .toUpperCase(),
-                                                  style: TextStyle(
-                                                      fontSize: 10,
-                                                      color: Colors.grey.shade500,
-                                                      letterSpacing: 0.5)),
+                                                person['role']?.toString().toUpperCase() ?? '',
+                                                style: TextStyle(fontSize: 9, color: Colors.grey.shade400, letterSpacing: 0.5),
+                                              ),
                                             ],
                                           ),
-                                        ),
-                                        Column(
-                                          crossAxisAlignment:
-                                              CrossAxisAlignment.end,
-                                          children: [
-                                            Row(children: [
-                                              Icon(
-                                                battery > 20
-                                                    ? Icons.battery_full_rounded
-                                                    : Icons.battery_alert_rounded,
-                                                color: battery > 20
-                                                    ? Colors.green
-                                                    : Colors.red,
-                                                size: 14,
-                                              ),
-                                              const SizedBox(width: 3),
-                                              Text("$battery%",
-                                                  style: const TextStyle(
-                                                      fontWeight: FontWeight.w600,
-                                                      fontSize: 12,
-                                                      color: AppTheme.secondaryColor)),
-                                            ]),
-                                            const SizedBox(height: 2),
-                                            Text(activity,
-                                                style: TextStyle(
-                                                    color: Colors.grey.shade500,
-                                                    fontSize: 10)),
-                                          ],
-                                        ),
-                                      ],
+                                          const SizedBox(width: 4),
+                                          if (hasSos)
+                                            const Padding(
+                                              padding: EdgeInsets.only(right: 4),
+                                              child: Icon(Icons.warning_amber_rounded, size: 18, color: Colors.red),
+                                            ),
+                                          Icon(Icons.my_location_rounded, size: 14, color: Colors.grey.shade300),
+                                        ],
+                                      ),
                                     ),
                                   );
                                 },
@@ -2521,6 +2843,9 @@ class _StudentSelectorModalState extends State<StudentSelectorModal> {
   final TextEditingController _searchController = TextEditingController();
   List<Map<String, dynamic>> _allStudents = [];
   List<Map<String, dynamic>> _filteredStudents = [];
+
+  /// Active "Grade · Section" filter, or null for the whole roster.
+  String? _sectionFilter;
   Set<String> _selectedIds = {};
   bool _isLoading = true;
   bool _isSaving = false;
@@ -2535,24 +2860,85 @@ class _StudentSelectorModalState extends State<StudentSelectorModal> {
 
   Future<void> _fetchStudents() async {
     try {
-      final snapshot = await FirebaseFirestore.instance.collection('users').where('role', isEqualTo: 'student').get();
+      // Scope to the school that owns this trip. Teachers carry no schoolId of
+      // their own, so the trip is the authority on which roster applies; trips
+      // predating school scoping fall back to the unscoped list.
+      String? schoolId;
+      try {
+        final trip =
+            await FirebaseFirestore.instance.collection('trips').doc(widget.tripId).get();
+        schoolId = (trip.data()?['schoolId'] as String?)?.trim();
+        if (schoolId != null && schoolId.isEmpty) schoolId = null;
+      } catch (_) {/* fall through to the unscoped query */}
+
+      Query<Map<String, dynamic>> query = FirebaseFirestore.instance
+          .collection('users')
+          .where('role', isEqualTo: 'student');
+      if (schoolId != null) query = query.where('schoolId', isEqualTo: schoolId);
+
+      final snapshot = await query.get();
       final students = snapshot.docs.map((doc) {
         final data = doc.data();
-        return {'id': doc.id, 'name': data['name'] ?? 'Unknown', 'lrn': data['lrn'] ?? 'N/A'};
+        return {
+          'id': doc.id,
+          'name': data['name'] ?? 'Unknown',
+          'lrn': data['lrn'] ?? 'N/A',
+          // Needed so a whole section can be assigned at once.
+          'gradeLevel': (data['gradeLevel'] ?? '').toString(),
+          'section': (data['section'] ?? '').toString(),
+        };
       }).toList();
+      if (!mounted) return;
       setState(() { _allStudents = students; _filteredStudents = students; _isLoading = false; });
     } catch (e) {
-      setState(() => _isLoading = false);
+      if (mounted) setState(() => _isLoading = false);
     }
+  }
+
+  /// Distinct "Grade · Section" groups in the roster, for the filter dropdown.
+  List<String> get _sectionOptions {
+    final set = <String>{};
+    for (final s in _allStudents) {
+      final label = _groupLabel(s);
+      if (label.isNotEmpty) set.add(label);
+    }
+    return set.toList()..sort();
+  }
+
+  String _groupLabel(Map<String, dynamic> s) {
+    final grade = (s['gradeLevel'] ?? '').toString().trim();
+    final section = (s['section'] ?? '').toString().trim();
+    return [grade, section].where((v) => v.isNotEmpty).join(' · ');
   }
 
   void _filterStudents() {
     final query = _searchController.text.toLowerCase();
     setState(() {
-      _filteredStudents = _allStudents.where((s) =>
-        s['name'].toString().toLowerCase().contains(query) ||
-        s['lrn'].toString().toLowerCase().contains(query)
-      ).toList();
+      _filteredStudents = _allStudents.where((s) {
+        final matchesText = s['name'].toString().toLowerCase().contains(query) ||
+            s['lrn'].toString().toLowerCase().contains(query);
+        final matchesGroup = _sectionFilter == null || _groupLabel(s) == _sectionFilter;
+        return matchesText && matchesGroup;
+      }).toList();
+    });
+  }
+
+  /// Ticks everyone currently listed — assigning a section should not mean
+  /// forty individual taps.
+  void _selectAllFiltered() {
+    setState(() {
+      for (final s in _filteredStudents) {
+        _selectedIds.add(s['id'].toString());
+      }
+    });
+  }
+
+  /// Unticks only what is listed, leaving other sections alone.
+  void _clearFiltered() {
+    setState(() {
+      for (final s in _filteredStudents) {
+        _selectedIds.remove(s['id'].toString());
+      }
     });
   }
 
@@ -2568,8 +2954,8 @@ class _StudentSelectorModalState extends State<StudentSelectorModal> {
       List existingPassengers = List.from(myBus['passengers'] ?? []);
 
       // Build the new passenger list. Preserve every field the admin (or earlier
-      // edits) already set on the passenger — seatNumber, attendance, status,
-      // etc. — and only fill in defaults for newly added students.
+      // edits) already set on the passenger -- seatNumber, attendance, status,
+      // etc. -- and only fill in defaults for newly added students.
       final Map<String, Map<String, dynamic>> existingById = {
         for (final p in existingPassengers)
           (p['id'] as String): Map<String, dynamic>.from(p as Map),
@@ -2667,19 +3053,82 @@ class _StudentSelectorModalState extends State<StudentSelectorModal> {
               controller: _searchController,
               decoration: InputDecoration(
                 prefixIcon: Icon(Icons.search_rounded, color: Colors.grey.shade400),
-                hintText: "Search by name or LRN…",
+                hintText: "Search by name or LRN--",
               ),
             ),
           ),
+          if (_sectionOptions.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 12, 20, 0),
+              child: Row(children: [
+                Expanded(
+                  child: DropdownButtonFormField<String?>(
+                    initialValue: _sectionFilter,
+                    isDense: true,
+                    decoration: InputDecoration(
+                      isDense: true,
+                      prefixIcon: const Icon(Icons.filter_alt_outlined, size: 18),
+                      contentPadding:
+                          const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(9)),
+                    ),
+                    items: [
+                      const DropdownMenuItem<String?>(
+                        value: null,
+                        child: Text('All sections', style: TextStyle(fontSize: 13)),
+                      ),
+                      for (final opt in _sectionOptions)
+                        DropdownMenuItem<String?>(
+                          value: opt,
+                          child: Text(opt, style: const TextStyle(fontSize: 13)),
+                        ),
+                    ],
+                    onChanged: (v) {
+                      setState(() => _sectionFilter = v);
+                      _filterStudents();
+                    },
+                  ),
+                ),
+                const SizedBox(width: 8),
+                TextButton.icon(
+                  onPressed: _filteredStudents.isEmpty ? null : _selectAllFiltered,
+                  icon: const Icon(Icons.done_all_rounded, size: 17),
+                  label: Text(
+                    _sectionFilter == null
+                        ? 'Select all'
+                        : 'Select section (${_filteredStudents.length})',
+                    style: const TextStyle(fontSize: 12.5),
+                  ),
+                  style: TextButton.styleFrom(
+                    minimumSize: const Size(0, 40),
+                    foregroundColor: AppTheme.effectivePrimary,
+                  ),
+                ),
+              ]),
+            ),
           if (_selectedIds.isNotEmpty)
             Padding(
               padding: const EdgeInsets.fromLTRB(20, 10, 20, 0),
               child: Row(
                 children: [
-                  Icon(Icons.check_circle_rounded, size: 14, color: AppTheme.primaryColor),
+                  Icon(Icons.check_circle_rounded, size: 14, color: AppTheme.effectivePrimary),
                   const SizedBox(width: 6),
                   Text("${_selectedIds.length} selected",
-                      style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppTheme.primaryColor)),
+                      style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppTheme.effectivePrimary)),
+                  const Spacer(),
+                  if (_filteredStudents.any((s) => _selectedIds.contains(s['id'].toString())))
+                    TextButton(
+                      onPressed: _clearFiltered,
+                      style: TextButton.styleFrom(
+                        minimumSize: const Size(0, 28),
+                        padding: const EdgeInsets.symmetric(horizontal: 8),
+                        foregroundColor: Colors.grey.shade600,
+                      ),
+                      child: Text(
+                        _sectionFilter == null ? 'Clear all' : 'Clear section',
+                        style: const TextStyle(fontSize: 11.5),
+                      ),
+                    ),
                 ],
               ),
             ),
@@ -2688,7 +3137,7 @@ class _StudentSelectorModalState extends State<StudentSelectorModal> {
 
           Expanded(
             child: _isLoading
-                ? const Center(child: CircularProgressIndicator(color: AppTheme.primaryColor))
+                ? Center(child: CircularProgressIndicator(color: AppTheme.effectivePrimary))
                 : ListView.separated(
                     padding: const EdgeInsets.symmetric(horizontal: 16),
                     itemCount: _filteredStudents.length,
@@ -2707,9 +3156,9 @@ class _StudentSelectorModalState extends State<StudentSelectorModal> {
                                 duration: const Duration(milliseconds: 150),
                                 width: 22, height: 22,
                                 decoration: BoxDecoration(
-                                  color: isSelected ? AppTheme.primaryColor : Colors.transparent,
+                                  color: isSelected ? AppTheme.effectivePrimary : Colors.transparent,
                                   borderRadius: BorderRadius.circular(6),
-                                  border: Border.all(color: isSelected ? AppTheme.primaryColor : Colors.grey.shade300, width: 1.5),
+                                  border: Border.all(color: isSelected ? AppTheme.effectivePrimary : Colors.grey.shade300, width: 1.5),
                                 ),
                                 child: isSelected ? const Icon(Icons.check_rounded, size: 14, color: Colors.white) : null,
                               ),
@@ -2804,7 +3253,7 @@ class TeacherProfileTab extends StatelessWidget {
         future: FirebaseFirestore.instance.collection('users').doc(uid).get(),
         builder: (context, snapshot) {
           if (!snapshot.hasData) {
-            return const Center(child: CircularProgressIndicator(color: AppTheme.primaryColor));
+            return Center(child: CircularProgressIndicator(color: AppTheme.effectivePrimary));
           }
           final data = snapshot.data!.data() as Map<String, dynamic>;
           final String name = data['name'] ?? 'Teacher';
@@ -2816,22 +3265,22 @@ class TeacherProfileTab extends StatelessWidget {
               children: [
                 CircleAvatar(
                   radius: 44,
-                  backgroundColor: AppTheme.primaryColor.withValues(alpha: 0.12),
+                  backgroundColor: AppTheme.effectivePrimary.withValues(alpha: 0.12),
                   child: Text(
                     name.isNotEmpty ? name[0].toUpperCase() : '?',
-                    style: const TextStyle(fontSize: 36, fontWeight: FontWeight.bold, color: AppTheme.primaryColor),
+                    style: TextStyle(fontSize: 36, fontWeight: FontWeight.bold, color: AppTheme.effectivePrimary),
                   ),
                 ),
                 const SizedBox(height: 14),
-                Text(name, style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: AppTheme.secondaryColor)),
+                Text(name, style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: AppTheme.secondaryColor)),
                 const SizedBox(height: 4),
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
                   decoration: BoxDecoration(
-                    color: AppTheme.primaryColor.withValues(alpha: 0.1),
+                    color: AppTheme.effectivePrimary.withValues(alpha: 0.1),
                     borderRadius: BorderRadius.circular(20),
                   ),
-                  child: const Text("Teacher", style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppTheme.primaryColor)),
+                  child: Text("Teacher", style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppTheme.effectivePrimary)),
                 ),
 
                 const SizedBox(height: 28),
@@ -2857,10 +3306,10 @@ class TeacherProfileTab extends StatelessWidget {
                         builder: (_) => const SettingsView(allowEmergencySoundUpload: true),
                       ),
                     ),
-                    icon: const Icon(Icons.settings_outlined),
-                    label: const Text("Settings"),
+                    icon: Icon(Icons.settings_outlined),
+                    label: Text("Settings"),
                     style: ElevatedButton.styleFrom(
-                      backgroundColor: AppTheme.primaryColor,
+                      backgroundColor: AppTheme.effectivePrimary,
                       foregroundColor: Colors.white,
                       padding: const EdgeInsets.symmetric(vertical: 14),
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
@@ -2897,10 +3346,10 @@ class _ProfileInfoCard extends StatelessWidget {
           Container(
             width: 40, height: 40,
             decoration: BoxDecoration(
-              color: AppTheme.primaryColor.withValues(alpha: 0.1),
+              color: AppTheme.effectivePrimary.withValues(alpha: 0.1),
               borderRadius: BorderRadius.circular(10),
             ),
-            child: Icon(icon, size: 20, color: AppTheme.primaryColor),
+            child: Icon(icon, size: 20, color: AppTheme.effectivePrimary),
           ),
           const SizedBox(width: 14),
           Column(
@@ -2917,7 +3366,7 @@ class _ProfileInfoCard extends StatelessWidget {
   }
 }
 
-// ─── Slide-to-confirm widget ──────────────────────────────────────────────────
+// â"€â"€â"€ Slide-to-confirm widget â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 class _SlideToConfirm extends StatefulWidget {
   final String label;
   final Color color;
@@ -3004,7 +3453,7 @@ class _SlideToConfirmState extends State<_SlideToConfirm> {
   }
 }
 
-// ─── Teacher Students Tab ─────────────────────────────────────────────────────
+// â"€â"€â"€ Teacher Students Tab â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 class TeacherStudentsTab extends StatelessWidget {
   const TeacherStudentsTab({super.key});
 
@@ -3022,14 +3471,16 @@ class TeacherStudentsTab extends StatelessWidget {
       body: StreamBuilder<QuerySnapshot>(
         stream: FirebaseFirestore.instance
             .collection('trips')
-            .where('status', isEqualTo: 'in_progress')
+            .where('allMemberIds', arrayContains: uid)
             .snapshots(),
         builder: (context, tripSnap) {
-          if (!tripSnap.hasData) return const Center(child: CircularProgressIndicator(color: AppTheme.primaryColor));
+          if (!tripSnap.hasData) return Center(child: CircularProgressIndicator(color: AppTheme.effectivePrimary));
 
           final Set<String> studentIds = {};
           for (final doc in tripSnap.data!.docs) {
-            final buses = asList((doc.data() as Map<String, dynamic>?)?['buses']);
+            final tripData = doc.data() as Map<String, dynamic>?;
+            if (tripData?['status'] == 'completed') continue;
+            final buses = asList(tripData?['buses']);
             for (final b in buses) {
               if (b is! Map) continue;
               if (b['mainTeacher']?['id'] == uid || b['coTeacher']?['id'] == uid) {
@@ -3060,7 +3511,7 @@ class TeacherStudentsTab extends StatelessWidget {
                 .where(FieldPath.documentId, whereIn: studentIds.toList())
                 .snapshots(),
             builder: (context, userSnap) {
-              if (!userSnap.hasData) return const Center(child: CircularProgressIndicator(color: AppTheme.primaryColor));
+              if (!userSnap.hasData) return Center(child: CircularProgressIndicator(color: AppTheme.effectivePrimary));
               final students = userSnap.data!.docs.where((d) => d.exists).toList();
               return ListView.builder(
                 padding: const EdgeInsets.all(16),
@@ -3088,17 +3539,17 @@ class TeacherStudentsTab extends StatelessWidget {
                           ListTile(
                             contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                             leading: CircleAvatar(
-                              backgroundColor: AppTheme.primaryColor.withValues(alpha: 0.12),
+                              backgroundColor: AppTheme.effectivePrimary.withValues(alpha: 0.12),
                               child: Text(name.isNotEmpty ? name[0].toUpperCase() : '?',
-                                  style: const TextStyle(color: AppTheme.primaryColor, fontWeight: FontWeight.bold)),
+                                  style: TextStyle(color: AppTheme.effectivePrimary, fontWeight: FontWeight.bold)),
                             ),
-                            title: Text(name, style: const TextStyle(fontWeight: FontWeight.w600, color: AppTheme.secondaryColor)),
+                            title: Text(name, style: TextStyle(fontWeight: FontWeight.w600, color: AppTheme.secondaryColor)),
                             subtitle: Text(
-                              "LRN: $lrn  •  Code: $code",
+                              "LRN: $lrn  --  Code: $code",
                               style: TextStyle(fontSize: 12, color: Colors.grey.shade500),
                             ),
                             trailing: IconButton(
-                              icon: const Icon(Icons.qr_code_rounded, color: AppTheme.primaryColor),
+                              icon: Icon(Icons.qr_code_rounded, color: AppTheme.effectivePrimary),
                               tooltip: "View QR",
                               onPressed: () => _showStudentQR(context, name, lrn, doc.id, code),
                             ),
@@ -3129,7 +3580,7 @@ class TeacherStudentsTab extends StatelessWidget {
       context: context,
       builder: (_) => AlertDialog(
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        title: Text(name, style: const TextStyle(fontWeight: FontWeight.bold, color: AppTheme.secondaryColor), textAlign: TextAlign.center),
+        title: Text(name, style: TextStyle(fontWeight: FontWeight.bold, color: AppTheme.secondaryColor), textAlign: TextAlign.center),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -3137,7 +3588,7 @@ class TeacherStudentsTab extends StatelessWidget {
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
                 color: Colors.white,
-                border: Border.all(color: AppTheme.primaryColor.withValues(alpha: 0.2), width: 2),
+                border: Border.all(color: AppTheme.effectivePrimary.withValues(alpha: 0.2), width: 2),
                 borderRadius: BorderRadius.circular(16),
               ),
               child: CustomPaint(
@@ -3154,11 +3605,11 @@ class TeacherStudentsTab extends StatelessWidget {
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
               decoration: BoxDecoration(
-                color: AppTheme.primaryColor.withValues(alpha: 0.08),
+                color: AppTheme.effectivePrimary.withValues(alpha: 0.08),
                 borderRadius: BorderRadius.circular(10),
               ),
               child: Text("Code: $code",
-                  style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold, letterSpacing: 1.2, color: AppTheme.primaryColor)),
+                  style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold, letterSpacing: 1.2, color: AppTheme.effectivePrimary)),
             ),
           ],
         ),

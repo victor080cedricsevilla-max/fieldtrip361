@@ -1,11 +1,14 @@
 import 'dart:async';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:cloud_functions/cloud_functions.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../utils/messaging_service.dart';
 import '../utils/background_location_service.dart';
+import '../utils/school_context.dart';
 import '../views/admin/admin_dashboard.dart';
 import '../views/teacher/teacher_dashboard.dart';
 import '../views/parent/parent_dashboard.dart';
@@ -49,6 +52,14 @@ class AuthController {
 
       await _firestore.collection('users').doc(uid).set(userData);
 
+      // Match this account against the roster their school uploaded. A student
+      // inherits their school (and any parent link the admin declared in the
+      // CSV); a parent is linked to the children listed under their email.
+      // Must run before signOut below — the callable needs an authenticated user.
+      if (role == 'student' || role == 'parent') {
+        await claimRosterRecord(uid);
+      }
+
       // Send verification email so the user must confirm the address.
       try {
         await userCredential.user?.sendEmailVerification();
@@ -66,6 +77,40 @@ class AuthController {
       return "System Error";
     }
   }
+  /// Matches this account against its school's roster, recording the outcome.
+  ///
+  /// This used to be fire-and-forget with a swallowed error, which meant a
+  /// student whose claim never landed looked exactly like one who was never on
+  /// the roster. The result is now written to `rosterClaimNote` on the user
+  /// document, and [loginUser] retries whenever `schoolId` is still missing — so
+  /// a single failure is no longer permanent.
+  Future<void> claimRosterRecord(String uid) async {
+    String? note;
+    try {
+      final res =
+          await FirebaseFunctions.instance.httpsCallable('claimRosterRecord').call();
+      final data = Map<String, dynamic>.from(res.data as Map);
+      if (data['claimed'] != true) {
+        note = 'No roster entry matched this email (${data['reason'] ?? 'no match'}).';
+      }
+    } on FirebaseFunctionsException catch (e) {
+      note = 'Roster link failed: ${e.code} ${e.message ?? ''}'.trim();
+    } catch (e) {
+      note = 'Roster link failed: $e';
+    }
+
+    // The school may have just been attached, so drop the cached lookup.
+    SchoolContext.clear();
+
+    try {
+      await _firestore.collection('users').doc(uid).update({
+        'rosterClaimNote': note ?? FieldValue.delete(),
+      });
+    } catch (_) {
+      // Diagnostic only — never block sign-up or sign-in over this note.
+    }
+  }
+
   Future<String?> resendVerificationEmail({
     required String email,
     required String password,
@@ -98,7 +143,7 @@ class AuthController {
         password: password,
       );
 
-      // Block unverified accounts (admin role is exempt — checked after we read the user doc).
+      // Block unverified accounts (admin role is exempt -- checked after we read the user doc).
       await userCredential.user?.reload();
       final bool emailVerified = userCredential.user?.emailVerified ?? false;
 
@@ -117,7 +162,24 @@ class AuthController {
         Map<String, dynamic> data = userDoc.data() as Map<String, dynamic>;
         String? role = data['role'];
 
+        // Retry a roster claim that never landed — an app build predating the
+        // claim call, or a transient failure, would otherwise leave this account
+        // unlinked from its school forever.
+        final existingSchool = (data['schoolId'] as String?)?.trim();
+        if ((role == 'student' || role == 'parent') &&
+            (existingSchool == null || existingSchool.isEmpty)) {
+          await claimRosterRecord(uid);
+        }
+
         if (role != null && context.mounted) {
+          // Write a session token so other devices are displaced (one-device-per-account).
+          if (!kIsWeb) {
+            final sessionToken = '${uid}_${DateTime.now().millisecondsSinceEpoch}';
+            unawaited(_firestore.collection('users').doc(uid).update({'activeSession': sessionToken}));
+            final prefs = await SharedPreferences.getInstance();
+            await prefs.setString('activeSession', sessionToken);
+          }
+          if (!context.mounted) return null;
           // Register FCM token so the user receives push notifications.
           unawaited(MessagingService.instance.init());
           // Start the background location/geofence service for roles that
@@ -169,8 +231,13 @@ class AuthController {
   }
   
   Future<void> logout() async {
+    if (!kIsWeb) {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove('activeSession');
+    }
     await MessagingService.instance.clearTokenForCurrentUser();
     if (!kIsWeb) await BackgroundLocationService.stop();
+    SchoolContext.clear(); // don't let the next user inherit this school
     await _auth.signOut();
   }
 

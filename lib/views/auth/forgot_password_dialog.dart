@@ -85,7 +85,7 @@ class _ForgotPasswordDialogState extends State<ForgotPasswordDialog> {
             Container(
               padding: const EdgeInsets.all(10),
               decoration: BoxDecoration(
-                color: (_isError ? AppTheme.errorColor : AppTheme.primaryColor)
+                color: (_isError ? AppTheme.errorColor : AppTheme.effectivePrimary)
                     .withValues(alpha: 0.1),
                 borderRadius: BorderRadius.circular(8),
               ),
@@ -93,7 +93,7 @@ class _ForgotPasswordDialogState extends State<ForgotPasswordDialog> {
                 children: [
                   Icon(
                     _isError ? Icons.error_outline : Icons.mark_email_read_outlined,
-                    color: _isError ? AppTheme.errorColor : AppTheme.primaryColor,
+                    color: _isError ? AppTheme.errorColor : AppTheme.effectivePrimary,
                     size: 18,
                   ),
                   const SizedBox(width: 8),
@@ -102,7 +102,7 @@ class _ForgotPasswordDialogState extends State<ForgotPasswordDialog> {
                       _message!,
                       style: TextStyle(
                         fontSize: 12,
-                        color: _isError ? AppTheme.errorColor : AppTheme.primaryColor,
+                        color: _isError ? AppTheme.errorColor : AppTheme.effectivePrimary,
                         fontWeight: FontWeight.w600,
                       ),
                     ),

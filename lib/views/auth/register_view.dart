@@ -78,8 +78,7 @@ class _RegisterViewState extends State<RegisterView> {
   final _authController = AuthController();
 
   String _selectedRole = 'student';
-  // Teachers are created/approved by admin only — not self-registered.
-  final List<String> _roles = ['student', 'parent'];
+  final List<String> _roles = ['student', 'parent', 'teacher'];
 
   bool _isLoading = false;
   String? _errorMessage;
@@ -175,7 +174,7 @@ class _RegisterViewState extends State<RegisterView> {
                 "Sign Up",
                 style: Theme.of(context).textTheme.headlineMedium?.copyWith(
                       fontWeight: FontWeight.bold,
-                      color: AppTheme.primaryColor,
+                      color: AppTheme.effectivePrimary,
                     ),
                 textAlign: TextAlign.center,
               ),
@@ -296,7 +295,7 @@ class _RegisterViewState extends State<RegisterView> {
                 height: 50,
                 child: ElevatedButton(
                   onPressed: _isLoading ? null : _handleRegister,
-                  style: ElevatedButton.styleFrom(backgroundColor: AppTheme.primaryColor),
+                  style: ElevatedButton.styleFrom(backgroundColor: AppTheme.effectivePrimary),
                   child: _isLoading
                       ? const CircularProgressIndicator(color: Colors.white)
                       : const Text(
@@ -392,7 +391,7 @@ class _VerifyEmailViewState extends State<VerifyEmailView> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text("Verify Email"),
+        title: Text("Verify Email"),
         backgroundColor: Colors.transparent,
         elevation: 0,
         iconTheme: const IconThemeData(color: AppTheme.darkText),
@@ -403,7 +402,7 @@ class _VerifyEmailViewState extends State<VerifyEmailView> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Icon(Icons.mark_email_unread_rounded, size: 80, color: AppTheme.primaryColor),
+              Icon(Icons.mark_email_unread_rounded, size: 80, color: AppTheme.effectivePrimary),
               const SizedBox(height: 16),
               Text(
                 "Confirm your email",
@@ -417,7 +416,7 @@ class _VerifyEmailViewState extends State<VerifyEmailView> {
               Text(
                 "We sent a confirmation link to:\n${widget.email}\n\nOpen it to activate your account before logging in.",
                 textAlign: TextAlign.center,
-                style: const TextStyle(color: Colors.grey, height: 1.4),
+                style: TextStyle(color: Colors.grey, height: 1.4),
               ),
               const SizedBox(height: 24),
               if (_message != null)
@@ -425,7 +424,7 @@ class _VerifyEmailViewState extends State<VerifyEmailView> {
                   padding: const EdgeInsets.all(10),
                   margin: const EdgeInsets.only(bottom: 16),
                   decoration: BoxDecoration(
-                    color: (_messageIsError ? AppTheme.errorColor : AppTheme.primaryColor)
+                    color: (_messageIsError ? AppTheme.errorColor : AppTheme.effectivePrimary)
                         .withValues(alpha: 0.1),
                     borderRadius: BorderRadius.circular(8),
                   ),
@@ -433,7 +432,7 @@ class _VerifyEmailViewState extends State<VerifyEmailView> {
                     _message!,
                     textAlign: TextAlign.center,
                     style: TextStyle(
-                      color: _messageIsError ? AppTheme.errorColor : AppTheme.primaryColor,
+                      color: _messageIsError ? AppTheme.errorColor : AppTheme.effectivePrimary,
                       fontWeight: FontWeight.w600,
                     ),
                   ),
@@ -448,8 +447,8 @@ class _VerifyEmailViewState extends State<VerifyEmailView> {
                           height: 18,
                           child: CircularProgressIndicator(strokeWidth: 2),
                         )
-                      : const Icon(Icons.refresh_rounded),
-                  label: Text(_isResending ? "Sending…" : "Resend verification email"),
+                      : Icon(Icons.refresh_rounded),
+                  label: Text(_isResending ? "Sending--" : "Resend verification email"),
                 ),
               ),
               const SizedBox(height: 12),
@@ -457,7 +456,7 @@ class _VerifyEmailViewState extends State<VerifyEmailView> {
                 height: 50,
                 child: ElevatedButton(
                   onPressed: () => Navigator.of(context).popUntil((r) => r.isFirst),
-                  style: ElevatedButton.styleFrom(backgroundColor: AppTheme.primaryColor),
+                  style: ElevatedButton.styleFrom(backgroundColor: AppTheme.effectivePrimary),
                   child: const Text(
                     "BACK TO LOGIN",
                     style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),

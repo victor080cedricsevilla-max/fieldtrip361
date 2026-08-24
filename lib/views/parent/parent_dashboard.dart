@@ -13,7 +13,10 @@ import '../auth/mobile_login_view.dart';
 import '../../repositories/directions_repository.dart';
 import '../../models/directions_model.dart';
 import '../../utils/live_tracker.dart';
+import 'package:cloud_functions/cloud_functions.dart';
 import '../../utils/firestore_utils.dart';
+import '../../utils/guardian_service.dart';
+import '../../utils/trip_queries.dart';
 import '../shared/settings_view.dart';
 import '../shared/notification_panel.dart';
 
@@ -70,18 +73,18 @@ class _ParentDashboardState extends State<ParentDashboard> {
           selectedIndex: _currentIndex,
           onDestinationSelected: (i) => setState(() => _currentIndex = i),
           backgroundColor: Colors.white,
-          indicatorColor: AppTheme.primaryColor.withValues(alpha: 0.12),
+          indicatorColor: AppTheme.effectivePrimary.withValues(alpha: 0.12),
           elevation: 0,
           labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
-          destinations: const [
+          destinations: [
             NavigationDestination(
               icon: Icon(Icons.route_outlined),
-              selectedIcon: Icon(Icons.route, color: AppTheme.primaryColor),
+              selectedIcon: Icon(Icons.route, color: AppTheme.effectivePrimary),
               label: "Trips",
             ),
             NavigationDestination(
               icon: Icon(Icons.person_outline),
-              selectedIcon: Icon(Icons.person, color: AppTheme.primaryColor),
+              selectedIcon: Icon(Icons.person, color: AppTheme.effectivePrimary),
               label: "Profile",
             ),
           ],
@@ -113,7 +116,7 @@ class ParentTripsTab extends StatelessWidget {
       body: StreamBuilder<DocumentSnapshot>(
         stream: FirebaseFirestore.instance.collection('users').doc(myUid).snapshots(),
         builder: (context, userSnap) {
-          if (!userSnap.hasData) return const Center(child: CircularProgressIndicator(color: AppTheme.primaryColor));
+          if (!userSnap.hasData) return Center(child: CircularProgressIndicator(color: AppTheme.effectivePrimary));
           
           List<dynamic> childrenIds = (userSnap.data!.data() as Map<String, dynamic>?)?['children'] ?? [];
           if (childrenIds.isEmpty) {
@@ -131,13 +134,18 @@ class ParentTripsTab extends StatelessWidget {
             );
           }
 
-          return StreamBuilder<QuerySnapshot>(
-            stream: FirebaseFirestore.instance.collection('trips').where('status', isNotEqualTo: 'completed').snapshots(),
+          // Scoped to trips a linked child belongs to — the rules only permit
+          // reads that match through children, so the query must say the same.
+          return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+            stream: TripQueries.ofChildren(
+              childrenIds.map((c) => c.toString()).toList(),
+            ),
             builder: (context, snapshot) {
-              if (!snapshot.hasData) return const Center(child: CircularProgressIndicator(color: AppTheme.primaryColor));
+              if (!snapshot.hasData) return Center(child: CircularProgressIndicator(color: AppTheme.effectivePrimary));
 
               final myTrips = snapshot.data!.docs.where((doc) {
-                final data = doc.data() as Map<String, dynamic>;
+                final data = doc.data();
+                if (data['status'] == 'completed') return false;
                 final buses = asList(data['buses']);
                 for (var bus in buses) {
                   final List passengers = asList(bus['passengers']);
@@ -168,7 +176,7 @@ class ParentTripsTab extends StatelessWidget {
                 itemCount: myTrips.length,
                 itemBuilder: (context, index) {
                   var doc = myTrips[index];
-                  var data = doc.data() as Map<String, dynamic>;
+                  var data = doc.data();
                   final status = data['status'] ?? 'pending';
 
                   return GestureDetector(
@@ -191,10 +199,10 @@ class ParentTripsTab extends StatelessWidget {
                             width: 48,
                             height: 48,
                             decoration: BoxDecoration(
-                              color: AppTheme.primaryColor.withValues(alpha: 0.1),
+                              color: AppTheme.effectivePrimary.withValues(alpha: 0.1),
                               borderRadius: BorderRadius.circular(12),
                             ),
-                            child: const Icon(Icons.directions_bus_rounded, color: AppTheme.primaryColor, size: 24),
+                            child: Icon(Icons.directions_bus_rounded, color: AppTheme.effectivePrimary, size: 24),
                           ),
                           const SizedBox(width: 14),
                           Expanded(
@@ -246,8 +254,8 @@ class _StatusChip extends StatelessWidget {
         label = 'Active';
         break;
       default:
-        bg = AppTheme.primaryColor.withValues(alpha: 0.1);
-        fg = AppTheme.primaryColor;
+        bg = AppTheme.effectivePrimary.withValues(alpha: 0.1);
+        fg = AppTheme.effectivePrimary;
         label = 'Upcoming';
     }
 
@@ -280,8 +288,35 @@ class _ParentTripDetailsState extends State<ParentTripDetails>
 
   String _eta = "--";
   String _distance = "--";
-  LatLng? _lastChildLoc;
+  LatLng? _lastTeacherLoc;
+  int _lastActiveStop = -2;
   bool _isFetchingRoute = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _fetchChildNames();
+  }
+
+  Future<void> _fetchChildNames() async {
+    if (widget.childrenIds.isEmpty) return;
+    try {
+      final ids = widget.childrenIds.map((e) => e.toString()).toList();
+      final snap = await FirebaseFirestore.instance
+          .collection('users')
+          .where(FieldPath.documentId, whereIn: ids)
+          .get();
+      if (!mounted) return;
+      setState(() {
+        for (final doc in snap.docs) {
+          _peopleInfo[doc.id] = {
+            'name': doc.data()['name']?.toString() ?? '',
+            'role': 'student',
+          };
+        }
+      });
+    } catch (_) {}
+  }
 
   @override
   void dispose() {
@@ -308,7 +343,7 @@ class _ParentTripDetailsState extends State<ParentTripDetails>
           _polylines.removeWhere((p) => p.polylineId.value == 'active_route');
           _polylines.add(Polyline(
             polylineId: const PolylineId('active_route'),
-            color: AppTheme.primaryColor,
+            color: AppTheme.effectivePrimary,
             width: 6,
             points: info.polylinePoints.map((e) => LatLng(e.latitude, e.longitude)).toList()
           ));
@@ -326,7 +361,7 @@ class _ParentTripDetailsState extends State<ParentTripDetails>
     return StreamBuilder<DocumentSnapshot>(
       stream: FirebaseFirestore.instance.collection('trips').doc(widget.tripId).snapshots(),
       builder: (context, tripSnap) {
-        if (!tripSnap.hasData) return const Scaffold(body: Center(child: CircularProgressIndicator(color: AppTheme.primaryColor)));
+        if (!tripSnap.hasData) return Scaffold(body: Center(child: CircularProgressIndicator(color: AppTheme.effectivePrimary)));
         
         var currentTripData = tripSnap.data!.data() as Map<String, dynamic>;
 
@@ -342,6 +377,23 @@ class _ParentTripDetailsState extends State<ParentTripDetails>
           ));
         }
 
+        // Find teacher assigned to the same bus as the parent's children.
+        String? teacherUid;
+        outer:
+        for (final b in asList(currentTripData['buses'])) {
+          if (b is! Map) continue;
+          for (final p in asList(b['passengers'])) {
+            if (p is Map && widget.childrenIds.any((c) => c.toString() == p['id']?.toString())) {
+              teacherUid = (b['mainTeacher'] as Map?)?['id']?.toString();
+              break outer;
+            }
+          }
+        }
+        final List<String> queryIds = [
+          ...widget.childrenIds.map((e) => e.toString()),
+          if (teacherUid != null) teacherUid,
+        ];
+
         return Scaffold(
           extendBodyBehindAppBar: true,
           appBar: AppBar(
@@ -351,24 +403,35 @@ class _ParentTripDetailsState extends State<ParentTripDetails>
               icon: const Icon(Icons.arrow_back_ios_new_rounded, size: 20, color: AppTheme.secondaryColor),
               onPressed: () => Navigator.pop(context),
             ),
-            title: const Text("Trip Dashboard", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18, color: AppTheme.secondaryColor)),
+            title: Text("Trip Dashboard", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18, color: AppTheme.secondaryColor)),
           ),
           body: StreamBuilder<QuerySnapshot>(
-            stream: FirebaseFirestore.instance.collection('users').where(FieldPath.documentId, whereIn: widget.childrenIds).snapshots(),
+            key: ValueKey(queryIds.join(',')),
+            stream: FirebaseFirestore.instance.collection('locations').where(FieldPath.documentId, whereIn: queryIds).snapshots(),
             builder: (context, snapshot) {
-              if (!snapshot.hasData) return const Center(child: CircularProgressIndicator(color: AppTheme.primaryColor));
+              if (!snapshot.hasData) return Center(child: CircularProgressIndicator(color: AppTheme.effectivePrimary));
 
               List<Map<String, dynamic>> peopleList = [];
               final Map<String, LatLng> targets = {};
+              LatLng? teacherLoc;
 
               for (var doc in snapshot.data!.docs) {
-                var data = doc.data() as Map<String, dynamic>;
+                final locData = doc.data() as Map<String, dynamic>;
+                // Capture teacher location for ETA but don't show on parent's map.
+                if (doc.id == teacherUid) {
+                  if (locData['lat'] is num && locData['lng'] is num) {
+                    teacherLoc = LatLng((locData['lat'] as num).toDouble(), (locData['lng'] as num).toDouble());
+                  }
+                  continue;
+                }
+                final profile = _peopleInfo[doc.id] ?? {};
+                final data = {...profile, ...locData, '_uid': doc.id};
                 peopleList.add(data);
                 _peopleInfo[doc.id] = data;
-                final dynamic rawLat = data['lat'];
-                final dynamic rawLng = data['lng'];
+                final dynamic rawLat = locData['lat'];
+                final dynamic rawLng = locData['lng'];
                 if (rawLat is num && rawLng is num) {
-                  _loadMarker(doc.id, data['name'], Colors.blue);
+                  _loadMarker(doc.id, profile['name']?.toString() ?? '', Colors.blue);
                   targets[doc.id] = LatLng(rawLat.toDouble(), rawLng.toDouble());
                 }
               }
@@ -399,39 +462,30 @@ class _ParentTripDetailsState extends State<ParentTripDetails>
                 }
               }
 
-              // Pick the first child that actually has a location fix.
-              Map<String, dynamic>? locatedChild;
-              for (final p in peopleList) {
-                if (p['lat'] is num && p['lng'] is num) {
-                  locatedChild = p;
-                  break;
-                }
+              // Reset ETA whenever the active stop changes.
+              if (activeStop != _lastActiveStop) {
+                _lastActiveStop = activeStop;
+                _lastTeacherLoc = null;
+                WidgetsBinding.instance.addPostFrameCallback((_) {
+                  if (mounted) setState(() { _eta = '--'; _distance = '--'; });
+                });
               }
 
-              if (locatedChild != null) {
-                final LatLng childLoc = LatLng(
-                  (locatedChild['lat'] as num).toDouble(),
-                  (locatedChild['lng'] as num).toDouble(),
-                );
-
-                if (activeStop != -1) {
-                  final stop = stops[activeStop];
-                  if (stop['lat'] is num && stop['lng'] is num) {
-                    final LatLng dest = LatLng(
-                      (stop['lat'] as num).toDouble(),
-                      (stop['lng'] as num).toDouble(),
-                    );
-                    if (_lastChildLoc == null ||
-                        Geolocator.distanceBetween(
-                              childLoc.latitude,
-                              childLoc.longitude,
-                              _lastChildLoc!.latitude,
-                              _lastChildLoc!.longitude,
-                            ) >
-                            200) {
-                      _lastChildLoc = childLoc;
-                      _fetchLiveRoute(childLoc, dest);
-                    }
+              // Calculate ETA from teacher's live location to the active stop.
+              if (teacherLoc != null && activeStop != -1 && activeStop < stops.length) {
+                final stop = stops[activeStop];
+                if (stop['lat'] is num && stop['lng'] is num) {
+                  final LatLng dest = LatLng(
+                    (stop['lat'] as num).toDouble(),
+                    (stop['lng'] as num).toDouble(),
+                  );
+                  if (_lastTeacherLoc == null ||
+                      Geolocator.distanceBetween(
+                        teacherLoc.latitude, teacherLoc.longitude,
+                        _lastTeacherLoc!.latitude, _lastTeacherLoc!.longitude,
+                      ) > 20) {
+                    _lastTeacherLoc = teacherLoc;
+                    _fetchLiveRoute(teacherLoc, dest);
                   }
                 }
               }
@@ -502,25 +556,27 @@ class _ParentTripDetailsState extends State<ParentTripDetails>
                                   Container(
                                     padding: const EdgeInsets.all(16),
                                     decoration: BoxDecoration(
-                                      color: AppTheme.primaryColor.withValues(alpha: 0.05),
+                                      color: AppTheme.effectivePrimary.withValues(alpha: 0.05),
                                       borderRadius: BorderRadius.circular(12),
-                                      border: Border.all(color: AppTheme.primaryColor.withValues(alpha: 0.2)),
+                                      border: Border.all(color: AppTheme.effectivePrimary.withValues(alpha: 0.2)),
                                     ),
                                     child: Row(
                                       children: [
                                         Container(
                                           padding: const EdgeInsets.all(10),
-                                          decoration: const BoxDecoration(color: Colors.white, shape: BoxShape.circle),
-                                          child: const Icon(Icons.access_time_filled, color: AppTheme.primaryColor, size: 24),
+                                          decoration: BoxDecoration(color: Colors.white, shape: BoxShape.circle),
+                                          child: Icon(Icons.access_time_filled, color: AppTheme.effectivePrimary, size: 24),
                                         ),
                                         const SizedBox(width: 14),
                                         Expanded(
                                           child: Column(
                                             crossAxisAlignment: CrossAxisAlignment.start,
                                             children: [
-                                              Text(activeStop != -1 ? "Heading to: ${stops[activeStop]['name']}" : "Waiting for teacher...", style: const TextStyle(fontWeight: FontWeight.bold, color: AppTheme.secondaryColor)),
-                                              const SizedBox(height: 4),
-                                              Text("ETA: $_eta  •  $_distance", style: const TextStyle(fontSize: 13, color: AppTheme.primaryColor, fontWeight: FontWeight.w600)),
+                                              Text(activeStop != -1 ? "Heading to: ${stops[activeStop]['name']}" : "Waiting for teacher...", style: TextStyle(fontWeight: FontWeight.bold, color: AppTheme.secondaryColor)),
+                                              if (activeStop != -1) ...[
+                                                const SizedBox(height: 4),
+                                                Text("ETA: $_eta  --  $_distance", style: TextStyle(fontSize: 13, color: AppTheme.effectivePrimary, fontWeight: FontWeight.w600)),
+                                              ],
                                             ],
                                           ),
                                         )
@@ -551,7 +607,7 @@ class _ParentTripDetailsState extends State<ParentTripDetails>
                                     Container(
                                       width: 32, height: 32,
                                       decoration: BoxDecoration(
-                                        color: isActive ? AppTheme.primaryColor : (isOrigin || isReturn ? Colors.green.shade100 : Colors.grey.shade100),
+                                        color: isActive ? AppTheme.effectivePrimary : (isOrigin || isReturn ? Colors.green.shade100 : Colors.grey.shade100),
                                         shape: BoxShape.circle,
                                       ),
                                       child: Icon(
@@ -565,7 +621,7 @@ class _ParentTripDetailsState extends State<ParentTripDetails>
                                       child: Column(
                                         crossAxisAlignment: CrossAxisAlignment.start,
                                         children: [
-                                          Text(stop['name'], style: TextStyle(fontWeight: isActive ? FontWeight.bold : FontWeight.w600, color: isActive ? AppTheme.primaryColor : AppTheme.secondaryColor)),
+                                          Text(stop['name'], style: TextStyle(fontWeight: isActive ? FontWeight.bold : FontWeight.w600, color: isActive ? AppTheme.effectivePrimary : AppTheme.secondaryColor)),
                                           Row(
                                             children: [
                                               Text(stop['time'] ?? '', style: TextStyle(fontSize: 12, color: Colors.grey.shade500)),
@@ -574,15 +630,15 @@ class _ParentTripDetailsState extends State<ParentTripDetails>
                                                 Container(
                                                   padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
                                                   decoration: BoxDecoration(
-                                                    color: AppTheme.primaryColor.withValues(alpha: 0.1),
+                                                    color: AppTheme.effectivePrimary.withValues(alpha: 0.1),
                                                     borderRadius: BorderRadius.circular(6),
                                                   ),
                                                   child: Text(
                                                     "ETA ${stop['etaFromPrev']}",
-                                                    style: const TextStyle(
+                                                    style: TextStyle(
                                                       fontSize: 10,
                                                       fontWeight: FontWeight.w600,
-                                                      color: AppTheme.primaryColor,
+                                                      color: AppTheme.effectivePrimary,
                                                     ),
                                                   ),
                                                 ),
@@ -595,8 +651,8 @@ class _ParentTripDetailsState extends State<ParentTripDetails>
                                     if (isActive)
                                       Container(
                                         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                                        decoration: BoxDecoration(color: AppTheme.primaryColor.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(10)),
-                                        child: const Text("Current", style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: AppTheme.primaryColor)),
+                                        decoration: BoxDecoration(color: AppTheme.effectivePrimary.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(10)),
+                                        child: Text("Current", style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: AppTheme.effectivePrimary)),
                                       )
                                   ],
                                 ),
@@ -609,69 +665,136 @@ class _ParentTripDetailsState extends State<ParentTripDetails>
                               child: Row(
                                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                                 children: [
-                                  const Text("Children Tracker", style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: AppTheme.secondaryColor)),
+                                  Text("Children Tracker", style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: AppTheme.secondaryColor)),
                                   Container(
                                     padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                                     decoration: BoxDecoration(
-                                      color: AppTheme.primaryColor.withValues(alpha: 0.1),
+                                      color: AppTheme.effectivePrimary.withValues(alpha: 0.1),
                                       borderRadius: BorderRadius.circular(20),
                                     ),
                                     child: Text("${peopleList.length} child active",
-                                        style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: AppTheme.primaryColor)),
+                                        style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: AppTheme.effectivePrimary)),
                                   ),
                                 ],
                               ),
                             ),
-                            ListView.separated(
-                              shrinkWrap: true,
-                              physics: const NeverScrollableScrollPhysics(),
-                              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                              itemCount: peopleList.length,
-                              separatorBuilder: (_, __) => Divider(color: Colors.grey.shade100, height: 1),
-                              itemBuilder: (context, index) {
-                                var person = peopleList[index];
-                                final int battery = person['battery'] ?? 0;
-                                final String activity = person['lastActivity'] ?? "Unknown";
+                            Builder(builder: (_) {
+                              // Build childId → attendance map from trip buses.
+                              final Map<String, Map<String, dynamic>> attendanceMap = {};
+                              for (final b in asList(currentTripData['buses'])) {
+                                if (b is! Map) continue;
+                                for (final p in asList(b['passengers'])) {
+                                  if (p is! Map) continue;
+                                  final id = p['id']?.toString();
+                                  if (id == null) continue;
+                                  attendanceMap[id] = Map<String, dynamic>.from(p['attendance'] as Map? ?? {});
+                                }
+                              }
+                              final List stops = currentTripData['stops'] ?? [];
 
-                                return Padding(
-                                  padding: const EdgeInsets.symmetric(vertical: 10),
-                                  child: Row(
-                                    children: [
-                                      CircleAvatar(
-                                        radius: 22,
-                                        backgroundColor: AppTheme.primaryColor.withValues(alpha: 0.12),
-                                        child: Text(person['name'][0].toUpperCase(), style: const TextStyle(color: AppTheme.primaryColor, fontWeight: FontWeight.bold, fontSize: 16)),
-                                      ),
-                                      const SizedBox(width: 12),
-                                      Expanded(
-                                        child: Column(
-                                          crossAxisAlignment: CrossAxisAlignment.start,
+                              return ListView.separated(
+                                shrinkWrap: true,
+                                physics: const NeverScrollableScrollPhysics(),
+                                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                                itemCount: peopleList.length,
+                                separatorBuilder: (_, __) => Divider(color: Colors.grey.shade100, height: 1),
+                                itemBuilder: (context, index) {
+                                  final person = peopleList[index];
+                                  final String personId = person['_uid'] ?? '';
+                                  final int battery = person['battery'] ?? 0;
+                                  final String activity = person['lastActivity'] ?? "Unknown";
+                                  final att = attendanceMap[personId] ?? {};
+
+                                  // Count how many stops the child is marked present.
+                                  int presentCount = 0;
+                                  for (int si = 0; si < stops.length; si++) {
+                                    if (att['stop_$si'] == true) presentCount++;
+                                  }
+                                  final bool hasAnyAttendance = presentCount > 0;
+
+                                  return Padding(
+                                    padding: const EdgeInsets.symmetric(vertical: 10),
+                                    child: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        Row(
                                           children: [
-                                            Text(person['name'], style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14, color: AppTheme.secondaryColor)),
-                                            const SizedBox(height: 2),
-                                            Text("LRN: ${person['lrn']}", style: TextStyle(fontSize: 10, color: Colors.grey.shade500, letterSpacing: 0.5)),
+                                            CircleAvatar(
+                                              radius: 22,
+                                              backgroundColor: AppTheme.effectivePrimary.withValues(alpha: 0.12),
+                                              child: Text(
+                                                (person['name'] as String? ?? '?').isNotEmpty
+                                                    ? (person['name'] as String)[0].toUpperCase()
+                                                    : '?',
+                                                style: TextStyle(color: AppTheme.effectivePrimary, fontWeight: FontWeight.bold, fontSize: 16),
+                                              ),
+                                            ),
+                                            const SizedBox(width: 12),
+                                            Expanded(
+                                              child: Column(
+                                                crossAxisAlignment: CrossAxisAlignment.start,
+                                                children: [
+                                                  Text(person['name']?.toString() ?? '', style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14, color: AppTheme.secondaryColor)),
+                                                  const SizedBox(height: 2),
+                                                  Text("LRN: ${person['lrn'] ?? ''}", style: TextStyle(fontSize: 10, color: Colors.grey.shade500, letterSpacing: 0.5)),
+                                                ],
+                                              ),
+                                            ),
+                                            Column(
+                                              crossAxisAlignment: CrossAxisAlignment.end,
+                                              children: [
+                                                Row(
+                                                  children: [
+                                                    Icon(battery > 20 ? Icons.battery_full_rounded : Icons.battery_alert_rounded, color: battery > 20 ? Colors.green : Colors.red, size: 14),
+                                                    const SizedBox(width: 3),
+                                                    Text("$battery%", style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 12, color: AppTheme.secondaryColor)),
+                                                  ],
+                                                ),
+                                                const SizedBox(height: 2),
+                                                Text(activity, style: TextStyle(color: Colors.grey.shade500, fontSize: 10)),
+                                              ],
+                                            ),
                                           ],
-                                        )
-                                      ),
-                                      Column(
-                                        crossAxisAlignment: CrossAxisAlignment.end,
-                                        children: [
+                                        ),
+                                        if (stops.isNotEmpty) ...[
+                                          const SizedBox(height: 8),
                                           Row(
                                             children: [
-                                              Icon(battery > 20 ? Icons.battery_full_rounded : Icons.battery_alert_rounded, color: battery > 20 ? Colors.green : Colors.red, size: 14),
-                                              const SizedBox(width: 3),
-                                              Text("$battery%", style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 12, color: AppTheme.secondaryColor)),
+                                              Container(
+                                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                                                decoration: BoxDecoration(
+                                                  color: hasAnyAttendance ? Colors.green.shade50 : Colors.grey.shade100,
+                                                  borderRadius: BorderRadius.circular(8),
+                                                ),
+                                                child: Row(
+                                                  mainAxisSize: MainAxisSize.min,
+                                                  children: [
+                                                    Icon(
+                                                      hasAnyAttendance ? Icons.check_circle_rounded : Icons.radio_button_unchecked_rounded,
+                                                      size: 12,
+                                                      color: hasAnyAttendance ? Colors.green.shade700 : Colors.grey.shade400,
+                                                    ),
+                                                    const SizedBox(width: 4),
+                                                    Text(
+                                                      hasAnyAttendance ? "Present ($presentCount/${stops.length} stops)" : "Not yet scanned",
+                                                      style: TextStyle(
+                                                        fontSize: 11,
+                                                        fontWeight: FontWeight.w600,
+                                                        color: hasAnyAttendance ? Colors.green.shade700 : Colors.grey.shade500,
+                                                      ),
+                                                    ),
+                                                  ],
+                                                ),
+                                              ),
                                             ],
                                           ),
-                                          const SizedBox(height: 2),
-                                          Text(activity, style: TextStyle(color: Colors.grey.shade500, fontSize: 10)),
                                         ],
-                                      )
-                                    ],
-                                  ),
-                                );
-                              },
-                            )
+                                      ],
+                                    ),
+                                  );
+                                },
+                              );
+                            })
                           ],
                         ),
                       );
@@ -697,51 +820,34 @@ class _ParentProfileTabState extends State<ParentProfileTab> {
   final _codeController = TextEditingController();
   bool _isSearching = false;
 
+  /// Redeems a school-issued Parent Activation Code.
+  ///
+  /// This used to search students by a `code` field on their own user document
+  /// and write the link straight from the client. A student knows their own
+  /// code, so they could register a fake "parent" and attach it to themselves.
+  /// Linking now happens only inside `activateGuardianCode`, which resolves the
+  /// school, student and guardian from a code the school issued and emailed.
   Future<void> _addStudentByCode() async {
-    final code = _codeController.text.trim().toUpperCase();
+    final code = _codeController.text.trim();
     if (code.isEmpty) return;
     setState(() => _isSearching = true);
 
     try {
-      final snapshot = await FirebaseFirestore.instance.collection('users')
-          .where('role', isEqualTo: 'student').where('code', isEqualTo: code).limit(1).get();
-
-      if (snapshot.docs.isEmpty) {
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("No student found with that code"), backgroundColor: Colors.red));
-        return;
-      }
-
-      final studentId = snapshot.docs.first.id;
-      final parentUser = FirebaseAuth.instance.currentUser!;
-
-      final studentDoc = await FirebaseFirestore.instance.collection('users').doc(studentId).get();
-      final existingParentIds = asList(studentDoc.data()?['parentIds']);
-      if (existingParentIds.contains(parentUser.uid)) {
-        if (!mounted) return;
-        Navigator.pop(context);
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Already linked to this student."), backgroundColor: Colors.orange));
-        return;
-      }
-      if (existingParentIds.length >= 2) {
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("This student already has 2 linked parents."), backgroundColor: Colors.red));
-        return;
-      }
-
-      final batch = FirebaseFirestore.instance.batch();
-      batch.update(FirebaseFirestore.instance.collection('users').doc(studentId), {
-        'parentIds': FieldValue.arrayUnion([parentUser.uid]),
-      });
-      batch.update(FirebaseFirestore.instance.collection('users').doc(parentUser.uid), {
-        'children': FieldValue.arrayUnion([studentId]),
-      });
-      await batch.commit();
-
+      final result = await GuardianService.activate(code);
       if (!mounted) return;
       Navigator.pop(context);
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Child linked successfully!"), backgroundColor: Colors.green));
+      final childName = (result['studentName'] ?? 'Your child').toString();
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text("$childName is now linked to your account."),
+        backgroundColor: Colors.green,
+      ));
       _codeController.clear();
+    } on FirebaseFunctionsException catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(e.message ?? "That activation code could not be used."),
+        backgroundColor: Colors.red,
+      ));
     } finally {
       if (mounted) setState(() => _isSearching = false);
     }
@@ -907,7 +1013,7 @@ class _ParentProfileTabState extends State<ParentProfileTab> {
       body: FutureBuilder<DocumentSnapshot>(
         future: FirebaseFirestore.instance.collection('users').doc(uid).get(),
         builder: (context, userSnapshot) {
-          if (!userSnapshot.hasData) return const Center(child: CircularProgressIndicator(color: AppTheme.primaryColor));
+          if (!userSnapshot.hasData) return Center(child: CircularProgressIndicator(color: AppTheme.effectivePrimary));
           
           var userData = userSnapshot.data!.data() as Map<String, dynamic>?;
           String name = userData?['name'] ?? 'Parent';
@@ -923,22 +1029,22 @@ class _ParentProfileTabState extends State<ParentProfileTab> {
                   children: [
                     CircleAvatar(
                       radius: 44,
-                      backgroundColor: AppTheme.primaryColor.withValues(alpha: 0.12),
+                      backgroundColor: AppTheme.effectivePrimary.withValues(alpha: 0.12),
                       child: Text(
                         name.isNotEmpty ? name[0].toUpperCase() : '?',
-                        style: const TextStyle(fontSize: 36, fontWeight: FontWeight.bold, color: AppTheme.primaryColor),
+                        style: TextStyle(fontSize: 36, fontWeight: FontWeight.bold, color: AppTheme.effectivePrimary),
                       ),
                     ),
                     const SizedBox(height: 14),
-                    Text(name, style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: AppTheme.secondaryColor)),
+                    Text(name, style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: AppTheme.secondaryColor)),
                     const SizedBox(height: 4),
                     Container(
                       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
                       decoration: BoxDecoration(
-                        color: AppTheme.primaryColor.withValues(alpha: 0.1),
+                        color: AppTheme.effectivePrimary.withValues(alpha: 0.1),
                         borderRadius: BorderRadius.circular(20),
                       ),
-                      child: const Text("Parent/Guardian", style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppTheme.primaryColor)),
+                      child: Text("Parent/Guardian", style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppTheme.effectivePrimary)),
                     ),
                     const SizedBox(height: 20),
                     Text(email, style: TextStyle(fontSize: 14, color: Colors.grey.shade600)),
@@ -952,10 +1058,10 @@ class _ParentProfileTabState extends State<ParentProfileTab> {
                             builder: (_) => const SettingsView(allowEmergencySoundUpload: false),
                           ),
                         ),
-                        icon: const Icon(Icons.settings_outlined),
-                        label: const Text("Settings"),
+                        icon: Icon(Icons.settings_outlined),
+                        label: Text("Settings"),
                         style: ElevatedButton.styleFrom(
-                          backgroundColor: AppTheme.primaryColor,
+                          backgroundColor: AppTheme.effectivePrimary,
                           foregroundColor: Colors.white,
                           padding: const EdgeInsets.symmetric(vertical: 14),
                           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
@@ -990,7 +1096,7 @@ class _ParentProfileTabState extends State<ParentProfileTab> {
                         child: StreamBuilder<DocumentSnapshot>(
                           stream: FirebaseFirestore.instance.collection('users').doc(uid).snapshots(),
                           builder: (context, snapshot) {
-                            if (!snapshot.hasData) return const Center(child: CircularProgressIndicator(color: AppTheme.primaryColor));
+                            if (!snapshot.hasData) return Center(child: CircularProgressIndicator(color: AppTheme.effectivePrimary));
                             List<dynamic> childrenIds = (snapshot.data!.data() as Map<String, dynamic>?)?['children'] ?? [];
                             
                             if (childrenIds.isEmpty) {
@@ -1021,10 +1127,10 @@ class _ParentProfileTabState extends State<ParentProfileTab> {
                                         Container(
                                           width: 40, height: 40,
                                           decoration: BoxDecoration(
-                                            color: AppTheme.primaryColor.withValues(alpha: 0.1),
+                                            color: AppTheme.effectivePrimary.withValues(alpha: 0.1),
                                             borderRadius: BorderRadius.circular(10),
                                           ),
-                                          child: const Icon(Icons.face_retouching_natural, size: 20, color: AppTheme.primaryColor),
+                                          child: Icon(Icons.face_retouching_natural, size: 20, color: AppTheme.effectivePrimary),
                                         ),
                                         const SizedBox(width: 14),
                                         Column(
@@ -1071,8 +1177,8 @@ class _ParentQRScannerPageState extends State<_ParentQRScannerPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text("Scan Student QR"),
-        backgroundColor: AppTheme.primaryColor,
+        title: Text("Scan Student QR"),
+        backgroundColor: AppTheme.effectivePrimary,
         foregroundColor: Colors.white,
       ),
       body: MobileScanner(

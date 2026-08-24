@@ -28,23 +28,16 @@ class LiveTracker extends ChangeNotifier {
 
   LiveTracker({
     required TickerProvider vsync,
-    this.tweenDuration = const Duration(milliseconds: 1500),
+    this.tweenDuration = const Duration(milliseconds: 800),
   }) {
     _ticker = vsync.createTicker(_onTick)..start();
   }
 
   void _onTick(Duration _) {
-    // Only repaint if at least one track is still animating; cheaply skips
-    // notification when everyone is stationary so we don't burn CPU.
-    final now = DateTime.now();
-    bool anyMoving = false;
-    for (final t in _tracks.values) {
-      if (!t.isDone(now, tweenDuration)) {
-        anyMoving = true;
-        break;
-      }
-    }
-    if (anyMoving) notifyListeners();
+    // Always notify so the AnimatedBuilder rebuilds every frame — this is what
+    // lets own-position markers (driven by local GPS, not Firestore) update in
+    // real-time without waiting for a Firestore event to trigger a rebuild.
+    notifyListeners();
   }
 
   /// Replace the set of target positions. Anything missing from [targets]

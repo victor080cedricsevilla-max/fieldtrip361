@@ -10,6 +10,8 @@ import 'create_trip_view.dart';
 import 'manage_trips_view.dart';
 import 'admin_overview.dart';
 import 'reports_view.dart';
+import 'students_view.dart';
+import 'documents_view.dart';
 
 class AdminDashboard extends StatefulWidget {
   const AdminDashboard({super.key});
@@ -19,7 +21,8 @@ class AdminDashboard extends StatefulWidget {
 }
 
 class _AdminDashboardState extends State<AdminDashboard> {
-  // 0=Dashboard, 1=Create, 2=Manage, 3=Logs, 4=Settings, 5=Reports
+  // 0=Dashboard, 1=Create, 2=Manage, 3=Logs, 4=Settings, 5=Reports,
+  // 6=Students, 7=Documents
   int _selectedIndex = 0;
 
   late final List<Widget> _pages = [
@@ -29,6 +32,8 @@ class _AdminDashboardState extends State<AdminDashboard> {
     const LogsView(),
     const SettingsView(allowEmergencySoundUpload: false),
     const ReportsView(),
+    const StudentsView(),
+    const DocumentsView(),
   ];
 
   Future<void> _handleLogout() async {
@@ -93,13 +98,13 @@ class _AdminDashboardState extends State<AdminDashboard> {
           Container(
             height: 80,
             alignment: Alignment.center,
-            decoration: const BoxDecoration(
+            decoration: BoxDecoration(
               border: Border(bottom: BorderSide(color: Color(0xFFE5E7EB), width: 1)),
             ),
-            child: const Row(
+            child: Row(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                Icon(Icons.admin_panel_settings, color: AppTheme.primaryColor, size: 30),
+                Icon(Icons.admin_panel_settings, color: AppTheme.effectivePrimary, size: 30),
                 SizedBox(width: 10),
                 Text(
                   "FieldTrip360",
@@ -116,6 +121,8 @@ class _AdminDashboardState extends State<AdminDashboard> {
           const SizedBox(height: 20),
 
           _buildMenuItem(0, "Dashboard", Icons.dashboard_outlined),
+          _buildMenuItem(6, "Students", Icons.groups_outlined),
+          _buildMenuItem(7, "Documents", Icons.assignment_outlined),
           _buildMenuItem(1, "Create Trip", Icons.add_circle_outline),
           _buildMenuItem(2, "Manage Trips", Icons.map_outlined),
           _buildMenuItem(3, "Activity Logs", Icons.history),
@@ -151,22 +158,22 @@ class _AdminDashboardState extends State<AdminDashboard> {
         margin: const EdgeInsets.symmetric(horizontal: 15, vertical: 5),
         padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 15),
         decoration: BoxDecoration(
-          color: isSelected ? AppTheme.primaryColor.withValues(alpha: 0.15) : Colors.transparent,
+          color: isSelected ? AppTheme.effectivePrimary.withValues(alpha: 0.15) : Colors.transparent,
           borderRadius: BorderRadius.circular(8),
-          border: isSelected ? Border.all(color: AppTheme.primaryColor.withValues(alpha: 0.5)) : null,
+          border: isSelected ? Border.all(color: AppTheme.effectivePrimary.withValues(alpha: 0.5)) : null,
         ),
         child: Row(
           children: [
             Icon(
               icon,
-              color: isSelected ? AppTheme.primaryColor : Colors.grey,
+              color: isSelected ? AppTheme.effectivePrimary : Colors.grey,
               size: 22,
             ),
             const SizedBox(width: 15),
             Text(
               title,
               style: TextStyle(
-                color: isSelected ? AppTheme.primaryColor : Colors.grey[700],
+                color: isSelected ? AppTheme.effectivePrimary : Colors.grey[700],
                 fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
                 fontSize: 15,
               ),
@@ -225,6 +232,10 @@ class _AdminDashboardState extends State<AdminDashboard> {
         return "Settings";
       case 5:
         return "Reports";
+      case 6:
+        return "Students";
+      case 7:
+        return "Documents";
       default:
         return "Admin";
     }

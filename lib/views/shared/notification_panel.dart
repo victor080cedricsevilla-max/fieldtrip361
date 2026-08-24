@@ -37,7 +37,7 @@ class AppNotification {
   }
 }
 
-/// Bell icon button with unread badge — drop into any AppBar actions list.
+/// Bell icon button with unread badge -- drop into any AppBar actions list.
 class NotificationBell extends StatelessWidget {
   const NotificationBell({super.key});
 
@@ -181,8 +181,8 @@ class NotificationPanel extends StatelessWidget {
                         if (unread > 0)
                           TextButton(
                             onPressed: () => _markAllRead(uid, docs),
-                            child: const Text('Mark all read',
-                                style: TextStyle(fontSize: 12, color: AppTheme.primaryColor)),
+                            child: Text('Mark all read',
+                                style: TextStyle(fontSize: 12, color: AppTheme.effectivePrimary)),
                           ),
                         IconButton(
                           icon: const Icon(Icons.close, size: 20, color: AppTheme.secondaryColor),
@@ -344,7 +344,7 @@ class _NotifTile extends StatelessWidget {
   Color _iconColor(String type) {
     switch (type) {
       case 'trip_departed':
-        return AppTheme.primaryColor;
+        return AppTheme.effectivePrimary;
       case 'arrived':
         return Colors.green;
       case 'next_destination':
@@ -354,7 +354,7 @@ class _NotifTile extends StatelessWidget {
       case 'geofence_alert':
         return Colors.orange;
       default:
-        return AppTheme.primaryColor;
+        return AppTheme.effectivePrimary;
     }
   }
 

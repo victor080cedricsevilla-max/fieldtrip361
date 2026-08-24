@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	  Firebase iOS configuration for FieldTrip360.
+
+	  Generated from DefaultFirebaseOptions.ios in lib/firebase_options.dart, so
+	  the values match the iOS app already registered in the pildtrip360 project.
+	  If you re-register the app or change the bundle id, download a fresh copy
+	  from the Firebase console rather than editing this by hand.
+
+	  BUNDLE_ID must match the bundle identifier set in Xcode, or Firebase will
+	  refuse to configure at launch.
+	-->
+	<key>API_KEY</key>
+	<string>AIzaSyDJuPHvAcwW-njkmK4DweprYnXr8yOqgwU</string>
+	<key>GCM_SENDER_ID</key>
+	<string>197198612147</string>
+	<key>PLIST_VERSION</key>
+	<string>1</string>
+	<key>BUNDLE_ID</key>
+	<string>com.example.fieldtrip361</string>
+	<key>PROJECT_ID</key>
+	<string>pildtrip360</string>
+	<key>STORAGE_BUCKET</key>
+	<string>pildtrip360.firebasestorage.app</string>
+	<key>GOOGLE_APP_ID</key>
+	<string>1:197198612147:ios:c0f757cbee127ca492d2c6</string>
+	<key>IS_ADS_ENABLED</key>
+	<false/>
+	<key>IS_ANALYTICS_ENABLED</key>
+	<false/>
+	<key>IS_APPINVITE_ENABLED</key>
+	<true/>
+	<key>IS_GCM_ENABLED</key>
+	<true/>
+	<key>IS_SIGNIN_ENABLED</key>
+	<true/>
+</dict>
+</plist>

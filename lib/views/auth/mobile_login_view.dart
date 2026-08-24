@@ -1,7 +1,10 @@
 import 'package:flutter/material.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../../controllers/auth_controller.dart';
 import '../../config/theme.dart';
-import 'register_view.dart'; // Import Register View
+import 'register_view.dart';
 import 'forgot_password_dialog.dart';
 
 class MobileLoginView extends StatefulWidget {
@@ -19,6 +22,44 @@ class _MobileLoginViewState extends State<MobileLoginView> {
   bool _isLoading = false;
   String? _errorMessage;
   bool _obscurePassword = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _checkExistingSession();
+  }
+
+  Future<void> _checkExistingSession() async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+    try {
+      // Verify the session token matches — if not, another device logged in
+      final prefs = await SharedPreferences.getInstance();
+      final localSession = prefs.getString('activeSession');
+      final snap = await FirebaseFirestore.instance.collection('users').doc(user.uid).get();
+      final data = snap.data();
+      if (data == null) return;
+      final firestoreSession = data['activeSession'] as String?;
+      // If both tokens exist and they differ, this device was displaced
+      if (localSession != null && firestoreSession != null && localSession != firestoreSession) {
+        await FirebaseAuth.instance.signOut();
+        await prefs.remove('activeSession');
+        if (mounted) {
+          setState(() => _errorMessage = 'You were logged out because your account signed in on another device.');
+        }
+        return;
+      }
+      // Session is valid — route to the right dashboard
+      final role = (data['role'] ?? '').toString();
+      if (!mounted) return;
+      switch (role) {
+        case 'admin':   Navigator.pushReplacementNamed(context, '/admin/dashboard'); break;
+        case 'teacher': Navigator.pushReplacementNamed(context, '/teacher/dashboard'); break;
+        case 'student': Navigator.pushReplacementNamed(context, '/student/dashboard'); break;
+        case 'parent':  Navigator.pushReplacementNamed(context, '/parent/dashboard'); break;
+      }
+    } catch (_) {}
+  }
 
   void _handleLogin() async {
     FocusScope.of(context).unfocus();
@@ -95,7 +136,7 @@ class _MobileLoginViewState extends State<MobileLoginView> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               // Logo / Branding
-              Icon(Icons.directions_bus_filled, size: 80, color: AppTheme.primaryColor),
+              Icon(Icons.directions_bus_filled, size: 80, color: AppTheme.effectivePrimary),
               const SizedBox(height: 20),
               Text(
                 "FieldTrip360",
@@ -149,9 +190,9 @@ class _MobileLoginViewState extends State<MobileLoginView> {
                       initialEmail: _emailController.text.trim(),
                     ),
                   ),
-                  child: const Text(
+                  child: Text(
                     "Forgot password?",
-                    style: TextStyle(color: AppTheme.primaryColor, fontWeight: FontWeight.w600),
+                    style: TextStyle(color: AppTheme.effectivePrimary, fontWeight: FontWeight.w600),
                   ),
                 ),
               ),
@@ -172,7 +213,7 @@ class _MobileLoginViewState extends State<MobileLoginView> {
               Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  const Text("No account yet?"),
+                  Text("No account yet?"),
                   TextButton(
                     onPressed: () {
                       Navigator.push(
@@ -180,7 +221,7 @@ class _MobileLoginViewState extends State<MobileLoginView> {
                         MaterialPageRoute(builder: (context) => const RegisterView()),
                       );
                     },
-                    child: Text("Sign Up", style: TextStyle(color: AppTheme.primaryColor, fontWeight: FontWeight.bold)),
+                    child: Text("Sign Up", style: TextStyle(color: AppTheme.effectivePrimary, fontWeight: FontWeight.bold)),
                   ),
                 ],
               ),

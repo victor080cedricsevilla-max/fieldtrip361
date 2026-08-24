@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:geolocator/geolocator.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
@@ -152,45 +154,76 @@ class _LocationPickerModalState extends State<LocationPickerModal> {
   final TextEditingController _searchController = TextEditingController();
   List<dynamic> _searchResults = [];
 
+  /// Why the last search returned nothing. Shown in the results area — the old
+  /// code discarded failures, so a broken search looked like "no matches".
+  String? _searchError;
+
   @override
   void initState() {
     super.initState();
     _selectedLocation = widget.initialCenter;
   }
 
+  /// Place search, proxied through Cloud Functions.
+  ///
+  /// The Places REST API cannot be called from a browser (no CORS), so this
+  /// used to go through a public proxy. That proxy dropped anonymous access and
+  /// began returning 403, which this method swallowed — search simply returned
+  /// nothing, with no error anywhere. Going through our own function removes
+  /// the third party and keeps the Maps key off the client.
   Future<void> _searchPlace(String input) async {
-    if (input.isEmpty) { setState(() => _searchResults = []); return; }
-    
-    String url = "https://maps.googleapis.com/maps/api/place/autocomplete/json?input=$input&key=$_googleApiKey&components=country:ph";
-    if (kIsWeb) url = "https://corsproxy.io/?${Uri.encodeComponent(url)}";
+    if (input.isEmpty) {
+      setState(() {
+        _searchResults = [];
+        _searchError = null;
+      });
+      return;
+    }
 
     try {
-      var response = await http.get(Uri.parse(url));
-      if (response.statusCode == 200) {
-        var data = jsonDecode(response.body);
-        if (data['status'] == 'OK') setState(() => _searchResults = data['predictions']);
-      }
-    } catch (e) { debugPrint("Search Error: $e"); }
+      final res = await FirebaseFunctions.instance
+          .httpsCallable('searchPlaces')
+          .call(<String, dynamic>{'input': input});
+      final data = Map<String, dynamic>.from(res.data as Map);
+      if (!mounted) return;
+      setState(() {
+        _searchResults = (data['predictions'] as List?) ?? const [];
+        _searchError = null;
+      });
+    } on FirebaseFunctionsException catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _searchResults = [];
+        _searchError = e.message ?? 'Place search is unavailable.';
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _searchResults = [];
+        _searchError = 'Place search failed. Check your connection.';
+      });
+    }
   }
 
   Future<void> _goToPlace(String placeId, String desc) async {
-    String url = "https://maps.googleapis.com/maps/api/place/details/json?place_id=$placeId&key=$_googleApiKey";
-    if (kIsWeb) url = "https://corsproxy.io/?${Uri.encodeComponent(url)}";
-
     try {
-      var response = await http.get(Uri.parse(url));
-      if (response.statusCode == 200) {
-        var result = jsonDecode(response.body)['result'];
-        var loc = result['geometry']['location'];
-        LatLng newPos = LatLng(loc['lat'], loc['lng']);
-        
-        _mapController.animateCamera(CameraUpdate.newLatLngZoom(newPos, 16));
-        setState(() { 
-          _selectedLocation = newPos; 
-          _searchResults = []; 
-          _searchController.text = desc; 
-        });
-      }
+      final res = await FirebaseFunctions.instance
+          .httpsCallable('getPlaceDetails')
+          .call(<String, dynamic>{'placeId': placeId});
+      final data = Map<String, dynamic>.from(res.data as Map);
+      final lat = (data['lat'] as num?)?.toDouble();
+      final lng = (data['lng'] as num?)?.toDouble();
+      if (lat == null || lng == null) throw Exception('No coordinates returned.');
+
+      final LatLng newPos = LatLng(lat, lng);
+      _mapController.animateCamera(CameraUpdate.newLatLngZoom(newPos, 16));
+      if (!mounted) return;
+      setState(() {
+        _selectedLocation = newPos;
+        _searchResults = [];
+        _searchError = null;
+        _searchController.text = desc;
+      });
     } catch (e) { debugPrint("Details Error: $e"); }
   }
 
@@ -200,9 +233,21 @@ class _LocationPickerModalState extends State<LocationPickerModal> {
       body: Stack(children: [
         GoogleMap(
           initialCameraPosition: CameraPosition(target: _selectedLocation, zoom: 15),
-          onMapCreated: (c) => _mapController = c,
+          onMapCreated: (c) async {
+            _mapController = c;
+            // Auto-zoom to current GPS position so admin sees where they are.
+            try {
+              final pos = await Geolocator.getCurrentPosition(
+                locationSettings: const LocationSettings(accuracy: LocationAccuracy.high),
+              );
+              final here = LatLng(pos.latitude, pos.longitude);
+              c.animateCamera(CameraUpdate.newLatLngZoom(here, 16));
+              if (mounted) setState(() => _selectedLocation = here);
+            } catch (_) {}
+          },
           onCameraMove: (p) => _selectedLocation = p.target,
-          myLocationButtonEnabled: false,
+          myLocationButtonEnabled: true,
+          myLocationEnabled: true,
         ),
         
         const Center(
@@ -229,19 +274,45 @@ class _LocationPickerModalState extends State<LocationPickerModal> {
                 onChanged: _searchPlace
               )
             ),
-            if(_searchResults.isNotEmpty) 
+            if (_searchError != null)
               Container(
-                margin: const EdgeInsets.only(top: 5), 
-                height: 200, 
+                margin: const EdgeInsets.only(top: 5),
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: AppTheme.errorColor.withValues(alpha: 0.4)),
+                ),
+                child: Row(children: [
+                  Icon(Icons.error_outline_rounded, size: 18, color: AppTheme.errorColor),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(_searchError!,
+                        style: TextStyle(fontSize: 12.5, color: AppTheme.errorColor, height: 1.4)),
+                  ),
+                ]),
+              )
+            else if (_searchResults.isNotEmpty)
+              Container(
+                margin: const EdgeInsets.only(top: 5),
+                height: 200,
                 decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(8)),
                 child: ListView.separated(
-                  itemCount: _searchResults.length, 
+                  itemCount: _searchResults.length,
                   separatorBuilder: (ctx, i) => const Divider(height: 1),
-                  itemBuilder: (c, i) => ListTile(
-                    title: Text(_searchResults[i]['structured_formatting']['main_text'] ?? "", style: const TextStyle(fontWeight: FontWeight.bold)),
-                    subtitle: Text(_searchResults[i]['description'], maxLines: 1, overflow: TextOverflow.ellipsis),
-                    onTap: ()=>_goToPlace(_searchResults[i]['place_id'], _searchResults[i]['description'])
-                  )
+                  itemBuilder: (c, i) {
+                    // The function returns a trimmed shape: {placeId, description}.
+                    final p = _searchResults[i] as Map;
+                    final description = (p['description'] ?? '').toString();
+                    // Show the place name on its own line; the rest is context.
+                    final comma = description.indexOf(',');
+                    final main = comma > 0 ? description.substring(0, comma) : description;
+                    return ListTile(
+                      title: Text(main, style: const TextStyle(fontWeight: FontWeight.bold)),
+                      subtitle: Text(description, maxLines: 1, overflow: TextOverflow.ellipsis),
+                      onTap: () => _goToPlace((p['placeId'] ?? '').toString(), description),
+                    );
+                  },
                 )
               )
           ])
@@ -251,7 +322,7 @@ class _LocationPickerModalState extends State<LocationPickerModal> {
           bottom: 30, left: 40, right: 40,
           child: ElevatedButton(
             onPressed: () => Navigator.pop(context, (_selectedLocation, _searchController.text.trim())),
-            style: ElevatedButton.styleFrom(backgroundColor: AppTheme.primaryColor, padding: const EdgeInsets.symmetric(vertical: 15), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30))),
+            style: ElevatedButton.styleFrom(backgroundColor: AppTheme.effectivePrimary, padding: EdgeInsets.symmetric(vertical: 15), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30))),
             child: const Text("SELECT THIS LOCATION", style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold))
           )
         )

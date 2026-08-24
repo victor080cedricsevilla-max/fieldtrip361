@@ -3,9 +3,9 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import '../../config/theme.dart';
 
-// ─────────────────────────────────────────────────────────────────────────────
-// DM COMPOSE — user search + chat creation
-// ─────────────────────────────────────────────────────────────────────────────
+// â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+// DM COMPOSE -- user search + chat creation
+// â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 class _ComposeDirectMessagePage extends StatefulWidget {
   const _ComposeDirectMessagePage();
 
@@ -130,9 +130,9 @@ class _ComposeDirectMessagePageState
               autofocus: true,
               onChanged: _search,
               decoration: InputDecoration(
-                hintText: 'Search by name or email…',
-                prefixIcon: const Icon(Icons.search_rounded,
-                    color: AppTheme.primaryColor),
+                hintText: 'Search by name or email--',
+                prefixIcon: Icon(Icons.search_rounded,
+                    color: AppTheme.effectivePrimary),
                 contentPadding: const EdgeInsets.symmetric(vertical: 0),
                 border: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(30),
@@ -145,15 +145,15 @@ class _ComposeDirectMessagePageState
                 focusedBorder: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(30),
                   borderSide:
-                      const BorderSide(color: AppTheme.primaryColor, width: 1.5),
+                      BorderSide(color: AppTheme.effectivePrimary, width: 1.5),
                 ),
               ),
             ),
           ),
           if (_searching)
-            const Padding(
+            Padding(
               padding: EdgeInsets.all(24),
-              child: CircularProgressIndicator(color: AppTheme.primaryColor),
+              child: CircularProgressIndicator(color: AppTheme.effectivePrimary),
             )
           else
             Expanded(
@@ -187,14 +187,14 @@ class _ComposeDirectMessagePageState
                                 children: [
                                   CircleAvatar(
                                     radius: 20,
-                                    backgroundColor: AppTheme.primaryColor
+                                    backgroundColor: AppTheme.effectivePrimary
                                         .withValues(alpha: 0.12),
                                     child: Text(
                                       name.isNotEmpty
                                           ? name[0].toUpperCase()
                                           : '?',
-                                      style: const TextStyle(
-                                        color: AppTheme.primaryColor,
+                                      style: TextStyle(
+                                        color: AppTheme.effectivePrimary,
                                         fontWeight: FontWeight.bold,
                                       ),
                                     ),
@@ -224,8 +224,8 @@ class _ComposeDirectMessagePageState
                                       ],
                                     ),
                                   ),
-                                  const Icon(Icons.chevron_right_rounded,
-                                      color: AppTheme.primaryColor),
+                                  Icon(Icons.chevron_right_rounded,
+                                      color: AppTheme.effectivePrimary),
                                 ],
                               ),
                             ),
@@ -287,13 +287,13 @@ class _ChatListViewState extends State<ChatListView> {
             style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18, color: AppTheme.secondaryColor)),
         leading: Navigator.canPop(context)
             ? IconButton(
-                icon: const Icon(Icons.arrow_back_ios_new_rounded, size: 20, color: AppTheme.secondaryColor),
+                icon: Icon(Icons.arrow_back_ios_new_rounded, size: 20, color: AppTheme.secondaryColor),
                 onPressed: () => Navigator.pop(context),
               )
             : null,
         actions: [
           IconButton(
-            icon: const Icon(Icons.edit_square, color: AppTheme.primaryColor),
+            icon: Icon(Icons.edit_square, color: AppTheme.effectivePrimary),
             tooltip: 'New Direct Message',
             onPressed: () => Navigator.push(
               context,
@@ -304,7 +304,7 @@ class _ChatListViewState extends State<ChatListView> {
         ],
       ),
       body: _role == null
-          ? const Center(child: CircularProgressIndicator(color: AppTheme.primaryColor))
+          ? Center(child: CircularProgressIndicator(color: AppTheme.effectivePrimary))
           : StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
               stream: query.snapshots(),
               builder: (context, snap) {
@@ -314,12 +314,12 @@ class _ChatListViewState extends State<ChatListView> {
                       padding: const EdgeInsets.all(24),
                       child: Text("Failed to load chats: ${snap.error}",
                           textAlign: TextAlign.center,
-                          style: const TextStyle(color: Colors.red)),
+                          style: TextStyle(color: Colors.red)),
                     ),
                   );
                 }
                 if (!snap.hasData) {
-                  return const Center(child: CircularProgressIndicator(color: AppTheme.primaryColor));
+                  return Center(child: CircularProgressIndicator(color: AppTheme.effectivePrimary));
                 }
                 // Sort client-side by lastMessageAt desc (avoids needing a composite index).
                 final docs = snap.data!.docs.toList()
@@ -382,7 +382,7 @@ class _ChatListViewState extends State<ChatListView> {
                                 radius: 22,
                                 backgroundColor: (isDm
                                         ? AppTheme.secondaryColor
-                                        : AppTheme.primaryColor)
+                                        : AppTheme.effectivePrimary)
                                     .withValues(alpha: 0.12),
                                 child: Icon(
                                   isDm
@@ -390,7 +390,7 @@ class _ChatListViewState extends State<ChatListView> {
                                       : Icons.directions_bus_rounded,
                                   color: isDm
                                       ? AppTheme.secondaryColor
-                                      : AppTheme.primaryColor,
+                                      : AppTheme.effectivePrimary,
                                 ),
                               ),
                               const SizedBox(width: 12),
@@ -504,7 +504,7 @@ class _ChatRoomViewState extends State<ChatRoomView> {
         'createdAt': FieldValue.serverTimestamp(),
       });
       // lastMessage preview is updated by the onChatMessageCreated Cloud
-      // Function with sanitized text — no client-side write needed here.
+      // Function with sanitized text -- no client-side write needed here.
       _textCtrl.clear();
     } catch (e) {
       if (!mounted) return;
@@ -579,12 +579,12 @@ class _ChatRoomViewState extends State<ChatRoomView> {
                       padding: const EdgeInsets.all(24),
                       child: Text("Failed to load messages: ${snap.error}",
                           textAlign: TextAlign.center,
-                          style: const TextStyle(color: Colors.red)),
+                          style: TextStyle(color: Colors.red)),
                     ),
                   );
                 }
                 if (!snap.hasData) {
-                  return const Center(child: CircularProgressIndicator(color: AppTheme.primaryColor));
+                  return Center(child: CircularProgressIndicator(color: AppTheme.effectivePrimary));
                 }
                 final messages = snap.data!.docs;
                 if (messages.isEmpty) {
@@ -636,7 +636,7 @@ class _ChatRoomViewState extends State<ChatRoomView> {
                       maxLines: 4,
                       textCapitalization: TextCapitalization.sentences,
                       decoration: InputDecoration(
-                        hintText: "Type a message…",
+                        hintText: "Type a message--",
                         contentPadding:
                             const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
                         border: OutlineInputBorder(
@@ -650,14 +650,14 @@ class _ChatRoomViewState extends State<ChatRoomView> {
                         focusedBorder: OutlineInputBorder(
                           borderRadius: BorderRadius.circular(24),
                           borderSide:
-                              const BorderSide(color: AppTheme.primaryColor, width: 1.5),
+                              BorderSide(color: AppTheme.effectivePrimary, width: 1.5),
                         ),
                       ),
                     ),
                   ),
                   const SizedBox(width: 8),
                   Material(
-                    color: AppTheme.primaryColor,
+                    color: AppTheme.effectivePrimary,
                     shape: const CircleBorder(),
                     child: InkWell(
                       customBorder: const CircleBorder(),
@@ -702,7 +702,7 @@ class _MessageBubble extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final bg = isMine ? AppTheme.primaryColor : Colors.white;
+    final bg = isMine ? AppTheme.effectivePrimary : Colors.white;
     final fg = isMine ? Colors.white : AppTheme.secondaryColor;
     final isTeacher = senderRole.toLowerCase() == 'teacher';
     return Padding(
@@ -714,14 +714,14 @@ class _MessageBubble extends StatelessWidget {
           if (!isMine)
             CircleAvatar(
               radius: 14,
-              backgroundColor: (isTeacher ? Colors.red : AppTheme.primaryColor)
+              backgroundColor: (isTeacher ? Colors.red : AppTheme.effectivePrimary)
                   .withValues(alpha: 0.12),
               child: Text(
                 senderName.isNotEmpty ? senderName[0].toUpperCase() : '?',
                 style: TextStyle(
                   fontSize: 10,
                   fontWeight: FontWeight.bold,
-                  color: isTeacher ? Colors.red : AppTheme.primaryColor,
+                  color: isTeacher ? Colors.red : AppTheme.effectivePrimary,
                 ),
               ),
             ),
@@ -741,7 +741,7 @@ class _MessageBubble extends StatelessWidget {
                   bottomRight: Radius.circular(isMine ? 2 : 14),
                 ),
                 border: Border.all(
-                  color: isMine ? AppTheme.primaryColor : Colors.grey.shade200,
+                  color: isMine ? AppTheme.effectivePrimary : Colors.grey.shade200,
                 ),
               ),
               child: Column(
@@ -756,7 +756,7 @@ class _MessageBubble extends StatelessWidget {
                         style: TextStyle(
                           fontSize: 10,
                           fontWeight: FontWeight.w600,
-                          color: isTeacher ? Colors.red.shade600 : AppTheme.primaryColor,
+                          color: isTeacher ? Colors.red.shade600 : AppTheme.effectivePrimary,
                         ),
                       ),
                     ),

@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import '../../config/theme.dart';
 import '../../utils/firestore_utils.dart';
+import '../../utils/trip_queries.dart';
 
 /// Admin dashboard landing page.
 /// Layout (analytics-style, follows the system color theme):
@@ -84,9 +85,9 @@ class AdminOverview extends StatelessWidget {
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 // Generic card
-// ─────────────────────────────────────────────────────────────────────────────
+// â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 class _Card extends StatelessWidget {
   final Widget child;
@@ -117,9 +118,9 @@ Color _mutedText(BuildContext context) => Colors.grey.shade600;
 
 Color _strongText(BuildContext context) => AppTheme.secondaryColor;
 
-// ─────────────────────────────────────────────────────────────────────────────
+// â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 // KPI cards
-// ─────────────────────────────────────────────────────────────────────────────
+// â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 class _KpiRow extends StatelessWidget {
   const _KpiRow();
@@ -127,7 +128,7 @@ class _KpiRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-      stream: FirebaseFirestore.instance.collection('trips').snapshots(),
+      stream: TripQueries.ofMySchool(),
       builder: (ctx, tripSnap) {
         return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
           stream: FirebaseFirestore.instance.collection('users').snapshots(),
@@ -155,7 +156,7 @@ class _KpiRow extends StatelessWidget {
                     icon: Icons.directions_bus_filled_rounded,
                     label: "Total Trips",
                     value: totalTrips.toString(),
-                    tone: AppTheme.primaryColor,
+                    tone: AppTheme.effectivePrimary,
                   ),
                   _KpiTile(
                     icon: Icons.play_circle_outline_rounded,
@@ -270,9 +271,9 @@ class _KpiTile extends StatelessWidget {
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Trips per day — bar chart card
-// ─────────────────────────────────────────────────────────────────────────────
+// â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+// Trips per day -- bar chart card
+// â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 class _TripsBarChartCard extends StatelessWidget {
   const _TripsBarChartCard();
@@ -292,11 +293,10 @@ class _TripsBarChartCard extends StatelessWidget {
           ),
           const SizedBox(height: 18),
           StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-            stream: FirebaseFirestore.instance
-                .collection('trips')
-                .where('createdAt',
-                    isGreaterThanOrEqualTo: Timestamp.fromDate(sevenAgo))
-                .snapshots(),
+            // Scoped to the school; the 7-day window is applied by the index
+            // guard below rather than a second filter, which would need a
+            // composite index alongside schoolId.
+            stream: TripQueries.ofMySchool(),
             builder: (ctx, snap) {
               final List<int> counts = List<int>.filled(7, 0);
               if (snap.hasData) {
@@ -330,7 +330,7 @@ class _TripsBarChartCard extends StatelessWidget {
                       painter: _BarChartPainter(
                         counts: counts,
                         labels: labels,
-                        barColor: AppTheme.primaryColor,
+                        barColor: AppTheme.effectivePrimary,
                         gridColor: Colors.grey.shade200,
                         textColor: _mutedText(context),
                       ),
@@ -421,9 +421,9 @@ class _BarChartPainter extends CustomPainter {
       old.textColor != textColor;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 // Trip status donut
-// ─────────────────────────────────────────────────────────────────────────────
+// â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 class _StatusDonutCard extends StatelessWidget {
   const _StatusDonutCard();
@@ -437,7 +437,7 @@ class _StatusDonutCard extends StatelessWidget {
           _CardHeader(title: "Trip status", subtitle: "All time"),
           const SizedBox(height: 14),
           StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-            stream: FirebaseFirestore.instance.collection('trips').snapshots(),
+            stream: TripQueries.ofMySchool(),
             builder: (ctx, snap) {
               int active = 0;
               int completed = 0;
@@ -467,7 +467,7 @@ class _StatusDonutCard extends StatelessWidget {
                             values: [active.toDouble(), completed.toDouble(), pending.toDouble()],
                             colors: [
                               Colors.green.shade600,
-                              AppTheme.primaryColor,
+                              AppTheme.effectivePrimary,
                               AppTheme.accentColor,
                             ],
                             trackColor: Colors.grey.shade100,
@@ -498,7 +498,7 @@ class _StatusDonutCard extends StatelessWidget {
                   ),
                   const SizedBox(height: 12),
                   _legendRow(context, Colors.green.shade600, "Active", active, total),
-                  _legendRow(context, AppTheme.primaryColor, "Completed", completed, total),
+                  _legendRow(context, AppTheme.effectivePrimary, "Completed", completed, total),
                   _legendRow(context, AppTheme.accentColor, "Pending", pending, total),
                 ],
               );
@@ -580,9 +580,9 @@ class _DonutPainter extends CustomPainter {
       old.values != values || old.colors != colors || old.trackColor != trackColor;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// New users — line chart
-// ─────────────────────────────────────────────────────────────────────────────
+// â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+// New users -- line chart
+// â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 class _UsersLineChartCard extends StatelessWidget {
   const _UsersLineChartCard();
@@ -632,8 +632,8 @@ class _UsersLineChartCard extends StatelessWidget {
                       painter: _LineChartPainter(
                         counts: counts,
                         labels: labels,
-                        lineColor: AppTheme.primaryColor,
-                        fillColor: AppTheme.primaryColor.withValues(alpha: 0.15),
+                        lineColor: AppTheme.effectivePrimary,
+                        fillColor: AppTheme.effectivePrimary.withValues(alpha: 0.15),
                         gridColor: Colors.grey.shade200,
                         textColor: _mutedText(context),
                       ),
@@ -745,9 +745,9 @@ class _LineChartPainter extends CustomPainter {
       old.textColor != textColor;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 // Completed gauge
-// ─────────────────────────────────────────────────────────────────────────────
+// â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 class _CompletedGaugeCard extends StatelessWidget {
   const _CompletedGaugeCard();
@@ -761,7 +761,7 @@ class _CompletedGaugeCard extends StatelessWidget {
           _CardHeader(title: "Completion rate", subtitle: "Completed / total"),
           const SizedBox(height: 8),
           StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-            stream: FirebaseFirestore.instance.collection('trips').snapshots(),
+            stream: TripQueries.ofMySchool(),
             builder: (ctx, snap) {
               final all = snap.data?.docs ?? const [];
               int completed = 0;
@@ -776,7 +776,7 @@ class _CompletedGaugeCard extends StatelessWidget {
                     child: CustomPaint(
                       painter: _GaugePainter(
                         value: pct,
-                        color: AppTheme.primaryColor,
+                        color: AppTheme.effectivePrimary,
                         trackColor: Colors.grey.shade100,
                       ),
                       child: Center(
@@ -844,9 +844,9 @@ class _GaugePainter extends CustomPainter {
       old.value != value || old.color != color || old.trackColor != trackColor;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 // Latest trips
-// ─────────────────────────────────────────────────────────────────────────────
+// â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 class _LatestTripsCard extends StatelessWidget {
   const _LatestTripsCard();
@@ -860,25 +860,23 @@ class _LatestTripsCard extends StatelessWidget {
           _CardHeader(title: "Latest trips", subtitle: "Most recently created"),
           const SizedBox(height: 16),
           StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-            stream: FirebaseFirestore.instance
-                .collection('trips')
-                .orderBy('createdAt', descending: true)
-                .limit(6)
-                .snapshots(),
+            stream: TripQueries.ofMySchool(),
             builder: (ctx, snap) {
               if (snap.hasError) {
                 return Text("Failed: ${snap.error}",
-                    style: const TextStyle(color: Colors.red));
+                    style: TextStyle(color: Colors.red));
               }
               if (!snap.hasData) {
-                return const Center(
+                return Center(
                   child: Padding(
                     padding: EdgeInsets.all(20),
-                    child: CircularProgressIndicator(color: AppTheme.primaryColor),
+                    child: CircularProgressIndicator(color: AppTheme.effectivePrimary),
                   ),
                 );
               }
-              final docs = snap.data!.docs;
+              // Sorted here instead of with orderBy — pairing it with the
+              // schoolId filter would require a composite index.
+              final docs = TripQueries.newestFirst(snap.data!.docs).take(6).toList();
               if (docs.isEmpty) {
                 return Padding(
                   padding: const EdgeInsets.all(16),
@@ -907,7 +905,7 @@ class _LatestTripsCard extends StatelessWidget {
     final color = status == 'in_progress'
         ? Colors.green
         : status == 'completed'
-            ? AppTheme.primaryColor
+            ? AppTheme.effectivePrimary
             : AppTheme.accentColor;
     final label = status == 'in_progress'
         ? 'Active'
@@ -927,11 +925,11 @@ class _LatestTripsCard extends StatelessWidget {
             width: 38,
             height: 38,
             decoration: BoxDecoration(
-              color: AppTheme.primaryColor.withValues(alpha: 0.1),
+              color: AppTheme.effectivePrimary.withValues(alpha: 0.1),
               borderRadius: BorderRadius.circular(10),
             ),
-            child: const Icon(Icons.route_rounded,
-                color: AppTheme.primaryColor, size: 18),
+            child: Icon(Icons.route_rounded,
+                color: AppTheme.effectivePrimary, size: 18),
           ),
           const SizedBox(width: 12),
           Expanded(
@@ -948,7 +946,7 @@ class _LatestTripsCard extends StatelessWidget {
                 ),
                 const SizedBox(height: 2),
                 Text(
-                  "${data['date'] ?? ''} · ${buses.length} bus${buses.length == 1 ? '' : 'es'} · $totalStudents student${totalStudents == 1 ? '' : 's'}",
+                  "${data['date'] ?? ''} Â· ${buses.length} bus${buses.length == 1 ? '' : 'es'} Â· $totalStudents student${totalStudents == 1 ? '' : 's'}",
                   style: TextStyle(fontSize: 11, color: _mutedText(context)),
                 ),
               ],
@@ -970,9 +968,9 @@ class _LatestTripsCard extends StatelessWidget {
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 // Helpers
-// ─────────────────────────────────────────────────────────────────────────────
+// â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 class _CardHeader extends StatelessWidget {
   final String title;
