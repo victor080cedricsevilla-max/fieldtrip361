@@ -288,6 +288,25 @@ String? normalizeDate(String raw, {DateOrder order = DateOrder.monthFirst}) {
 final _emailPattern = RegExp(r'^[^\s@]+@[^\s@]+\.[^\s@]{2,}$');
 bool isValidEmailAddress(String v) => _emailPattern.hasMatch(v.trim());
 
+/// Whether [v] is a plausible Philippine mobile number.
+///
+/// Accepts every way a school types them — 0917 123 4567, +63 917-123-4567,
+/// 9171234567 — because rejecting all but one format would strand most rows.
+bool isPhMobile(String v) {
+  final digits = v.replaceAll(RegExp(r'[^0-9]'), '');
+  String local;
+  if (digits.startsWith('63') && digits.length == 12) {
+    local = digits.substring(2);
+  } else if (digits.startsWith('0') && digits.length == 11) {
+    local = digits.substring(1);
+  } else if (digits.length == 10) {
+    local = digits;
+  } else {
+    return false;
+  }
+  return local.startsWith('9') && local.length == 10;
+}
+
 // ─── Validation ──────────────────────────────────────────────────────────────
 
 /// Why a single row cannot be imported, or needs the admin's attention.
@@ -457,16 +476,29 @@ ValidationReport validateMappedRows(
         rowIssues.add(RowIssue(lineNo, 'parentName',
             'Guardian contact details given without a name', blocking: false));
       }
-    } else if (parentEmail.isNotEmpty && isValidEmailAddress(parentEmail)) {
+    } else if ((parentEmail.isNotEmpty && isValidEmailAddress(parentEmail)) ||
+        isPhMobile(parentPhone)) {
+      // Either channel makes the guardian contactable. Most Philippine rosters
+      // carry a mobile number and no email at all, so treating "no email" as
+      // incomplete would mark almost every guardian unreachable.
       completeness = GuardianCompleteness.complete;
+      if (parentEmail.isNotEmpty && !isValidEmailAddress(parentEmail)) {
+        rowIssues.add(RowIssue(lineNo, 'parentEmail',
+            'Invalid parent email "$parentEmail" — the code will go by SMS instead',
+            blocking: false));
+      }
     } else {
       completeness = GuardianCompleteness.partial;
       if (parentEmail.isNotEmpty) {
         rowIssues.add(RowIssue(lineNo, 'parentEmail',
             'Invalid parent email "$parentEmail"', blocking: false));
+      } else if (parentPhone.isNotEmpty) {
+        rowIssues.add(RowIssue(lineNo, 'parentPhone',
+            'Contact number "$parentPhone" is not a valid PH mobile number',
+            blocking: false));
       } else {
         rowIssues.add(RowIssue(lineNo, 'parentEmail',
-            'Guardian has no email — activation code cannot be sent yet',
+            'Guardian has no email or mobile number — no way to send a code',
             blocking: false));
       }
     }
@@ -497,7 +529,7 @@ ValidationReport validateMappedRows(
       'section': at(r, 'section'),
       'parentName': parentName,
       'relationship': at(r, 'relationship'),
-      'parentEmail': completeness == GuardianCompleteness.complete ? parentEmail : '',
+      'parentEmail': isValidEmailAddress(parentEmail) ? parentEmail : '',
       'parentPhone': parentPhone,
     });
   }

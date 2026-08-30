@@ -203,15 +203,51 @@ void main() {
       expect(r.validRows.first['parentEmail'], 'pedro@email.com');
     });
 
-    test('a name with no email is partial and does not block the student', () {
+    test('a mobile number with no email still counts as contactable', () {
+      // Most Philippine rosters carry a number and no address; the code goes by
+      // SMS, so this guardian is complete rather than waiting on contact details.
       final r = _validate(_schoolC.replaceFirst('Grade,Section', 'DOB,Section')
           .replaceFirst('Grade 11,STEM-A', '2010-04-04,STEM-A'));
       expect(r.validCount, 1, reason: 'the student still imports');
-      expect(r.guardianPartial, 1);
-      expect(r.issues.any((i) => !i.blocking && i.message.contains('no email')), isTrue);
+      expect(r.guardianComplete, 1);
+      expect(r.guardianPartial, 0);
     });
 
-    test('an invalid parent email is partial, not a rejection', () {
+    test('a name with neither email nor mobile is partial', () {
+      final r = _validate(
+        'Student Number,First Name,Last Name,DOB,Parent Name\n'
+        'A-1,Juan,Cruz,2010-01-01,Pedro Cruz',
+      );
+      expect(r.validCount, 1, reason: 'the student still imports');
+      expect(r.guardianPartial, 1);
+      expect(
+        r.issues.any((i) => !i.blocking && i.message.contains('no way to send a code')),
+        isTrue,
+      );
+    });
+
+    test('an unusable contact number is reported, not silently accepted', () {
+      final r = _validate(
+        'Student Number,First Name,Last Name,DOB,Parent Name,Parent Contact\n'
+        'A-1,Juan,Cruz,2010-01-01,Pedro Cruz,12345',
+      );
+      expect(r.guardianPartial, 1);
+      expect(
+        r.issues.any((i) => !i.blocking && i.message.contains('not a valid PH mobile')),
+        isTrue,
+      );
+    });
+
+    test('accepts the ways a school actually types a mobile number', () {
+      for (final n in ['09171234567', '+63 917 123 4567', '63-917-123-4567', '9171234567']) {
+        expect(isPhMobile(n), isTrue, reason: n);
+      }
+      for (final n in ['12345', '0817 123 4567', '', 'not a number']) {
+        expect(isPhMobile(n), isFalse, reason: n);
+      }
+    });
+
+    test('an invalid parent email with no fallback number is partial', () {
       final r = _validate(
         'Student Number,First Name,Last Name,DOB,Parent Name,Parent Email\n'
         'A-1,Juan,Cruz,2010-01-01,Pedro Cruz,bogus-email',

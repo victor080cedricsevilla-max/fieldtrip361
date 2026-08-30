@@ -26,6 +26,11 @@ const smtpUser = defineString("SMTP_USER", { default: "" });
 const smtpPass = defineString("SMTP_PASS", { default: "" });
 const smtpFrom = defineString("SMTP_FROM", { default: "" });
 
+// Outgoing SMS (Semaphore — semaphore.co). Optional: with no key configured the
+// SMS branch is simply skipped and email remains the only channel.
+const semaphoreKey = defineString("SEMAPHORE_API_KEY", { default: "" });
+const semaphoreSender = defineString("SEMAPHORE_SENDER_NAME", { default: "" });
+
 // ─── Input sanitization ───────────────────────────────────────────────────────
 
 function sanitizeText(text, maxLen = 2000) {
@@ -1372,7 +1377,8 @@ exports.importRoster = onCall(async (request) => {
         }
       : null;
     if (guardian) {
-      if (guardian.email) guardianComplete++;
+      // Reachable by either channel counts as complete.
+      if (guardian.email || normalizePhMobile(guardian.phone)) guardianComplete++;
       else guardianPartial++;
     } else {
       guardianMissing++;
@@ -1422,7 +1428,7 @@ exports.importRoster = onCall(async (request) => {
           relationship: item.guardian.relationship,
           email: item.guardian.email,
           phone: item.guardian.phone,
-          status: guardianStatusFor(item.guardian.email),
+          status: guardianStatusFor(item.guardian.email, item.guardian.phone),
           parentUid: null,
           activationStatus: null,
           source: "csv",
@@ -1523,29 +1529,53 @@ exports.linkRosterAccount = onCall(async (request) => {
   }
 
   const email = normEmail(rosterSnap.get("email"));
-  if (!email) {
+  const studentNumber = normStudentNumber(rosterSnap.get("studentNumber") || "");
+  if (!email && !studentNumber) {
     throw new HttpsError(
       "failed-precondition",
-      "This roster entry has no email, so there is no account to match it against."
+      "This roster entry has neither an email nor a student number, so there is " +
+        "nothing to match an account against."
     );
   }
 
-  // Auth is the authoritative, case-insensitive lookup — a Firestore equality
-  // match would miss whatever casing was stored at registration.
-  let authUser;
-  try {
-    authUser = await admin.auth().getUserByEmail(email);
-  } catch (e) {
+  // Prefer email: Auth's lookup is case-insensitive and the address is verified
+  // at sign-up. Rosters exported without student emails fall back to the
+  // school's own student number, which the student entered as their LRN.
+  let userRef = null;
+  let userSnap = null;
+
+  if (email) {
+    try {
+      const authUser = await admin.auth().getUserByEmail(email);
+      userRef = db.collection("users").doc(authUser.uid);
+      userSnap = await userRef.get();
+    } catch (e) {
+      if (e.code !== "auth/user-not-found") throw e;
+    }
+  }
+
+  if ((!userSnap || !userSnap.exists) && studentNumber) {
+    for (const field of ["studentId", "lrn"]) {
+      const byNumber = await db
+        .collection("users")
+        .where("role", "==", "student")
+        .where(field, "==", studentNumber)
+        .limit(1)
+        .get();
+      if (!byNumber.empty) {
+        userRef = byNumber.docs[0].ref;
+        userSnap = byNumber.docs[0];
+        break;
+      }
+    }
+  }
+
+  if (!userSnap || !userSnap.exists) {
     throw new HttpsError(
       "not-found",
-      `Nobody has registered with ${email} yet. Ask the student to create their account first.`
+      `No student account matches ${email || "student number " + studentNumber} yet. ` +
+        "Ask them to create their account first."
     );
-  }
-
-  const userRef = db.collection("users").doc(authUser.uid);
-  const userSnap = await userRef.get();
-  if (!userSnap.exists) {
-    throw new HttpsError("not-found", `${email} can sign in but has no profile yet.`);
   }
   const userRole = userSnap.get("role");
   if (userRole !== "student") {
@@ -1563,9 +1593,14 @@ exports.linkRosterAccount = onCall(async (request) => {
   }
 
   const linkedParent = await applyStudentRosterLink(
-    db, rosterRef, rosterSnap.data(), userRef, authUser.uid
+    db, rosterRef, rosterSnap.data(), userRef, userSnap.id
   );
-  return { success: true, email, linkedParent };
+  return {
+    success: true,
+    email: userSnap.get("email") || email || null,
+    matchedBy: email && userSnap.get("email") === email ? "email" : "studentNumber",
+    linkedParent,
+  };
 });
 
 /**
@@ -1593,12 +1628,28 @@ exports.claimRosterRecord = onCall(async (request) => {
 
   // ── Student claims their own roster row ────────────────────────────────────
   if (role === "student") {
-    const snap = await db
-      .collection("roster")
+    // Matched on email first, then on the school's own student number. Plenty
+    // of school exports carry no student email at all, and matching on email
+    // alone left those students permanently unlinkable — the roster row simply
+    // had nothing to match against.
+    const rosterCol = db.collection("roster");
+    const studentNumber = normStudentNumber(
+      userSnap.get("studentId") || userSnap.get("lrn") || ""
+    );
+
+    let snap = await rosterCol
       .where("email", "==", email)
       .where("status", "==", "pending")
       .limit(1)
       .get();
+
+    if (snap.empty && studentNumber) {
+      snap = await rosterCol
+        .where("studentNumber", "==", studentNumber)
+        .where("status", "==", "pending")
+        .limit(1)
+        .get();
+    }
     if (snap.empty) return { claimed: false, reason: "no_match" };
 
     const rosterDoc = snap.docs[0];
@@ -1694,8 +1745,10 @@ function hashActivationCode(raw) {
     .digest("hex");
 }
 
-function guardianStatusFor(email) {
-  return isValidEmail(normEmail(email))
+function guardianStatusFor(email, phone) {
+  // Reachable by either channel counts as ready — a guardian with only a mobile
+  // number is the common case on a Philippine roster, not an incomplete record.
+  return isValidEmail(normEmail(email)) || normalizePhMobile(phone)
     ? GUARDIAN_STATUS.activationReady
     : GUARDIAN_STATUS.pendingContact;
 }
@@ -1779,8 +1832,14 @@ async function issueActivationCode(db, { guardianRef, guardian, schoolName, byUi
 
   // Delivery is a separate channel on purpose — adding SMS later means adding a
   // branch here, not touching the linking model.
+  // Email first when we have one: it carries the full explanation and costs
+  // nothing. SMS is the fallback, because most guardians on a Philippine school
+  // roster have a mobile number and no email address at all.
   let delivery = "none";
+  let deliveryError = null;
   const email = normEmail(guardian.email);
+  const mobile = normalizePhMobile(guardian.phone);
+
   if (isValidEmail(email)) {
     try {
       const mail = activationEmail({
@@ -1797,20 +1856,116 @@ async function issueActivationCode(db, { guardianRef, guardian, schoolName, byUi
         transporter,
       });
       delivery = "email";
-      await codeRef.update({ status: CODE_STATUS.sent, sentAt: admin.firestore.Timestamp.now() });
     } catch (err) {
       console.error("activation email failed", err?.message || err);
-      delivery = "failed";
+      deliveryError = err?.message || "email failed";
     }
   }
 
+  if (delivery === "none" && mobile && semaphoreKey.value()) {
+    try {
+      await sendSms({
+        to: mobile,
+        message: activationSms({ studentName: guardian.studentName, code: raw }),
+      });
+      delivery = "sms";
+    } catch (err) {
+      console.error("activation sms failed", err?.message || err);
+      deliveryError = err?.message || "sms failed";
+    }
+  }
+
+  if (delivery === "none" && deliveryError) delivery = "failed";
+
+  const wasSent = delivery === "email" || delivery === "sms";
+  if (wasSent) {
+    await codeRef.update({
+      status: CODE_STATUS.sent,
+      sentAt: admin.firestore.Timestamp.now(),
+      sentVia: delivery,
+    });
+  }
+
   await guardianRef.update({
-    activationStatus: delivery === "email" ? CODE_STATUS.sent : CODE_STATUS.unused,
+    activationStatus: wasSent ? CODE_STATUS.sent : CODE_STATUS.unused,
     lastCodeIssuedAt: now,
+    lastDeliveryChannel: wasSent ? delivery : null,
     updatedAt: now,
   });
 
   return { raw, codeId: codeRef.id, delivery, expiresAt };
+}
+
+/**
+ * Normalises a Philippine mobile number to the 639XXXXXXXXX form Semaphore
+ * expects, or returns null when it is not a plausible mobile number.
+ *
+ * Schools type these every way imaginable: 0917 123 4567, +63 917-123-4567,
+ * 9171234567. Rejecting anything but one exact format would strand most rows.
+ */
+function normalizePhMobile(value) {
+  const digits = String(value || "").replace(/D/g, "");
+  if (!digits) return null;
+
+  let local;
+  if (digits.startsWith("63") && digits.length === 12) local = digits.slice(2);
+  else if (digits.startsWith("0") && digits.length === 11) local = digits.slice(1);
+  else if (digits.length === 10) local = digits;
+  else return null;
+
+  // Every PH mobile prefix is 9XX.
+  if (!local.startsWith("9") || local.length !== 10) return null;
+  return `63${local}`;
+}
+
+/** True when a code could be delivered to this guardian by some channel. */
+function hasContactChannel(guardian) {
+  return (
+    isValidEmail(normEmail(guardian && guardian.email)) ||
+    !!normalizePhMobile(guardian && guardian.phone)
+  );
+}
+
+/**
+ * Sends one SMS through Semaphore.
+ *
+ * Kept under 160 characters so a message costs a single credit — the school's
+ * balance is finite and a two-part message would silently double the spend.
+ */
+async function sendSms({ to, message }) {
+  const apiKey = semaphoreKey.value();
+  if (!apiKey) throw new Error("SMS is not configured (SEMAPHORE_API_KEY is unset).");
+
+  const params = new URLSearchParams({ apikey: apiKey, number: to, message });
+  const sender = semaphoreSender.value();
+  if (sender) params.append("sendername", sender);
+
+  const { data } = await axios.post(
+    "https://api.semaphore.co/api/v4/messages",
+    params.toString(),
+    {
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      timeout: 30_000,
+    }
+  );
+
+  // Semaphore replies with an array of message objects; anything else, or a
+  // rejected status, means it never reached the queue.
+  const first = Array.isArray(data) ? data[0] : data;
+  const status = first && String(first.status || "").toLowerCase();
+  if (!first || status === "failed" || status === "refunded") {
+    throw new Error(`Semaphore rejected the message (status: ${status || "unknown"})`);
+  }
+  return first;
+}
+
+/** The SMS body. Short by design: one credit, no truncation by the carrier. */
+function activationSms({ studentName, code }) {
+  const child = String(studentName || "your child").slice(0, 28);
+  return (
+    `FieldTrip360: Activation code for ${child} is ${code}. ` +
+    `Enter it in the app to link your child. Valid ${ACTIVATION_CODE_TTL_DAYS} days.`
+  );
 }
 
 /** Activation email. Kept plain so it survives any mail client. */
@@ -1915,7 +2070,7 @@ exports.assignGuardian = onCall(async (request) => {
     relationship,
     email: email || null,
     phone: phone || null,
-    status: guardianStatusFor(email),
+    status: guardianStatusFor(email, phone),
     updatedAt: now,
     updatedBy: uid,
   };
@@ -1982,10 +2137,10 @@ exports.sendGuardianActivationCode = onCall(async (request) => {
       "This guardian already has an active parent account."
     );
   }
-  if (!isValidEmail(normEmail(guardian.email))) {
+  if (!hasContactChannel(guardian)) {
     throw new HttpsError(
       "failed-precondition",
-      "Add an email address for this guardian before sending a code."
+      "Add an email address or mobile number for this guardian before sending a code."
     );
   }
 
@@ -2045,14 +2200,18 @@ exports.sendAllPendingActivationCodes = onCall(
 
     const schoolName = (await db.collection("schools").doc(schoolId).get()).get("name");
 
+    // Best-effort: a school whose guardians all have mobile numbers and no
+    // email should not be blocked just because SMTP is unconfigured.
     let transporter;
     try {
       transporter = createMailTransport();
     } catch (e) {
-      throw new HttpsError(
-        "failed-precondition",
-        "Email is not configured yet, so codes cannot be sent."
-      );
+      if (!semaphoreKey.value()) {
+        throw new HttpsError(
+          "failed-precondition",
+          "Neither email nor SMS is configured, so codes cannot be sent."
+        );
+      }
     }
 
     let sent = 0;
@@ -2074,7 +2233,7 @@ exports.sendAllPendingActivationCodes = onCall(
       }
     }
     try {
-      transporter.close();
+      if (transporter) transporter.close();
     } catch (_) {/* pool already torn down */}
 
     return {

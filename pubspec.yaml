@@ -2,7 +2,10 @@ name: fieldtrip361
 description: "A new Flutter project."
 publish_to: 'none'
 
-version: 1.0.0+1
+# The build number (after +) becomes the Android versionCode. It must only ever
+# increase: a device already carrying 2001 rejects anything lower with
+# INSTALL_FAILED_VERSION_DOWNGRADE, which surfaces as a bare "App not installed".
+version: 1.0.1+2002
 
 environment:
   sdk: ^3.9.2
