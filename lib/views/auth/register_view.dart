@@ -75,6 +75,7 @@ class _RegisterViewState extends State<RegisterView> {
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
   final _lrnController = TextEditingController();
+  final _activationCodeController = TextEditingController();
   final _authController = AuthController();
 
   String _selectedRole = 'student';
@@ -138,12 +139,41 @@ class _RegisterViewState extends State<RegisterView> {
       surname: surname,
       role: _selectedRole,
       lrn: _selectedRole == 'student' ? _lrnController.text.trim() : null,
+      activationCode:
+          _selectedRole == 'parent' ? _activationCodeController.text.trim() : null,
     );
 
     if (!mounted) return;
     setState(() => _isLoading = false);
 
     if (error == null) {
+      // The account exists either way; a rejected code is a warning, not a
+      // failed sign-up, so say so plainly instead of leaving them guessing why
+      // no child appeared.
+      final codeProblem = _authController.lastActivationError;
+      if (codeProblem != null) {
+        await showDialog<void>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+            title: const Text("Account created"),
+            content: Text(
+              "$codeProblem\n\n"
+              "You can sign in normally and add your child from the app once you "
+              "have a valid code from the school.",
+              style: const TextStyle(fontSize: 13.5, height: 1.5),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text("Continue"),
+              ),
+            ],
+          ),
+        );
+        if (!mounted) return;
+      }
+
       Navigator.pushReplacement(
         context,
         MaterialPageRoute(
@@ -289,6 +319,35 @@ class _RegisterViewState extends State<RegisterView> {
                 ),
               ],
 
+              // The code the school emailed the guardian. It is what ties this
+              // account to a specific child — a parent cannot pick a student
+              // themselves, which is the point.
+              if (_selectedRole == 'parent') ...[
+                const SizedBox(height: 20),
+                TextField(
+                  controller: _activationCodeController,
+                  textCapitalization: TextCapitalization.characters,
+                  decoration: const InputDecoration(
+                    labelText: "Parent Activation Code",
+                    hintText: "e.g. NU-7K4P-92XM",
+                    prefixIcon: Icon(Icons.vpn_key_outlined),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Icon(Icons.info_outline_rounded, size: 15, color: Colors.grey.shade500),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      "Your child's school emails this code to you. Leave it blank if "
+                      "you don't have it yet — you can add your child later from the app.",
+                      style: TextStyle(
+                          fontSize: 11.5, color: Colors.grey.shade600, height: 1.4),
+                    ),
+                  ),
+                ]),
+              ],
+
               const SizedBox(height: 30),
 
               SizedBox(
@@ -318,6 +377,7 @@ class _RegisterViewState extends State<RegisterView> {
     _emailController.dispose();
     _passwordController.dispose();
     _lrnController.dispose();
+    _activationCodeController.dispose();
     super.dispose();
   }
 }

@@ -64,6 +64,20 @@ class GuardianService {
       _fns.httpsCallable('sendGuardianActivationCode')
           .call(<String, dynamic>{'guardianId': guardianId});
 
+  /// Emails a code to every guardian still waiting for one. Capped per run by
+  /// the server so the SMTP account's daily limit is not blown in one go.
+  static Future<Map<String, dynamic>> sendAllPendingCodes() async {
+    final res = await _fns.httpsCallable('sendAllPendingActivationCodes').call();
+    return Map<String, dynamic>.from(res.data as Map);
+  }
+
+  /// Guardians that could be emailed a code right now: contactable, not yet
+  /// linked to an account, and without a live code already out.
+  static bool isAwaitingCode(Map<String, dynamic> g) =>
+      g['status'] == statusActivationReady &&
+      g['parentUid'] == null &&
+      g['activationStatus'] != 'sent';
+
   static Future<void> revokeActivationCode(String guardianId) =>
       _fns.httpsCallable('revokeGuardianActivationCode')
           .call(<String, dynamic>{'guardianId': guardianId});

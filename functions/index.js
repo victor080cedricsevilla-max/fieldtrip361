@@ -872,22 +872,31 @@ function escapeHtml(value) {
  * Sends one email over SMTP. Throws when SMTP is unconfigured or the send fails,
  * so callers can decide what to tell the user — never swallow this silently.
  */
-async function sendMail({ to, subject, text, html }) {
+/**
+ * Builds an SMTP transport. Pooled, so a bulk send reuses connections instead
+ * of completing a TLS handshake for every message.
+ */
+function createMailTransport() {
   const user = smtpUser.value();
   const pass = smtpPass.value();
   if (!user || !pass) {
     throw new Error("SMTP is not configured (SMTP_USER / SMTP_PASS are unset).");
   }
-
-  const transporter = nodemailer.createTransport({
+  return nodemailer.createTransport({
     host: smtpHost.value() || "smtp.gmail.com",
     port: 465,
     secure: true,
     auth: { user, pass },
+    pool: true,
+    maxConnections: 3,
+    maxMessages: 100,
   });
+}
 
-  await transporter.sendMail({
-    from: smtpFrom.value() || `FieldTrip360 <${user}>`,
+async function sendMail({ to, subject, text, html, transporter }) {
+  const transport = transporter || createMailTransport();
+  await transport.sendMail({
+    from: smtpFrom.value() || `FieldTrip360 <${smtpUser.value()}>`,
     to,
     subject,
     text,
@@ -1729,7 +1738,7 @@ async function guardianInSchool(db, guardianId, schoolId) {
  * Returns the raw code only so the caller can decide whether to surface it; it
  * is never written to Firestore.
  */
-async function issueActivationCode(db, { guardianRef, guardian, schoolName, byUid }) {
+async function issueActivationCode(db, { guardianRef, guardian, schoolName, byUid, transporter }) {
   const raw = generateActivationCode(schoolName);
 
   // Only one code may be live at a time, so a resend invalidates the old one.
@@ -1785,6 +1794,7 @@ async function issueActivationCode(db, { guardianRef, guardian, schoolName, byUi
         subject: "Parent Account Activation",
         text: mail.text,
         html: mail.html,
+        transporter,
       });
       delivery = "email";
       await codeRef.update({ status: CODE_STATUS.sent, sentAt: admin.firestore.Timestamp.now() });
@@ -1995,6 +2005,87 @@ exports.sendGuardianActivationCode = onCall(async (request) => {
   }
   return { success: true, delivery: issued.delivery, expiresAt: issued.expiresAt.toMillis() };
 });
+
+/**
+ * Emails an activation code to every guardian still waiting for one.
+ *
+ * A 500-student import can create hundreds of guardians, and clicking send on
+ * each is not a workflow. Sending is deliberately a separate step from the
+ * import so the admin can correct bad addresses first — a code mailed to the
+ * wrong person cannot be recalled.
+ *
+ * Capped per run because the SMTP account has a daily ceiling (Gmail allows
+ * roughly 500/day); the response reports what is left so the admin can continue
+ * tomorrow without losing track.
+ */
+exports.sendAllPendingActivationCodes = onCall(
+  { timeoutSeconds: 540 },
+  async (request) => {
+    const { uid, schoolId } = await requireGuardianManager(request);
+    await checkRateLimit(uid, "bulkActivation", 3);
+
+    const db = admin.firestore();
+    const snap = await db
+      .collection("guardians")
+      .where("schoolId", "==", schoolId)
+      .where("status", "==", GUARDIAN_STATUS.activationReady)
+      .get();
+
+    // Skip guardians already linked, and any that already hold a live code —
+    // re-sending would invalidate a code the parent may be about to use.
+    const pending = snap.docs.filter(
+      (d) => !d.get("parentUid") && d.get("activationStatus") !== CODE_STATUS.sent
+    );
+
+    const MAX_PER_RUN = 100;
+    const batch = pending.slice(0, MAX_PER_RUN);
+    if (!batch.length) {
+      return { sent: 0, failed: 0, remaining: 0, total: 0 };
+    }
+
+    const schoolName = (await db.collection("schools").doc(schoolId).get()).get("name");
+
+    let transporter;
+    try {
+      transporter = createMailTransport();
+    } catch (e) {
+      throw new HttpsError(
+        "failed-precondition",
+        "Email is not configured yet, so codes cannot be sent."
+      );
+    }
+
+    let sent = 0;
+    const failures = [];
+    for (const doc of batch) {
+      try {
+        const issued = await issueActivationCode(db, {
+          guardianRef: doc.ref,
+          guardian: doc.data(),
+          schoolName,
+          byUid: uid,
+          transporter,
+        });
+        if (issued.delivery === "email") sent++;
+        else failures.push({ name: doc.get("name"), reason: "Email could not be delivered" });
+      } catch (err) {
+        console.error("bulk activation failed for", doc.id, err?.message || err);
+        failures.push({ name: doc.get("name"), reason: "Unexpected error" });
+      }
+    }
+    try {
+      transporter.close();
+    } catch (_) {/* pool already torn down */}
+
+    return {
+      sent,
+      failed: failures.length,
+      remaining: Math.max(0, pending.length - batch.length),
+      total: pending.length,
+      failures: failures.slice(0, 20),
+    };
+  }
+);
 
 /** Revokes any outstanding code for a guardian. */
 exports.revokeGuardianActivationCode = onCall(async (request) => {

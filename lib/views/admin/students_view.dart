@@ -643,6 +643,7 @@ class _StudentsViewState extends State<StudentsView> {
         ),
       ),
       const SizedBox(width: 10),
+      _sendAllButton(),
       FilledButton.icon(
         onPressed: _busy ? null : _openImportWizard,
         icon: _busy
@@ -657,6 +658,102 @@ class _StudentsViewState extends State<StudentsView> {
         ),
       ),
     ]);
+  }
+
+  /// Appears only when guardians are actually waiting, with the count on it —
+  /// a permanently visible "send all" invites clicking with nothing to send.
+  Widget _sendAllButton() {
+    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+      stream: GuardianService.ofSchool(_schoolId!),
+      builder: (context, snap) {
+        final waiting = (snap.data?.docs ?? const [])
+            .where((d) => GuardianService.isAwaitingCode(d.data()))
+            .length;
+        if (waiting == 0) return const SizedBox.shrink();
+
+        return Padding(
+          padding: const EdgeInsets.only(right: 10),
+          child: OutlinedButton.icon(
+            onPressed: _busy ? null : () => _sendAllPendingCodes(waiting),
+            icon: const Icon(Icons.forward_to_inbox_rounded, size: 18),
+            label: Text('Send $waiting ${waiting == 1 ? "code" : "codes"}'),
+            style: OutlinedButton.styleFrom(
+              minimumSize: const Size(0, 42),
+              foregroundColor: AppTheme.accentColor,
+              side: BorderSide(color: AppTheme.accentColor),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Future<void> _sendAllPendingCodes(int waiting) async {
+    final go = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Text('Send activation codes?'),
+        content: SizedBox(
+          width: 420,
+          child: Text(
+            'This emails an activation code to $waiting '
+            '${waiting == 1 ? "guardian" : "guardians"} who have an address on '
+            'file but no code yet.\n\n'
+            'Check the email addresses first — a code sent to the wrong person '
+            'cannot be recalled. Guardians who already have a live code are '
+            'skipped so it is safe to run again.',
+            style: const TextStyle(fontSize: 13, height: 1.55),
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: AppTheme.effectivePrimary),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Send codes'),
+          ),
+        ],
+      ),
+    );
+    if (go != true) return;
+
+    setState(() => _busy = true);
+    try {
+      final r = await GuardianService.sendAllPendingCodes();
+      if (!mounted) return;
+      int n(Object? v) => (v as num?)?.toInt() ?? 0;
+      final sent = n(r['sent']);
+      final failed = n(r['failed']);
+      final remaining = n(r['remaining']);
+      final failures = (r['failures'] as List?) ?? const [];
+
+      _showMessageDialog(
+        sent > 0 ? 'Codes sent' : 'Nothing was sent',
+        [
+          '$sent ${sent == 1 ? "code was" : "codes were"} emailed.',
+          if (failed > 0) '$failed could not be sent.',
+          if (remaining > 0)
+            '\n$remaining still waiting — run this again to continue. Sending is '
+                'capped per run so the mail account stays within its daily limit.',
+          if (failures.isNotEmpty) ...[
+            '\nCould not send to:',
+            ...failures.take(10).map((f) {
+              final m = Map<String, dynamic>.from(f as Map);
+              return '• ${m['name']} — ${m['reason']}';
+            }),
+          ],
+        ].join('\n'),
+        isError: sent == 0 && failed > 0,
+      );
+    } on FirebaseFunctionsException catch (e) {
+      if (mounted) {
+        _showMessageDialog('Could not send codes', e.message ?? 'Please try again.',
+            isError: true);
+      }
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
   }
 
   Widget _rosterList() {

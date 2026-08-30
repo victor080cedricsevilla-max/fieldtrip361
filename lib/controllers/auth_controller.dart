@@ -18,6 +18,14 @@ class AuthController {
   final FirebaseAuth _auth = FirebaseAuth.instance;
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
 
+  /// Why the activation code supplied at sign-up was not accepted, if it wasn't.
+  ///
+  /// Registration deliberately still succeeds in that case, so this is reported
+  /// separately from [registerUser]'s return value — which stays reserved for
+  /// failures that actually prevented the account from being created.
+  String? _lastActivationError;
+  String? get lastActivationError => _lastActivationError;
+
   Future<String?> registerUser({
     required String email,
     required String password,
@@ -26,6 +34,7 @@ class AuthController {
     String? firstName,
     String? surname,
     String? lrn,
+    String? activationCode,
   }) async {
     try {
       UserCredential userCredential = await _auth.createUserWithEmailAndPassword(
@@ -58,6 +67,24 @@ class AuthController {
       // Must run before signOut below — the callable needs an authenticated user.
       if (role == 'student' || role == 'parent') {
         await claimRosterRecord(uid);
+      }
+
+      // Redeem the school-issued code that names this parent's child. It has to
+      // run here, before the sign-out below, because the callable needs an
+      // authenticated caller. A bad code never blocks the sign-up — the account
+      // is already valid and the code can be entered again from the dashboard.
+      if (role == 'parent' && (activationCode ?? '').trim().isNotEmpty) {
+        _lastActivationError = null;
+        try {
+          await FirebaseFunctions.instance
+              .httpsCallable('activateGuardianCode')
+              .call(<String, dynamic>{'code': activationCode!.trim()});
+        } on FirebaseFunctionsException catch (e) {
+          _lastActivationError = e.message ?? 'That activation code could not be used.';
+        } catch (_) {
+          _lastActivationError =
+              'Your account was created, but the activation code could not be checked.';
+        }
       }
 
       // Send verification email so the user must confirm the address.
