@@ -136,7 +136,17 @@ class _MobileLoginViewState extends State<MobileLoginView> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               // Logo / Branding
-              Icon(Icons.directions_bus_filled, size: 80, color: AppTheme.effectivePrimary),
+              Image.asset(
+                "assets/icon/ft360_logo.png",
+                height: 120,
+                // A missing asset would otherwise blank the whole login screen,
+                // leaving no way in. Fall back to the mark we shipped before.
+                errorBuilder: (_, __, ___) => Icon(
+                  Icons.directions_bus_filled,
+                  size: 80,
+                  color: AppTheme.effectivePrimary,
+                ),
+              ),
               const SizedBox(height: 20),
               Text(
                 "FieldTrip360",

@@ -55,7 +55,7 @@
     }
     nav.scrolled { box-shadow: 0 4px 24px rgba(44,62,80,.08); }
     .nav-logo { display: flex; align-items: center; gap: 10px; text-decoration: none; }
-    .nav-logo svg { width: 36px; height: 36px; }
+    .nav-logo img { width: 36px; height: 36px; object-fit: contain; }
     .nav-logo span { font-size: 1.2rem; font-weight: 700; color: var(--secondary); letter-spacing: -0.5px; }
     .nav-logo span em { color: var(--primary); font-style: normal; }
     .nav-links { display: flex; align-items: center; gap: 32px; list-style: none; }
@@ -100,8 +100,11 @@
     .phone-shell { width:260px; height:530px; background:var(--secondary); border-radius:40px; padding:14px 12px; box-shadow:0 40px 80px rgba(44,62,80,.35),0 0 0 1px rgba(255,255,255,.05); position:relative; z-index:2; }
     .phone-screen { width:100%; height:100%; background:linear-gradient(160deg,#f0fffe 0%,#fff 100%); border-radius:28px; overflow:hidden; display:flex; flex-direction:column; align-items:center; padding:36px 20px 24px; }
     .phone-notch { position:absolute; top:20px; left:50%; transform:translateX(-50%); width:80px; height:6px; background:#1a2b38; border-radius:3px; z-index:3; }
-    .phone-app-icon { width:68px; height:68px; border-radius:18px; background:linear-gradient(135deg,var(--primary),var(--primary-d)); display:flex; align-items:center; justify-content:center; margin-bottom:14px; box-shadow:0 8px 24px rgba(0,196,180,.4); }
-    .phone-app-icon svg { width:36px; height:36px; }
+    /* The mark is teal, so it would vanish on the teal gradient this tile used
+       to carry. White keeps the pin readable and the tile still reads as the
+       app icon thanks to the tinted shadow. */
+    .phone-app-icon { width:68px; height:68px; border-radius:18px; background:#fff; display:flex; align-items:center; justify-content:center; margin-bottom:14px; box-shadow:0 8px 24px rgba(0,196,180,.4); }
+    .phone-app-icon img { width:52px; height:52px; object-fit:contain; }
     .phone-title { font-size:1.1rem; font-weight:700; color:var(--secondary); margin-bottom:4px; }
     .phone-sub { font-size:.72rem; color:var(--muted); margin-bottom:28px; }
     .phone-input { width:100%; height:40px; border-radius:10px; background:#f3f4f6; margin-bottom:10px; display:flex; align-items:center; padding:0 12px; gap:8px; }
@@ -201,6 +204,7 @@
     .footer-inner { max-width:1200px; margin:0 auto; }
     .footer-top { display:grid; grid-template-columns:2fr 1fr 1fr 1fr; gap:48px; padding-bottom:48px; border-bottom:1px solid rgba(255,255,255,.08); }
     .footer-logo { display:flex; align-items:center; gap:10px; margin-bottom:16px; }
+    .footer-logo img { width:32px; height:32px; object-fit:contain; }
     .footer-logo span { font-size:1.15rem; font-weight:700; color:#fff; }
     .footer-logo span em { color:var(--primary); font-style:normal; }
     .footer-desc { font-size:.85rem; color:rgba(255,255,255,.45); line-height:1.7; max-width:260px; }
@@ -339,7 +343,7 @@
   <!-- NAVBAR -->
   <nav id="lnav">
     <a href="#" class="nav-logo">
-      <svg viewBox="0 0 36 36" fill="none"><rect width="36" height="36" rx="10" fill="#00C4B4"/><rect x="6" y="10" width="24" height="14" rx="3" fill="white"/><rect x="8" y="12" width="8" height="5" rx="1.5" fill="#00C4B4"/><rect x="20" y="12" width="8" height="5" rx="1.5" fill="#00C4B4"/><circle cx="11" cy="26" r="2.5" fill="white"/><circle cx="25" cy="26" r="2.5" fill="white"/></svg>
+      <img src="ft360_logo.png" alt="FieldTrip360">
       <span>FieldTrip<em>360</em></span>
     </a>
     <ul class="nav-links">
@@ -398,7 +402,7 @@
           <div class="phone-shell">
             <div class="phone-notch"></div>
             <div class="phone-screen">
-              <div class="phone-app-icon"><svg viewBox="0 0 36 36" fill="none"><rect x="3" y="8" width="30" height="18" rx="4" fill="white" fill-opacity=".9"/><rect x="5" y="10" width="10" height="7" rx="2" fill="#00C4B4"/><rect x="21" y="10" width="10" height="7" rx="2" fill="#00C4B4"/><circle cx="9" cy="27" r="3" fill="white" fill-opacity=".9"/><circle cx="27" cy="27" r="3" fill="white" fill-opacity=".9"/></svg></div>
+              <div class="phone-app-icon"><img src="ft360_logo.png" alt="FieldTrip360"></div>
               <div class="phone-title">FieldTrip360</div>
               <div class="phone-sub">Student & Faculty Portal</div>
               <div class="phone-input"><div class="phone-input-dot"></div><div class="phone-input-line"></div></div>
@@ -687,7 +691,7 @@
       <div class="footer-top">
         <div>
           <div class="footer-logo">
-            <svg width="32" height="32" viewBox="0 0 36 36" fill="none"><rect width="36" height="36" rx="10" fill="#00C4B4"/><rect x="6" y="10" width="24" height="14" rx="3" fill="white"/><rect x="8" y="12" width="8" height="5" rx="1.5" fill="#00C4B4"/><rect x="20" y="12" width="8" height="5" rx="1.5" fill="#00C4B4"/><circle cx="11" cy="26" r="2.5" fill="white"/><circle cx="25" cy="26" r="2.5" fill="white"/></svg>
+            <img src="ft360_logo.png" alt="FieldTrip360">
             <span>FieldTrip<em>360</em></span>
           </div>
           <p class="footer-desc">Smart field trip management for schools. Real-time GPS, QR attendance, and instant parent alerts — all in one app.</p>

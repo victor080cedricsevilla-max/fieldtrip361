@@ -58,18 +58,24 @@ dev_dependencies:
 flutter_launcher_icons:
   android: true
   ios: true
-  image_path: "assets/icon/app_icon.png"
+  image_path: "assets/icon/ft360_logo.png"
   adaptive_icon_background: "#FFFFFF"
-  adaptive_icon_foreground: "assets/icon/app_icon.png"
+  adaptive_icon_foreground: "assets/icon/ft360_logo.png"
+  # App Store rejects an icon carrying an alpha channel, and a transparent one
+  # renders as a black square on the home screen. Flatten it onto white.
+  remove_alpha_ios: true
+  background_color_ios: "#FFFFFF"
   web:
     generate: true
-    image_path: "assets/icon/app_icon.png"
+    image_path: "assets/icon/ft360_logo.png"
+    background_color: "#FFFFFF"
+    theme_color: "#00C4B4"
   windows:
     generate: true
-    image_path: "assets/icon/app_icon.png"
+    image_path: "assets/icon/ft360_logo.png"
   macos:
     generate: true
-    image_path: "assets/icon/app_icon.png"
+    image_path: "assets/icon/ft360_logo.png"
 
 flutter:
   uses-material-design: true
@@ -77,3 +83,4 @@ flutter:
   assets:
     - assets/audio/alarm.mp3
     - assets/icon/app_icon.png
+    - assets/icon/ft360_logo.png
