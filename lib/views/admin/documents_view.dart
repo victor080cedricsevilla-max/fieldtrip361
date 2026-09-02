@@ -543,6 +543,8 @@ class _DocumentsViewState extends State<DocumentsView> {
             child: Text('• ${reasons.first}',
                 style: TextStyle(fontSize: 11.5, color: Colors.grey.shade600, height: 1.4)),
           ),
+        if (verdict != null && verdict['identityMatches'] == false)
+          _identityMismatch(verdict),
         if (aiError != null)
           Padding(
             padding: const EdgeInsets.only(left: 48, top: 4),
@@ -594,4 +596,74 @@ class _DocumentsViewState extends State<DocumentsView> {
       ]),
     );
   }
+}
+
+/// What the form said against what the roster says.
+///
+/// Shown only when they disagree. An admin looking at a rejection needs the
+/// two values side by side to decide whether it is a real mismatch or a
+/// misread scan worth overriding — the one-line reason alone does not settle it.
+Widget _identityMismatch(Map<String, dynamic> verdict) {
+  String s(String key) => (verdict[key] ?? '').toString().trim();
+
+  final rows = <(String, String, String)>[
+    if (verdict['studentNameMatches'] == false)
+      ('Student name', s('studentNameFound'), s('expectedStudentName')),
+    if (verdict['studentIdMatches'] == false)
+      ('Student ID / LRN', s('studentIdFound'), s('expectedStudentId')),
+    if (verdict['guardianNameMatches'] == false)
+      (
+        'Parent / guardian',
+        s('guardianNameFound'),
+        ((verdict['expectedGuardianNames'] as List?) ?? const []).join(' or '),
+      ),
+  ];
+  if (rows.isEmpty) return const SizedBox.shrink();
+
+  return Padding(
+    padding: const EdgeInsets.only(left: 48, top: 6, right: 8),
+    child: Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: BoxDecoration(
+        color: AppTheme.errorColor.withValues(alpha: 0.06),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: AppTheme.errorColor.withValues(alpha: 0.18)),
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          Icon(Icons.person_off_outlined, size: 13, color: AppTheme.errorColor),
+          const SizedBox(width: 6),
+          Text('Does not match the school record',
+              style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w700,
+                  color: AppTheme.errorColor)),
+        ]),
+        const SizedBox(height: 5),
+        for (final (label, found, expected) in rows)
+          Padding(
+            padding: const EdgeInsets.only(top: 2),
+            child: Text.rich(
+              TextSpan(
+                style: TextStyle(fontSize: 11, color: Colors.grey.shade700, height: 1.45),
+                children: [
+                  TextSpan(
+                      text: '$label:  ',
+                      style: const TextStyle(fontWeight: FontWeight.w600)),
+                  TextSpan(
+                    text: found.isEmpty ? '(blank)' : found,
+                    style: const TextStyle(
+                        decoration: TextDecoration.lineThrough, color: Colors.grey),
+                  ),
+                  const TextSpan(text: '  →  '),
+                  TextSpan(
+                      text: expected.isEmpty ? '(not on record)' : expected,
+                      style: const TextStyle(fontWeight: FontWeight.w600)),
+                ],
+              ),
+            ),
+          ),
+      ]),
+    ),
+  );
 }
