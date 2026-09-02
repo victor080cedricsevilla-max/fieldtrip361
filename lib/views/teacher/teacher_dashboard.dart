@@ -17,6 +17,7 @@ import '../../config/theme.dart';
 import '../../controllers/auth_controller.dart';
 import '../../utils/chat_sync.dart';
 import '../../utils/firestore_utils.dart';
+import '../../utils/guardian_service.dart';
 import '../../utils/live_tracker.dart';
 import '../../utils/trip_queries.dart';
 import '../auth/mobile_login_view.dart';
@@ -3454,8 +3455,15 @@ class _SlideToConfirmState extends State<_SlideToConfirm> {
 }
 
 // â"€â"€â"€ Teacher Students Tab â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
-class TeacherStudentsTab extends StatelessWidget {
+class TeacherStudentsTab extends StatefulWidget {
   const TeacherStudentsTab({super.key});
+
+  @override
+  State<TeacherStudentsTab> createState() => _TeacherStudentsTabState();
+}
+
+class _TeacherStudentsTabState extends State<TeacherStudentsTab> {
+  String _search = '';
 
   @override
   Widget build(BuildContext context) {
@@ -3476,6 +3484,8 @@ class TeacherStudentsTab extends StatelessWidget {
         builder: (context, tripSnap) {
           if (!tripSnap.hasData) return Center(child: CircularProgressIndicator(color: AppTheme.effectivePrimary));
 
+          // Only the buses this teacher actually leads — a teacher sees the
+          // contact details of the children in their care, and no one else's.
           final Set<String> studentIds = {};
           for (final doc in tripSnap.data!.docs) {
             final tripData = doc.data() as Map<String, dynamic>?;
@@ -3504,69 +3514,17 @@ class TeacherStudentsTab extends StatelessWidget {
             );
           }
 
-          // Stream student docs live so unlinks reflect immediately.
-          return StreamBuilder<QuerySnapshot>(
-            stream: FirebaseFirestore.instance
-                .collection('users')
-                .where(FieldPath.documentId, whereIn: studentIds.toList())
-                .snapshots(),
-            builder: (context, userSnap) {
-              if (!userSnap.hasData) return Center(child: CircularProgressIndicator(color: AppTheme.effectivePrimary));
-              final students = userSnap.data!.docs.where((d) => d.exists).toList();
-              return ListView.builder(
-                padding: const EdgeInsets.all(16),
-                itemCount: students.length,
-                itemBuilder: (context, index) {
-                  final doc = students[index];
-                  final data = doc.data() as Map<String, dynamic>;
-                  final String name = (data['name'] ?? 'Unknown').toString();
-                  final String lrn = (data['lrn'] ?? '').toString();
-                  final initials = name.trim().split(RegExp(r'\s+')).where((w) => w.isNotEmpty).map((w) => w[0].toUpperCase()).join();
-                  final suffix = lrn.length >= 6 ? lrn.substring(lrn.length - 6) : lrn;
-                  final code = '$initials-$suffix';
-                  final parentIds = asList(data['parentIds']);
-
-                  return Card(
-                    margin: const EdgeInsets.only(bottom: 12),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-                    elevation: 0,
-                    color: Colors.white,
-                    child: Padding(
-                      padding: const EdgeInsets.only(bottom: 8),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          ListTile(
-                            contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                            leading: CircleAvatar(
-                              backgroundColor: AppTheme.effectivePrimary.withValues(alpha: 0.12),
-                              child: Text(name.isNotEmpty ? name[0].toUpperCase() : '?',
-                                  style: TextStyle(color: AppTheme.effectivePrimary, fontWeight: FontWeight.bold)),
-                            ),
-                            title: Text(name, style: TextStyle(fontWeight: FontWeight.w600, color: AppTheme.secondaryColor)),
-                            subtitle: Text(
-                              "LRN: $lrn  --  Code: $code",
-                              style: TextStyle(fontSize: 12, color: Colors.grey.shade500),
-                            ),
-                            trailing: IconButton(
-                              icon: Icon(Icons.qr_code_rounded, color: AppTheme.effectivePrimary),
-                              tooltip: "View QR",
-                              onPressed: () => _showStudentQR(context, name, lrn, doc.id, code),
-                            ),
-                          ),
-                          if (parentIds.isNotEmpty)
-                            _ParentLinksList(studentId: doc.id, parentIds: parentIds)
-                          else
-                            Padding(
-                              padding: const EdgeInsets.only(left: 68, bottom: 6),
-                              child: Text("No linked parents",
-                                  style: TextStyle(fontSize: 12, color: Colors.grey.shade400)),
-                            ),
-                        ],
-                      ),
-                    ),
-                  );
-                },
+          return _ChunkedUserStream(
+            ids: studentIds.toList(),
+            builder: (context, students, loaded) {
+              if (!loaded) {
+                return Center(child: CircularProgressIndicator(color: AppTheme.effectivePrimary));
+              }
+              return _StudentCards(
+                students: students,
+                search: _search,
+                onSearch: (v) => setState(() => _search = v.toLowerCase().trim()),
+                onShowQR: _showStudentQR,
               );
             },
           );
@@ -3619,59 +3577,269 @@ class TeacherStudentsTab extends StatelessWidget {
   }
 }
 
-class _ParentLinksList extends StatelessWidget {
-  final String studentId;
-  final List<dynamic> parentIds;
+/// Streams a set of user documents in `whereIn`-sized chunks.
+///
+/// Firestore caps `whereIn` at 30 values, so a single query silently failed the
+/// moment a teacher's buses carried more students than that — the list came
+/// back empty rather than short. Each chunk gets its own listener and the
+/// results are merged as they arrive.
+class _ChunkedUserStream extends StatefulWidget {
+  final List<String> ids;
+  final Widget Function(BuildContext, List<DocumentSnapshot>, bool loaded) builder;
 
-  const _ParentLinksList({required this.studentId, required this.parentIds});
+  const _ChunkedUserStream({required this.ids, required this.builder});
+
+  @override
+  State<_ChunkedUserStream> createState() => _ChunkedUserStreamState();
+}
+
+class _ChunkedUserStreamState extends State<_ChunkedUserStream> {
+  static const _chunkSize = 30;
+
+  final _subs = <StreamSubscription<QuerySnapshot>>[];
+  final _byChunk = <int, List<DocumentSnapshot>>{};
+  int _chunkCount = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _subscribe();
+  }
+
+  @override
+  void didUpdateWidget(covariant _ChunkedUserStream old) {
+    super.didUpdateWidget(old);
+    // Re-subscribe only when the roster actually changes; a rebuild with the
+    // same passengers would otherwise tear down and rebuild every listener.
+    final a = old.ids.toSet();
+    final b = widget.ids.toSet();
+    if (a.length != b.length || !a.containsAll(b)) _subscribe();
+  }
+
+  void _subscribe() {
+    for (final s in _subs) {
+      s.cancel();
+    }
+    _subs.clear();
+    _byChunk.clear();
+
+    final ids = widget.ids;
+    _chunkCount = (ids.length / _chunkSize).ceil();
+    for (var i = 0; i < _chunkCount; i++) {
+      final chunk = ids.skip(i * _chunkSize).take(_chunkSize).toList();
+      final index = i;
+      _subs.add(
+        FirebaseFirestore.instance
+            .collection('users')
+            .where(FieldPath.documentId, whereIn: chunk)
+            .snapshots()
+            .listen((snap) {
+          if (!mounted) return;
+          setState(() => _byChunk[index] = snap.docs.where((d) => d.exists).toList());
+        }, onError: (_) {
+          if (!mounted) return;
+          setState(() => _byChunk[index] = const []);
+        }),
+      );
+    }
+  }
+
+  @override
+  void dispose() {
+    for (final s in _subs) {
+      s.cancel();
+    }
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
-    return FutureBuilder<List<DocumentSnapshot>>(
-      future: Future.wait(
-        parentIds.map((id) => FirebaseFirestore.instance.collection('users').doc(id.toString()).get()),
+    final loaded = _byChunk.length == _chunkCount;
+    final all = <DocumentSnapshot>[
+      for (var i = 0; i < _chunkCount; i++) ...(_byChunk[i] ?? const []),
+    ]..sort((a, b) {
+        final an = ((a.data() as Map<String, dynamic>?)?['name'] ?? '').toString().toLowerCase();
+        final bn = ((b.data() as Map<String, dynamic>?)?['name'] ?? '').toString().toLowerCase();
+        return an.compareTo(bn);
+      });
+    return widget.builder(context, all, loaded);
+  }
+}
+
+/// The student list itself, with the contact details a teacher needs on a trip.
+class _StudentCards extends StatelessWidget {
+  final List<DocumentSnapshot> students;
+  final String search;
+  final ValueChanged<String> onSearch;
+  final void Function(BuildContext, String, String, String, String) onShowQR;
+
+  const _StudentCards({
+    required this.students,
+    required this.search,
+    required this.onSearch,
+    required this.onShowQR,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final filtered = search.isEmpty
+        ? students
+        : students.where((d) {
+            final m = d.data() as Map<String, dynamic>? ?? const {};
+            return [m['name'], m['lrn'], m['email'], m['section']]
+                .any((v) => (v ?? '').toString().toLowerCase().contains(search));
+          }).toList();
+
+    return Column(children: [
+      Padding(
+        padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+        child: TextField(
+          onChanged: onSearch,
+          decoration: InputDecoration(
+            hintText: 'Search by name, LRN or section…',
+            prefixIcon: const Icon(Icons.search_rounded, size: 20),
+            isDense: true,
+            filled: true,
+            fillColor: Colors.white,
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(10),
+              borderSide: BorderSide(color: Colors.grey.shade200),
+            ),
+            enabledBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(10),
+              borderSide: BorderSide(color: Colors.grey.shade200),
+            ),
+          ),
+        ),
       ),
+      Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 6),
+        child: Align(
+          alignment: Alignment.centerLeft,
+          child: Text(
+            search.isEmpty
+                ? '${students.length} ${students.length == 1 ? "student" : "students"} on your buses'
+                : '${filtered.length} of ${students.length} students',
+            style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+          ),
+        ),
+      ),
+      Expanded(
+        child: filtered.isEmpty
+            ? Center(
+                child: Text('No students match "$search".',
+                    style: TextStyle(color: Colors.grey.shade500, fontSize: 13)),
+              )
+            : ListView.builder(
+                padding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
+                itemCount: filtered.length,
+                itemBuilder: (context, index) {
+                  final doc = filtered[index];
+                  final data = doc.data() as Map<String, dynamic>? ?? const {};
+                  final String name = (data['name'] ?? 'Unknown').toString();
+                  final String lrn = (data['lrn'] ?? '').toString();
+                  final String email = (data['email'] ?? '').toString();
+                  final String section = (data['section'] ?? '').toString();
+                  final String grade = (data['gradeLevel'] ?? '').toString();
+                  final initials = name.trim().split(RegExp(r'\s+')).where((w) => w.isNotEmpty).map((w) => w[0].toUpperCase()).join();
+                  final suffix = lrn.length >= 6 ? lrn.substring(lrn.length - 6) : lrn;
+                  final code = '$initials-$suffix';
+                  final gradeSection = [grade, section].where((s) => s.isNotEmpty).join(' · ');
+
+                  return Card(
+                    margin: const EdgeInsets.only(bottom: 12),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                    elevation: 0,
+                    color: Colors.white,
+                    child: Padding(
+                      padding: const EdgeInsets.only(bottom: 8),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          ListTile(
+                            contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                            leading: CircleAvatar(
+                              backgroundColor: AppTheme.effectivePrimary.withValues(alpha: 0.12),
+                              child: Text(name.isNotEmpty ? name[0].toUpperCase() : '?',
+                                  style: TextStyle(color: AppTheme.effectivePrimary, fontWeight: FontWeight.bold)),
+                            ),
+                            title: Text(name, style: TextStyle(fontWeight: FontWeight.w600, color: AppTheme.secondaryColor)),
+                            subtitle: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  [if (lrn.isNotEmpty) 'LRN: $lrn', if (gradeSection.isNotEmpty) gradeSection]
+                                      .join('  ·  '),
+                                  style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+                                ),
+                                if (email.isNotEmpty)
+                                  Text(email,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: TextStyle(fontSize: 11.5, color: Colors.grey.shade500)),
+                                Text("Code: $code",
+                                    style: TextStyle(fontSize: 11, color: Colors.grey.shade400)),
+                              ],
+                            ),
+                            isThreeLine: true,
+                            trailing: IconButton(
+                              icon: Icon(Icons.qr_code_rounded, color: AppTheme.effectivePrimary),
+                              tooltip: "View QR",
+                              onPressed: () => onShowQR(context, name, lrn, doc.id, code),
+                            ),
+                          ),
+                          _GuardianContacts(studentUid: doc.id),
+                        ],
+                      ),
+                    ),
+                  );
+                },
+              ),
+      ),
+    ]);
+  }
+}
+
+/// The guardians a school registered for this student, with how to reach them.
+///
+/// Read from the guardian records rather than the parent's login: the school
+/// supplies the mobile number, and registration never asks for one. On a trip
+/// the number is the part that matters.
+class _GuardianContacts extends StatelessWidget {
+  final String studentUid;
+
+  const _GuardianContacts({required this.studentUid});
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+      stream: GuardianService.ofStudentUid(studentUid),
       builder: (context, snap) {
+        final docs = snap.data?.docs ?? const [];
         if (!snap.hasData) return const SizedBox.shrink();
-        final parents = snap.data!.where((d) => d.exists).toList();
-        if (parents.isEmpty) return const SizedBox.shrink();
+        if (docs.isEmpty) {
+          return Padding(
+            padding: const EdgeInsets.only(left: 68, bottom: 6),
+            child: Text("No linked parents",
+                style: TextStyle(fontSize: 12, color: Colors.grey.shade400)),
+          );
+        }
+
         return Padding(
-          padding: const EdgeInsets.only(left: 16, right: 8, bottom: 4),
+          padding: const EdgeInsets.only(left: 16, right: 12, bottom: 4),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               const Divider(height: 1),
-              const SizedBox(height: 6),
+              const SizedBox(height: 8),
               Row(children: [
                 const Icon(Icons.family_restroom_rounded, size: 14, color: Colors.grey),
                 const SizedBox(width: 6),
-                Text("Linked Parents",
+                Text("Parent / Guardian",
                     style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Colors.grey.shade600)),
               ]),
-              const SizedBox(height: 4),
-              ...parents.map((doc) {
-                final pName = (doc.data() as Map<String, dynamic>?)?['name']?.toString() ?? 'Parent';
-                return Row(
-                  children: [
-                    const SizedBox(width: 4),
-                    const Icon(Icons.person_outline, size: 14, color: Colors.grey),
-                    const SizedBox(width: 6),
-                    Expanded(
-                      child: Text(pName, style: TextStyle(fontSize: 13, color: Colors.grey.shade700)),
-                    ),
-                    TextButton(
-                      onPressed: () => _confirmUnlink(context, pName, doc.id),
-                      style: TextButton.styleFrom(
-                        foregroundColor: Colors.red.shade400,
-                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                        minimumSize: Size.zero,
-                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                      ),
-                      child: const Text("Unlink", style: TextStyle(fontSize: 12)),
-                    ),
-                  ],
-                );
-              }),
+              const SizedBox(height: 6),
+              for (final g in docs) _guardianTile(g.data()),
             ],
           ),
         );
@@ -3679,51 +3847,63 @@ class _ParentLinksList extends StatelessWidget {
     );
   }
 
-  void _confirmUnlink(BuildContext context, String parentName, String parentId) {
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: const Text("Unlink Parent", style: TextStyle(fontWeight: FontWeight.bold)),
-        content: Text("Remove $parentName as a linked parent of this student?"),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("Cancel")),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
-            onPressed: () async {
-              Navigator.pop(ctx);
-              await _doUnlink(context, parentId);
-            },
-            child: const Text("Unlink", style: TextStyle(color: Colors.white)),
+  Widget _guardianTile(Map<String, dynamic> g) {
+    final name = (g['name'] ?? 'Guardian').toString();
+    final relationship = (g['relationship'] ?? '').toString();
+    final email = (g['email'] ?? '').toString();
+    final phone = (g['phone'] ?? '').toString();
+    final linked = GuardianService.isLinked(g);
+
+    return Padding(
+      padding: const EdgeInsets.only(left: 4, bottom: 8),
+      child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Icon(linked ? Icons.verified_user_rounded : Icons.person_outline,
+            size: 15,
+            color: linked ? const Color(0xFF16A34A) : Colors.grey.shade400),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text(
+              relationship.isEmpty ? name : '$name · $relationship',
+              style: TextStyle(
+                  fontSize: 13, fontWeight: FontWeight.w600, color: Colors.grey.shade800),
+            ),
+            if (phone.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(top: 2),
+                child: Row(children: [
+                  Icon(Icons.phone_rounded, size: 12, color: AppTheme.effectivePrimary),
+                  const SizedBox(width: 5),
+                  SelectableText(phone,
+                      style: TextStyle(fontSize: 12.5, color: Colors.grey.shade700)),
+                ]),
+              ),
+            if (email.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(top: 2),
+                child: Row(children: [
+                  Icon(Icons.email_outlined, size: 12, color: Colors.grey.shade500),
+                  const SizedBox(width: 5),
+                  Expanded(
+                    child: SelectableText(email,
+                        maxLines: 1,
+                        style: TextStyle(fontSize: 12, color: Colors.grey.shade600)),
+                  ),
+                ]),
+              ),
+            if (phone.isEmpty && email.isEmpty)
+              Text('No contact details on file',
+                  style: TextStyle(fontSize: 11.5, color: AppTheme.errorColor)),
+          ]),
+        ),
+        if (!linked)
+          Padding(
+            padding: const EdgeInsets.only(top: 2),
+            child: Text('Not yet linked',
+                style: TextStyle(fontSize: 10.5, color: Colors.grey.shade400)),
           ),
-        ],
-      ),
+      ]),
     );
   }
-
-  Future<void> _doUnlink(BuildContext context, String parentId) async {
-    try {
-      final batch = FirebaseFirestore.instance.batch();
-      batch.update(
-        FirebaseFirestore.instance.collection('users').doc(studentId),
-        {'parentIds': FieldValue.arrayRemove([parentId])},
-      );
-      batch.update(
-        FirebaseFirestore.instance.collection('users').doc(parentId),
-        {'children': FieldValue.arrayRemove([studentId])},
-      );
-      await batch.commit();
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("Parent unlinked."), backgroundColor: Colors.green),
-        );
-      }
-    } catch (_) {
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("Failed to unlink parent."), backgroundColor: Colors.red),
-        );
-      }
-    }
-  }
 }
+

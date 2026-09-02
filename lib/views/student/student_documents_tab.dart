@@ -105,6 +105,20 @@ class _StudentDocumentsTabState extends State<StudentDocumentsTab> {
             subtitle: const Text('PDF or image already on your device'),
             onTap: () => Navigator.pop(ctx, 'file'),
           ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 6, 20, 0),
+            child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Icon(Icons.auto_awesome_rounded, size: 13, color: Colors.grey.shade500),
+              const SizedBox(width: 7),
+              Expanded(
+                child: Text(
+                  'An AI assistant checks your upload for the right form, a signature, '
+                  'and readable writing before your teacher sees it.',
+                  style: TextStyle(fontSize: 10.5, color: Colors.grey.shade600, height: 1.4),
+                ),
+              ),
+            ]),
+          ),
           const SizedBox(height: 10),
         ]),
       ),
@@ -482,6 +496,51 @@ class _StudentDocumentsTabState extends State<StudentDocumentsTab> {
               ),
             ),
           ]),
+        if (template != null && status != 'approved') ...[
+          const SizedBox(height: 10),
+          _aiReviewNotice(),
+        ],
+      ]),
+    );
+  }
+
+  /// Tells the student an automated check reads the upload before a person does.
+  ///
+  /// Without this the first rejection reads as the school accusing them of a
+  /// mistake. Saying an AI checks it — and that staff can still be asked —
+  /// makes a rejection something to fix rather than something to argue with.
+  Widget _aiReviewNotice() {
+    return Container(
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: AppTheme.effectivePrimary.withValues(alpha: 0.07),
+        borderRadius: BorderRadius.circular(9),
+        border: Border.all(color: AppTheme.effectivePrimary.withValues(alpha: 0.18)),
+      ),
+      child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Icon(Icons.auto_awesome_rounded, size: 15, color: AppTheme.effectivePrimary),
+        const SizedBox(width: 8),
+        Expanded(
+          child: RichText(
+            text: TextSpan(
+              style: TextStyle(fontSize: 11, color: Colors.grey.shade700, height: 1.45),
+              children: [
+                TextSpan(
+                  text: 'Checked automatically. ',
+                  style: TextStyle(
+                      fontWeight: FontWeight.w700, color: AppTheme.effectivePrimary),
+                ),
+                const TextSpan(
+                  text: 'An AI assistant reads your upload to confirm it is the right '
+                      'form, that it is signed, and that the writing is readable. Make '
+                      'sure the whole page is in frame, in focus, and well lit.\n'
+                      'If it is rejected you can upload again — and your teacher can '
+                      'always review it themselves.',
+                ),
+              ],
+            ),
+          ),
+        ),
       ]),
     );
   }

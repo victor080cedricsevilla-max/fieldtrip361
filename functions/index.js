@@ -1290,7 +1290,9 @@ exports.changeSubscriptionPlan = onCall(async (request) => {
  * already exist, so re-uploading the same file after an upgrade only consumes
  * slots for genuinely new students.
  */
-exports.importRoster = onCall(async (request) => {
+// Codes go out inline once the roster lands, so the default minute is not
+// enough: several hundred students each cost an SMTP or gateway round trip.
+exports.importRoster = onCall({ timeoutSeconds: 540 }, async (request) => {
   const { uid, schoolId, schoolRef } = await requireSchoolAdmin(request);
   await checkRateLimit(uid, "importRoster", 10);
 
@@ -1412,6 +1414,7 @@ exports.importRoster = onCall(async (request) => {
 
   // Firestore caps a batch at 500 writes, and each student may add a guardian.
   const now = admin.firestore.Timestamp.now();
+  const createdGuardians = []; // { ref, data } for the codes sent below
   for (let i = 0; i < toWrite.length; i += 200) {
     const batch = db.batch();
     for (const item of toWrite.slice(i, i + 200)) {
@@ -1419,7 +1422,8 @@ exports.importRoster = onCall(async (request) => {
       batch.set(rosterRef, item.record);
 
       if (item.guardian) {
-        batch.set(db.collection("guardians").doc(), {
+        const guardianRef = db.collection("guardians").doc();
+        const guardianDoc = {
           schoolId,
           studentId: rosterRef.id,
           studentName: item.record.name,
@@ -1435,7 +1439,11 @@ exports.importRoster = onCall(async (request) => {
           createdAt: now,
           createdBy: uid,
           updatedAt: now,
-        });
+        };
+        batch.set(guardianRef, guardianDoc);
+        if (guardianDoc.status === GUARDIAN_STATUS.activationReady) {
+          createdGuardians.push({ ref: guardianRef, data: guardianDoc });
+        }
       }
     }
     await batch.commit();
@@ -1447,8 +1455,22 @@ exports.importRoster = onCall(async (request) => {
     });
   }
 
+  // Send the codes straight away. Waiting for the admin to press a second
+  // button is the step that never happens on a busy day, and every guardian
+  // sitting on an unsent code is a parent who cannot see their child's trip.
+  const codes = await sendCodesForNewGuardians(db, {
+    guardians: createdGuardians,
+    schoolName: schoolSnap.get("name"),
+    byUid: uid,
+  });
+
   return {
     imported: toWrite.length,
+    codesSent: codes.sent,
+    codesByEmail: codes.byEmail,
+    codesBySms: codes.bySms,
+    codesFailed: codes.failed,
+    codesRemaining: codes.remaining,
     duplicates: skippedDuplicate.length,
     overCapacity: skippedOverCapacity.length,
     invalidCount: invalid.length,
@@ -1465,6 +1487,63 @@ exports.importRoster = onCall(async (request) => {
     overCapacitySample: skippedOverCapacity.slice(0, 50),
   };
 });
+
+/**
+ * Sends an activation code to each guardian an import just created.
+ *
+ * Best-effort by design: a mail server that is down, or a gateway that rejects
+ * a number, must not fail the import — the students are already on the roster
+ * and the admin can retry delivery from the roster screen. Capped per run so a
+ * two-thousand-row file cannot sit past the function's timeout.
+ */
+async function sendCodesForNewGuardians(db, { guardians, schoolName, byUid }) {
+  const empty = { sent: 0, byEmail: 0, bySms: 0, failed: 0, remaining: 0 };
+  if (!guardians.length) return empty;
+
+  const MAX_PER_IMPORT = 200;
+  const batch = guardians.slice(0, MAX_PER_IMPORT);
+
+  let transporter;
+  try {
+    transporter = createMailTransport();
+  } catch (_) {
+    // No SMTP configured. SMS may still carry the codes; if neither channel is
+    // available every attempt below simply reports a failure.
+  }
+
+  let sent = 0;
+  let byEmail = 0;
+  let bySms = 0;
+  let failed = 0;
+  for (const g of batch) {
+    try {
+      const issued = await issueActivationCode(db, {
+        guardianRef: g.ref,
+        guardian: g.data,
+        schoolName,
+        byUid,
+        transporter,
+      });
+      if (issued.delivery === "email") { sent++; byEmail++; }
+      else if (issued.delivery === "sms") { sent++; bySms++; }
+      else failed++;
+    } catch (err) {
+      console.error("import activation failed for", g.ref.id, err?.message || err);
+      failed++;
+    }
+  }
+  try {
+    if (transporter) transporter.close();
+  } catch (_) {/* pool already torn down */}
+
+  return {
+    sent,
+    byEmail,
+    bySms,
+    failed,
+    remaining: Math.max(0, guardians.length - batch.length),
+  };
+}
 
 /**
  * Writes the two-way link between a roster entry and a student account, and
@@ -1695,6 +1774,9 @@ const GUARDIAN_STATUS = {
   activationReady: "activation_ready", // has an email, code can be issued
   activated: "activated", // a parent account claimed it
 };
+
+/** A roster entry may hand trip access to at most this many parent accounts. */
+const MAX_GUARDIANS_PER_STUDENT = 2;
 
 const CODE_STATUS = {
   unused: "unused",
@@ -2053,12 +2135,23 @@ exports.assignGuardian = onCall(async (request) => {
   }
   const studentName = rosterSnap.get("name") || "Student";
 
-  const existing = await db
+  // All guardians for this student, so the relationship match and the cap are
+  // decided from the same read.
+  const forStudent = await db
     .collection("guardians")
     .where("studentId", "==", studentId)
-    .where("relationship", "==", relationship)
-    .limit(1)
     .get();
+  const existing = forStudent.docs.filter((d) => d.get("relationship") === relationship);
+
+  // A student has at most two guardians. The limit is what keeps one roster
+  // entry from quietly handing trip access to an unbounded set of accounts.
+  if (!existing.length && forStudent.size >= MAX_GUARDIANS_PER_STUDENT) {
+    throw new HttpsError(
+      "failed-precondition",
+      `${studentName} already has ${MAX_GUARDIANS_PER_STUDENT} guardians. ` +
+      "Remove one before adding another."
+    );
+  }
 
   const now = admin.firestore.Timestamp.now();
   const payload = {
@@ -2077,7 +2170,7 @@ exports.assignGuardian = onCall(async (request) => {
 
   let guardianRef;
   let guardian;
-  if (existing.empty) {
+  if (!existing.length) {
     guardianRef = db.collection("guardians").doc();
     guardian = {
       ...payload,
@@ -2089,8 +2182,8 @@ exports.assignGuardian = onCall(async (request) => {
     };
     await guardianRef.set(guardian);
   } else {
-    guardianRef = existing.docs[0].ref;
-    const prev = existing.docs[0].data();
+    guardianRef = existing[0].ref;
+    const prev = existing[0].data();
     // An already-activated guardian keeps its link; only details change.
     guardian = { ...prev, ...payload };
     if (prev.parentUid) guardian.status = GUARDIAN_STATUS.activated;
@@ -2186,11 +2279,24 @@ exports.sendAllPendingActivationCodes = onCall(
       .where("status", "==", GUARDIAN_STATUS.activationReady)
       .get();
 
-    // Skip guardians already linked, and any that already hold a live code —
-    // re-sending would invalidate a code the parent may be about to use.
-    const pending = snap.docs.filter(
-      (d) => !d.get("parentUid") && d.get("activationStatus") !== CODE_STATUS.sent
-    );
+    // An explicit selection may name guardians that already hold a live code —
+    // the admin ticking the box is asking for a resend, so honour it. Without a
+    // selection, skip those: an unprompted resend invalidates a code the parent
+    // may be about to type in.
+    const requested = Array.isArray(request.data && request.data.guardianIds)
+      ? new Set(
+        request.data.guardianIds
+          .slice(0, 500)
+          .map((id) => sanitizeText(id, 200))
+          .filter(Boolean)
+      )
+      : null;
+
+    const pending = snap.docs.filter((d) => {
+      if (d.get("parentUid")) return false;
+      if (requested) return requested.has(d.id);
+      return d.get("activationStatus") !== CODE_STATUS.sent;
+    });
 
     const MAX_PER_RUN = 100;
     const batch = pending.slice(0, MAX_PER_RUN);
@@ -2215,6 +2321,8 @@ exports.sendAllPendingActivationCodes = onCall(
     }
 
     let sent = 0;
+    let byEmail = 0;
+    let bySms = 0;
     const failures = [];
     for (const doc of batch) {
       try {
@@ -2225,8 +2333,16 @@ exports.sendAllPendingActivationCodes = onCall(
           byUid: uid,
           transporter,
         });
-        if (issued.delivery === "email") sent++;
-        else failures.push({ name: doc.get("name"), reason: "Email could not be delivered" });
+        // SMS counts as delivered. Treating only email as success marked every
+        // mobile-only guardian — most of a Philippine roster — as a failure.
+        if (issued.delivery === "email") { sent++; byEmail++; }
+        else if (issued.delivery === "sms") { sent++; bySms++; }
+        else {
+          failures.push({
+            name: doc.get("name"),
+            reason: doc.get("email") ? "Email could not be delivered" : "No usable contact",
+          });
+        }
       } catch (err) {
         console.error("bulk activation failed for", doc.id, err?.message || err);
         failures.push({ name: doc.get("name"), reason: "Unexpected error" });
@@ -2238,6 +2354,8 @@ exports.sendAllPendingActivationCodes = onCall(
 
     return {
       sent,
+      byEmail,
+      bySms,
       failed: failures.length,
       remaining: Math.max(0, pending.length - batch.length),
       total: pending.length,

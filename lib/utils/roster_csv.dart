@@ -110,63 +110,86 @@ class RosterField {
   final String label;
   final bool isRequired;
 
+  /// The spelling this field takes in the downloadable template. Always one of
+  /// [aliases] once normalised, so a file built from the template maps itself.
+  final String csvHeader;
+
   /// Header spellings that auto-detect to this field, already normalised.
   final List<String> aliases;
 
-  const RosterField(this.key, this.label, {this.isRequired = false, this.aliases = const []});
+  const RosterField(
+    this.key,
+    this.label, {
+    required this.csvHeader,
+    this.isRequired = false,
+    this.aliases = const [],
+  });
 
   static const studentNumber = RosterField(
     'studentNumber', 'Student ID',
+    csvHeader: 'student_id',
     isRequired: true,
     aliases: ['studentnumber', 'studentno', 'studentid', 'lrn', 'id', 'idnumber'],
   );
   static const firstName = RosterField(
     'firstName', 'First Name',
+    csvHeader: 'first_name',
     isRequired: true,
     aliases: ['firstname', 'givenname', 'fname'],
   );
   static const lastName = RosterField(
     'lastName', 'Last Name',
+    csvHeader: 'last_name',
     isRequired: true,
     aliases: ['lastname', 'surname', 'familyname', 'lname'],
   );
   static const fullName = RosterField(
     'fullName', 'Full Name',
+    csvHeader: 'full_name',
     aliases: ['name', 'fullname', 'studentname', 'completename'],
   );
   static const dateOfBirth = RosterField(
     'dateOfBirth', 'Date of Birth',
+    csvHeader: 'date_of_birth',
     isRequired: true,
     aliases: ['dateofbirth', 'dob', 'birthdate', 'birthday', 'bdate'],
   );
   static const gradeLevel = RosterField(
     'gradeLevel', 'Grade Level',
+    csvHeader: 'grade_level',
     aliases: ['gradelevel', 'grade', 'yearlevel', 'year'],
   );
   static const section = RosterField(
     'section', 'Section',
+    csvHeader: 'section',
     aliases: ['section', 'class', 'classsection'],
   );
   static const email = RosterField(
     'email', 'Student Email',
+    csvHeader: 'student_email',
     aliases: ['email', 'studentemail', 'emailaddress'],
   );
   static const parentName = RosterField(
     'parentName', 'Parent / Guardian Name',
-    aliases: ['parentname', 'guardian', 'guardianname', 'parent', 'motherfather'],
+    csvHeader: 'parent_name',
+    aliases: ['parentname', 'guardian', 'guardianname', 'parent', 'motherfather',
+      'parentguardianname', 'guardianfullname'],
   );
   static const relationship = RosterField(
     'relationship', 'Relationship',
+    csvHeader: 'relationship',
     aliases: ['relationship', 'relation', 'guardianrelationship'],
   );
   static const parentEmail = RosterField(
     'parentEmail', 'Parent Email',
+    csvHeader: 'parent_email',
     aliases: ['parentemail', 'guardianemail', 'parentemailaddress'],
   );
   static const parentPhone = RosterField(
     'parentPhone', 'Parent Contact Number',
+    csvHeader: 'parent_contact',
     aliases: ['parentphone', 'parentcontact', 'guardiancontact', 'contactnumber',
-      'parentmobile', 'guardianphone', 'mobile'],
+      'parentmobile', 'guardianphone', 'mobile', 'parentcontactnumber'],
   );
 
   /// Every mappable field, in the order the mapping screen lists them.
@@ -445,25 +468,33 @@ ValidationReport validateMappedRows(
     }
 
     // Duplicates inside the file, and against students already on the roster.
+    //
+    // The name is carried into the message because a line number and an ID
+    // alone force the admin back into the spreadsheet to work out who is
+    // actually being skipped.
+    final who = [first, last].where((s) => s.isNotEmpty).join(' ');
+    final named = who.isEmpty ? '' : ' — $who';
+
     if (studentNumber.isNotEmpty) {
       if (seenNumbers.contains(studentNumber)) {
         duplicateInFile++;
         rowIssues.add(RowIssue(lineNo, 'studentNumber',
-            'Duplicate Student ID "$studentNumber" appears earlier in this file'));
+            'Duplicate Student ID "$studentNumber"$named appears earlier in this file'));
       } else if (existingStudentNumbers.contains(studentNumber)) {
         alreadyRegistered++;
         rowIssues.add(RowIssue(lineNo, 'studentNumber',
-            'Student ID "$studentNumber" is already registered'));
+            'Student ID "$studentNumber"$named is already registered'));
       }
     }
     if (email.isNotEmpty && isValidEmailAddress(email)) {
       if (seenEmails.contains(email)) {
         duplicateInFile++;
         rowIssues.add(RowIssue(lineNo, 'email',
-            'Duplicate email "$email" appears earlier in this file'));
+            'Duplicate email "$email"$named appears earlier in this file'));
       } else if (existingEmails.contains(email)) {
         alreadyRegistered++;
-        rowIssues.add(RowIssue(lineNo, 'email', 'Email "$email" is already registered'));
+        rowIssues.add(
+            RowIssue(lineNo, 'email', 'Email "$email"$named is already registered'));
       }
     }
 
@@ -548,11 +579,26 @@ ValidationReport validateMappedRows(
 }
 
 /// Header line shown to admins in the format help dialog.
-const rosterCsvTemplate =
-    'student_number,first_name,last_name,date_of_birth,grade_level,section,'
-    'parent_name,relationship,parent_email';
+///
+/// Derived from the field list rather than typed out, so a header can never
+/// drift into a spelling [suggestMapping] no longer recognises.
+final rosterCsvTemplate = RosterField.all.map((f) => f.csvHeader).join(',');
 
-const rosterCsvExample =
-    '$rosterCsvTemplate\n'
-    '2024-0001,Juan,Dela Cruz,2010-05-14,Grade 10,St. Peter,Pedro Dela Cruz,Father,pedro@email.com\n'
-    '2024-0002,Ana,Reyes,2010-11-02,Grade 10,St. Peter,Rosa Reyes,Mother,rosa@email.com';
+/// The downloadable starter file: the full header plus two filled-in rows.
+///
+/// Both rows are complete on purpose. A blank template invites an admin to
+/// guess at the date format and the mobile-number shape, which are the two
+/// things the importer is strictest about.
+final rosterCsvTemplateFile = [
+  rosterCsvTemplate,
+  // The second row deliberately leaves the student email and parent email
+  // blank: both are optional, and seeing that in the file is clearer than
+  // reading it in a help dialog. A mobile number alone still reaches the parent.
+  '2024-0001,Juan,Dela Cruz,Juan Dela Cruz,2010-05-14,Grade 10,St. Peter,'
+      'juan.delacruz@student.edu.ph,Pedro Dela Cruz,Father,'
+      'pedro.delacruz@gmail.com,09171234567',
+  '2024-0002,Maria,Santos,Maria Santos,2011-11-02,Grade 9,St. Paul,,'
+      'Ana Santos,Mother,,09281234567',
+].join('\n');
+
+final rosterCsvExample = rosterCsvTemplateFile;

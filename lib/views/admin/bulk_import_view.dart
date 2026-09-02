@@ -5,6 +5,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 
 import '../../config/theme.dart';
+import '../../utils/file_download.dart';
 import '../../utils/roster_csv.dart';
 
 /// Guided bulk student import: upload → map columns → validate → review → confirm.
@@ -261,9 +262,25 @@ class _BulkImportViewState extends State<BulkImportView> {
         ),
       ),
       const SizedBox(height: 16),
-      Text('Example layout',
-          style: TextStyle(
-              fontSize: 12, fontWeight: FontWeight.w600, color: Colors.grey.shade700)),
+      Row(children: [
+        Text('Example layout',
+            style: TextStyle(
+                fontSize: 12, fontWeight: FontWeight.w600, color: Colors.grey.shade700)),
+        const Spacer(),
+        // Offered before the upload rather than after a failure: the file is
+        // easiest to fix while it is still being built.
+        OutlinedButton.icon(
+          onPressed: _downloadTemplate,
+          icon: const Icon(Icons.download_rounded, size: 15),
+          label: const Text('Download template', style: TextStyle(fontSize: 12)),
+          style: OutlinedButton.styleFrom(
+            minimumSize: const Size(0, 32),
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+            foregroundColor: AppTheme.effectivePrimary,
+            side: BorderSide(color: AppTheme.effectivePrimary.withValues(alpha: 0.5)),
+          ),
+        ),
+      ]),
       const SizedBox(height: 6),
       Container(
         width: double.infinity,
@@ -273,10 +290,30 @@ class _BulkImportViewState extends State<BulkImportView> {
           border: Border.all(color: const Color(0xFFE5E7EB)),
           borderRadius: BorderRadius.circular(9),
         ),
-        child: SelectableText(rosterCsvExample,
-            style: const TextStyle(fontFamily: 'monospace', fontSize: 10.5, height: 1.7)),
+        child: SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          child: SelectableText(rosterCsvExample,
+              style: const TextStyle(fontFamily: 'monospace', fontSize: 10.5, height: 1.7)),
+        ),
+      ),
+      const SizedBox(height: 8),
+      Text(
+        'Only Student ID, first name, last name and date of birth are required. '
+        'Everything else may be left blank, and extra columns are ignored.',
+        style: TextStyle(fontSize: 11.5, color: Colors.grey.shade600, height: 1.45),
       ),
     ]);
+  }
+
+  void _downloadTemplate() {
+    final saved = downloadTextFile('fieldtrip360_student_template.csv', rosterCsvTemplateFile);
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(saved
+          ? 'Template downloaded — replace the two sample rows with your students.'
+          : 'Downloads are only available on the web console.'),
+      backgroundColor: AppTheme.secondaryColor,
+      behavior: SnackBarBehavior.floating,
+    ));
   }
 
   Widget _mappingStep() {

@@ -310,5 +310,45 @@ void main() {
       );
       expect(r.issueBreakdown['Missing Student ID'], 2);
     });
+
+    test('names the student in a duplicate message, not just the ID', () {
+      final r = validateMappedRows(
+        readCsvTable(_schoolA),
+        suggestMapping(readCsvTable(_schoolA).headers),
+        dateOrder: DateOrder.dayFirst,
+        existingStudentNumbers: {'2024-0001'},
+      );
+      expect(
+        r.issues.any((i) => i.message.contains('Juan Dela Cruz')),
+        isTrue,
+        reason: 'a line number and an ID alone do not say who is being skipped',
+      );
+    });
+  });
+
+  // The template is the file schools actually build from. If its own headers
+  // stopped auto-detecting, every download would land on the mapping screen
+  // needing manual work — the one thing the template exists to avoid.
+  group('downloadable template', () {
+    test('every header maps itself with no manual mapping', () {
+      final table = readCsvTable(rosterCsvTemplateFile);
+      final mapping = suggestMapping(table.headers);
+      for (final field in RosterField.all) {
+        expect(mapping[field.key], isNotNull,
+            reason: '${field.label} ("${field.csvHeader}") did not auto-detect');
+      }
+    });
+
+    test('its sample rows import with no blocking issues', () {
+      final r = _validate(rosterCsvTemplateFile, order: DateOrder.monthFirst);
+      expect(r.validRows.length, 2);
+      expect(r.issues.where((i) => i.blocking), isEmpty);
+    });
+
+    test('the row with only a mobile number still counts as contactable', () {
+      final r = _validate(rosterCsvTemplateFile, order: DateOrder.monthFirst);
+      expect(r.guardianComplete, 2);
+      expect(r.guardianPartial, 0);
+    });
   });
 }

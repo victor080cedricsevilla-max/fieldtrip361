@@ -3,10 +3,25 @@ import 'package:cloud_functions/cloud_functions.dart';
 import 'package:flutter/material.dart';
 
 import '../../config/theme.dart';
+import '../../utils/file_download.dart';
 import '../../utils/guardian_service.dart';
 import '../../utils/roster_csv.dart';
 import 'bulk_import_view.dart';
 import '../../utils/school_context.dart';
+
+/// Where a student sits in the parent-linking process, as one value the roster
+/// can be filtered on.
+enum RosterFilter {
+  all('All students'),
+  linked('Parent linked'),
+  pending('Pending — code sent'),
+  ready('Ready to send'),
+  noContact('No email/phone found'),
+  noGuardian('No guardian assigned');
+
+  const RosterFilter(this.label);
+  final String label;
+}
 
 /// School roster management: bulk CSV import, manual entry, and the live
 /// capacity meter tied to the school's subscription tier.
@@ -22,7 +37,20 @@ class _StudentsViewState extends State<StudentsView> {
   bool _loadingSchool = true;
   bool _busy = false;
   String _search = '';
+  RosterFilter _filter = RosterFilter.all;
   final _searchCtrl = TextEditingController();
+
+  /// The stage a student has reached, derived from their guardians.
+  ///
+  /// Ordered by precedence: one linked parent outranks a second guardian still
+  /// waiting, because the child is already reachable.
+  static RosterFilter _stageOf(List<Map<String, dynamic>> guardians) {
+    if (guardians.isEmpty) return RosterFilter.noGuardian;
+    if (guardians.any(GuardianService.isLinked)) return RosterFilter.linked;
+    if (guardians.any(GuardianService.isPending)) return RosterFilter.pending;
+    if (guardians.any(GuardianService.isAwaitingCode)) return RosterFilter.ready;
+    return RosterFilter.noContact;
+  }
 
   @override
   void initState() {
@@ -291,6 +319,11 @@ class _StudentsViewState extends State<StudentsView> {
     final invalidCount = asInt(d['invalidCount']);
     final remaining = d['remaining'] == null ? null : asInt(d['remaining']);
     final invalid = (d['invalid'] as List?) ?? const [];
+    final codesSent = asInt(d['codesSent']);
+    final codesByEmail = asInt(d['codesByEmail']);
+    final codesBySms = asInt(d['codesBySms']);
+    final codesFailed = asInt(d['codesFailed']);
+    final codesRemaining = asInt(d['codesRemaining']);
 
     showDialog<void>(
       context: context,
@@ -318,6 +351,33 @@ class _StudentsViewState extends State<StudentsView> {
                   _resultRow('Skipped — over capacity', '$overCapacity', AppTheme.errorColor),
                 if (invalidCount > 0)
                   _resultRow('Skipped — invalid data', '$invalidCount', AppTheme.accentColor),
+                if (codesSent > 0 || codesFailed > 0) ...[
+                  const Divider(height: 24),
+                  Text('Activation codes',
+                      style: TextStyle(
+                          fontWeight: FontWeight.w600,
+                          fontSize: 12.5,
+                          color: Colors.grey.shade800)),
+                  const SizedBox(height: 6),
+                  _resultRow('Sent to guardians', '$codesSent', const Color(0xFF22C55E)),
+                  if (codesSent > 0)
+                    Padding(
+                      padding: const EdgeInsets.only(left: 18, bottom: 4),
+                      child: Text('$codesByEmail by email · $codesBySms by SMS',
+                          style: TextStyle(fontSize: 11.5, color: Colors.grey.shade600)),
+                    ),
+                  if (codesFailed > 0)
+                    _resultRow('Could not be delivered', '$codesFailed', AppTheme.errorColor),
+                  if (codesRemaining > 0)
+                    _resultRow('Queued for the next run', '$codesRemaining',
+                        AppTheme.accentColor),
+                  const SizedBox(height: 6),
+                  Text(
+                    'Guardians with no email and no mobile number were skipped — add a '
+                    'contact from the roster and use "Send codes".',
+                    style: TextStyle(fontSize: 11.5, color: Colors.grey.shade600, height: 1.45),
+                  ),
+                ],
                 if (remaining != null) ...[
                   const Divider(height: 24),
                   Text(
@@ -625,6 +685,8 @@ class _StudentsViewState extends State<StudentsView> {
         ),
       ),
       const SizedBox(width: 10),
+      _filterDropdown(),
+      const SizedBox(width: 10),
       IconButton(
         onPressed: _showFormatHelp,
         icon: const Icon(Icons.help_outline_rounded),
@@ -643,7 +705,18 @@ class _StudentsViewState extends State<StudentsView> {
         ),
       ),
       const SizedBox(width: 10),
-      _sendAllButton(),
+      _sendCodesButton(),
+      OutlinedButton.icon(
+        onPressed: _downloadTemplate,
+        icon: const Icon(Icons.download_rounded, size: 18),
+        label: const Text('Template'),
+        style: OutlinedButton.styleFrom(
+          minimumSize: const Size(0, 42),
+          foregroundColor: Colors.grey.shade700,
+          side: BorderSide(color: Colors.grey.shade300),
+        ),
+      ),
+      const SizedBox(width: 10),
       FilledButton.icon(
         onPressed: _busy ? null : _openImportWizard,
         icon: _busy
@@ -660,23 +733,78 @@ class _StudentsViewState extends State<StudentsView> {
     ]);
   }
 
-  /// Appears only when guardians are actually waiting, with the count on it —
-  /// a permanently visible "send all" invites clicking with nothing to send.
-  Widget _sendAllButton() {
+  Widget _filterDropdown() {
+    return Container(
+      height: 42,
+      padding: const EdgeInsets.symmetric(horizontal: 12),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(
+          color: _filter == RosterFilter.all
+              ? const Color(0xFFE5E7EB)
+              : AppTheme.effectivePrimary,
+        ),
+      ),
+      child: DropdownButtonHideUnderline(
+        child: DropdownButton<RosterFilter>(
+          value: _filter,
+          isDense: true,
+          icon: Icon(Icons.filter_list_rounded,
+              size: 18,
+              color: _filter == RosterFilter.all
+                  ? Colors.grey.shade600
+                  : AppTheme.effectivePrimary),
+          style: TextStyle(
+            fontSize: 13,
+            color: _filter == RosterFilter.all ? Colors.grey.shade800 : AppTheme.effectivePrimary,
+            fontWeight: _filter == RosterFilter.all ? FontWeight.normal : FontWeight.w600,
+          ),
+          items: [
+            for (final f in RosterFilter.values)
+              DropdownMenuItem(value: f, child: Text(f.label)),
+          ],
+          onChanged: (v) => setState(() => _filter = v ?? RosterFilter.all),
+        ),
+      ),
+    );
+  }
+
+  /// Offers the exact file the importer expects, headers and all.
+  ///
+  /// Schools build their roster in Excel; handing them a starting file removes
+  /// the guesswork about column names and the date format in one step.
+  void _downloadTemplate() {
+    final saved = downloadTextFile('fieldtrip360_student_template.csv', rosterCsvTemplateFile);
+    if (saved) {
+      _toast('Template downloaded — open it in Excel and replace the sample rows.');
+      return;
+    }
+    // Mobile has no download tray; show the text so it can still be copied out.
+    _showMessageDialog('CSV template', rosterCsvTemplateFile);
+  }
+
+  /// Appears only when guardians can actually be contacted — a permanently
+  /// visible button invites clicking with nothing to send.
+  Widget _sendCodesButton() {
     return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
       stream: GuardianService.ofSchool(_schoolId!),
       builder: (context, snap) {
-        final waiting = (snap.data?.docs ?? const [])
-            .where((d) => GuardianService.isAwaitingCode(d.data()))
-            .length;
-        if (waiting == 0) return const SizedBox.shrink();
+        final docs = snap.data?.docs ?? const <QueryDocumentSnapshot<Map<String, dynamic>>>[];
+        final contactable = docs.where((d) {
+          final g = d.data();
+          return g['status'] == GuardianService.statusActivationReady && g['parentUid'] == null;
+        }).toList();
+        if (contactable.isEmpty) return const SizedBox.shrink();
+
+        final waiting = contactable.where((d) => GuardianService.isAwaitingCode(d.data())).length;
 
         return Padding(
           padding: const EdgeInsets.only(right: 10),
           child: OutlinedButton.icon(
-            onPressed: _busy ? null : () => _sendAllPendingCodes(waiting),
+            onPressed: _busy ? null : () => _openSendCodesPicker(contactable),
             icon: const Icon(Icons.forward_to_inbox_rounded, size: 18),
-            label: Text('Send $waiting ${waiting == 1 ? "code" : "codes"}'),
+            label: Text(waiting > 0 ? 'Send codes ($waiting)' : 'Send codes'),
             style: OutlinedButton.styleFrom(
               minimumSize: const Size(0, 42),
               foregroundColor: AppTheme.accentColor,
@@ -688,42 +816,178 @@ class _StudentsViewState extends State<StudentsView> {
     );
   }
 
-  Future<void> _sendAllPendingCodes(int waiting) async {
-    final go = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: const Text('Send activation codes?'),
-        content: SizedBox(
-          width: 420,
-          child: Text(
-            'This emails an activation code to $waiting '
-            '${waiting == 1 ? "guardian" : "guardians"} who have an address on '
-            'file but no code yet.\n\n'
-            'Check the email addresses first — a code sent to the wrong person '
-            'cannot be recalled. Guardians who already have a live code are '
-            'skipped so it is safe to run again.',
-            style: const TextStyle(fontSize: 13, height: 1.55),
-          ),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
-          FilledButton(
-            style: FilledButton.styleFrom(backgroundColor: AppTheme.effectivePrimary),
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('Send codes'),
-          ),
-        ],
-      ),
-    );
-    if (go != true) return;
+  /// Lets the admin choose exactly who gets a code.
+  ///
+  /// Sending is not free — SMS costs a credit each and a resend invalidates a
+  /// code the parent may already be holding — so the recipients are picked
+  /// rather than implied. Guardians still waiting start ticked, which keeps the
+  /// common case a single click.
+  Future<void> _openSendCodesPicker(
+    List<QueryDocumentSnapshot<Map<String, dynamic>>> contactable,
+  ) async {
+    final selected = <String>{
+      for (final d in contactable)
+        if (GuardianService.isAwaitingCode(d.data())) d.id,
+    };
+    var query = '';
 
+    final ids = await showDialog<List<String>>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(builder: (ctx, setLocal) {
+        final visible = query.isEmpty
+            ? contactable
+            : contactable.where((d) {
+                final g = d.data();
+                return [g['name'], g['studentName'], g['email'], g['phone']]
+                    .any((v) => (v ?? '').toString().toLowerCase().contains(query));
+              }).toList();
+
+        final visibleIds = visible.map((d) => d.id).toSet();
+        final allVisibleChecked =
+            visibleIds.isNotEmpty && visibleIds.every(selected.contains);
+
+        return AlertDialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          title: const Text('Send activation codes'),
+          content: SizedBox(
+            width: 560,
+            height: 460,
+            child: Column(children: [
+              Text(
+                'Each guardian is sent one code — by email when there is an address '
+                'on file, otherwise by SMS. A code sent to the wrong person cannot '
+                'be recalled, so check the list before sending.',
+                style: TextStyle(fontSize: 12, color: Colors.grey.shade600, height: 1.5),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                autofocus: true,
+                onChanged: (v) => setLocal(() => query = v.toLowerCase().trim()),
+                decoration: InputDecoration(
+                  hintText: 'Search guardian, student, email or number…',
+                  prefixIcon: const Icon(Icons.search_rounded, size: 20),
+                  isDense: true,
+                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+                ),
+              ),
+              const SizedBox(height: 8),
+              Row(children: [
+                Checkbox(
+                  value: allVisibleChecked,
+                  tristate: false,
+                  activeColor: AppTheme.effectivePrimary,
+                  onChanged: (v) => setLocal(() {
+                    // Scoped to what is on screen: with a search active,
+                    // "select all" that silently ticked hidden rows would send
+                    // codes the admin never saw.
+                    if (v == true) {
+                      selected.addAll(visibleIds);
+                    } else {
+                      selected.removeAll(visibleIds);
+                    }
+                  }),
+                ),
+                Text(
+                  query.isEmpty ? 'Select all' : 'Select all ${visible.length} matching',
+                  style: const TextStyle(fontSize: 13),
+                ),
+                const Spacer(),
+                Text('${selected.length} selected',
+                    style: TextStyle(
+                        fontSize: 12.5,
+                        fontWeight: FontWeight.w600,
+                        color: AppTheme.effectivePrimary)),
+              ]),
+              const Divider(height: 1),
+              Expanded(
+                child: visible.isEmpty
+                    ? Center(
+                        child: Text('No guardians match "$query".',
+                            style: TextStyle(fontSize: 12.5, color: Colors.grey.shade500)),
+                      )
+                    : ListView.builder(
+                        itemCount: visible.length,
+                        itemBuilder: (_, i) {
+                          final d = visible[i];
+                          final g = d.data();
+                          final already = g['activationStatus'] == 'sent';
+                          final email = (g['email'] ?? '').toString();
+                          final phone = (g['phone'] ?? '').toString();
+                          final via = email.isNotEmpty ? email : phone;
+                          return CheckboxListTile(
+                            value: selected.contains(d.id),
+                            onChanged: (v) => setLocal(() {
+                              if (v == true) {
+                                selected.add(d.id);
+                              } else {
+                                selected.remove(d.id);
+                              }
+                            }),
+                            dense: true,
+                            activeColor: AppTheme.effectivePrimary,
+                            controlAffinity: ListTileControlAffinity.leading,
+                            title: Text('${g['name']} — ${g['studentName'] ?? 'Student'}',
+                                style: const TextStyle(fontSize: 13)),
+                            subtitle: Row(children: [
+                              Icon(email.isNotEmpty ? Icons.email_outlined : Icons.sms_outlined,
+                                  size: 12, color: Colors.grey.shade500),
+                              const SizedBox(width: 5),
+                              Expanded(
+                                child: Text(via,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: TextStyle(fontSize: 11.5, color: Colors.grey.shade600)),
+                              ),
+                              if (already)
+                                Container(
+                                  padding:
+                                      const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                                  decoration: BoxDecoration(
+                                    color: AppTheme.accentColor.withValues(alpha: 0.15),
+                                    borderRadius: BorderRadius.circular(999),
+                                  ),
+                                  child: Text('Already sent — will resend',
+                                      style: TextStyle(
+                                          fontSize: 9.5,
+                                          fontWeight: FontWeight.w600,
+                                          color: AppTheme.accentColor)),
+                                ),
+                            ]),
+                          );
+                        },
+                      ),
+              ),
+            ]),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+            FilledButton(
+              style: FilledButton.styleFrom(backgroundColor: AppTheme.effectivePrimary),
+              onPressed: selected.isEmpty
+                  ? null
+                  : () => Navigator.pop(ctx, selected.toList()),
+              child: Text(selected.isEmpty
+                  ? 'Send codes'
+                  : 'Send ${selected.length} ${selected.length == 1 ? "code" : "codes"}'),
+            ),
+          ],
+        );
+      }),
+    );
+
+    if (ids == null || ids.isEmpty) return;
+    await _sendCodesTo(ids);
+  }
+
+  Future<void> _sendCodesTo(List<String> guardianIds) async {
     setState(() => _busy = true);
     try {
-      final r = await GuardianService.sendAllPendingCodes();
+      final r = await GuardianService.sendAllPendingCodes(guardianIds: guardianIds);
       if (!mounted) return;
       int n(Object? v) => (v as num?)?.toInt() ?? 0;
       final sent = n(r['sent']);
+      final byEmail = n(r['byEmail']);
+      final bySms = n(r['bySms']);
       final failed = n(r['failed']);
       final remaining = n(r['remaining']);
       final failures = (r['failures'] as List?) ?? const [];
@@ -731,11 +995,13 @@ class _StudentsViewState extends State<StudentsView> {
       _showMessageDialog(
         sent > 0 ? 'Codes sent' : 'Nothing was sent',
         [
-          '$sent ${sent == 1 ? "code was" : "codes were"} emailed.',
+          '$sent ${sent == 1 ? "code was" : "codes were"} sent.',
+          if (byEmail > 0 || bySms > 0)
+            '  $byEmail by email, $bySms by SMS.',
           if (failed > 0) '$failed could not be sent.',
           if (remaining > 0)
-            '\n$remaining still waiting — run this again to continue. Sending is '
-                'capped per run so the mail account stays within its daily limit.',
+            '\n$remaining were not attempted — sending is capped per run so the '
+                'mail account stays within its daily limit. Run this again to continue.',
           if (failures.isNotEmpty) ...[
             '\nCould not send to:',
             ...failures.take(10).map((f) {
@@ -760,59 +1026,121 @@ class _StudentsViewState extends State<StudentsView> {
     return Container(
       decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(16)),
       clipBehavior: Clip.antiAlias,
+      // One listener for every guardian in the school, grouped in memory.
+      //
+      // This used to be a StreamBuilder inside each roster row, which opened a
+      // separate Firestore listener per student. Importing a few hundred
+      // students opened a few hundred listeners at once and the whole console
+      // stopped responding until the page was reloaded.
       child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-        stream: FirebaseFirestore.instance
-            .collection('roster')
-            .where('schoolId', isEqualTo: _schoolId)
-            .snapshots(),
-        builder: (context, snap) {
-          if (snap.hasError) {
-            return Center(
-              child: Padding(
-                padding: const EdgeInsets.all(24),
-                child: Text('Could not load the roster.\n${snap.error}',
-                    textAlign: TextAlign.center, style: TextStyle(color: Colors.grey.shade600)),
-              ),
-            );
+        stream: GuardianService.ofSchool(_schoolId!),
+        builder: (context, gSnap) {
+          final byStudent = <String, List<QueryDocumentSnapshot<Map<String, dynamic>>>>{};
+          for (final g in gSnap.data?.docs ?? const []) {
+            final sid = (g.data()['studentId'] ?? '').toString();
+            if (sid.isNotEmpty) (byStudent[sid] ??= []).add(g);
           }
-          if (!snap.hasData) {
-            return Center(child: CircularProgressIndicator(color: AppTheme.effectivePrimary));
+          return _rosterTable(byStudent, guardiansLoaded: gSnap.hasData);
+        },
+      ),
+    );
+  }
+
+  Widget _rosterTable(
+    Map<String, List<QueryDocumentSnapshot<Map<String, dynamic>>>> byStudent, {
+    required bool guardiansLoaded,
+  }) {
+    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+      stream: FirebaseFirestore.instance
+          .collection('roster')
+          .where('schoolId', isEqualTo: _schoolId)
+          .snapshots(),
+      builder: (context, snap) {
+        if (snap.hasError) {
+          return Center(
+            child: Padding(
+              padding: const EdgeInsets.all(24),
+              child: Text('Could not load the roster.\n${snap.error}',
+                  textAlign: TextAlign.center, style: TextStyle(color: Colors.grey.shade600)),
+            ),
+          );
+        }
+        if (!snap.hasData) {
+          return Center(child: CircularProgressIndicator(color: AppTheme.effectivePrimary));
+        }
+
+        final docs = snap.data!.docs.toList()
+          ..sort((a, b) => (a.data()['name'] ?? '')
+              .toString()
+              .toLowerCase()
+              .compareTo((b.data()['name'] ?? '').toString().toLowerCase()));
+
+        final filtered = docs.where((d) {
+          final m = d.data();
+          final guardians = byStudent[d.id] ?? const [];
+
+          if (_search.isNotEmpty) {
+            final haystack = <Object?>[
+              m['name'], m['studentNumber'], m['email'], m['section'], m['parentEmail'],
+              for (final g in guardians) ...[g.data()['name'], g.data()['email'], g.data()['phone']],
+            ];
+            if (!haystack.any((v) => (v ?? '').toString().toLowerCase().contains(_search))) {
+              return false;
+            }
           }
 
-          final docs = snap.data!.docs.toList()
-            ..sort((a, b) => (a.data()['name'] ?? '')
-                .toString()
-                .toLowerCase()
-                .compareTo((b.data()['name'] ?? '').toString().toLowerCase()));
-
-          final filtered = _search.isEmpty
-              ? docs
-              : docs.where((d) {
-                  final m = d.data();
-                  return [m['name'], m['studentNumber'], m['email'], m['section'], m['parentEmail']]
-                      .any((v) => (v ?? '').toString().toLowerCase().contains(_search));
-                }).toList();
-
-          if (docs.isEmpty) return _emptyRoster();
-          if (filtered.isEmpty) {
-            return Center(
-              child: Text('No students match "$_search".',
-                  style: TextStyle(color: Colors.grey.shade500)),
-            );
+          // While guardians are still loading every student would look like it
+          // has none, so the stage filter waits rather than showing a wrong list.
+          if (_filter != RosterFilter.all) {
+            if (!guardiansLoaded) return false;
+            if (_stageOf(guardians.map((g) => g.data()).toList()) != _filter) return false;
           }
+          return true;
+        }).toList();
 
-          return Column(children: [
-            _tableHeader(filtered.length, docs.length),
-            const Divider(height: 1),
-            Expanded(
-              child: ListView.separated(
-                itemCount: filtered.length,
-                separatorBuilder: (_, __) => const Divider(height: 1),
-                itemBuilder: (context, i) => _rosterRow(filtered[i]),
+        if (docs.isEmpty) return _emptyRoster();
+        if (filtered.isEmpty) return _noMatchState();
+
+        return Column(children: [
+          _tableHeader(filtered.length, docs.length),
+          const Divider(height: 1),
+          Expanded(
+            child: ListView.separated(
+              itemCount: filtered.length,
+              separatorBuilder: (_, __) => const Divider(height: 1),
+              itemBuilder: (context, i) => _rosterRow(
+                filtered[i],
+                byStudent[filtered[i].id] ?? const [],
+                guardiansLoaded: guardiansLoaded,
               ),
             ),
-          ]);
-        },
+          ),
+        ]);
+      },
+    );
+  }
+
+  Widget _noMatchState() {
+    final what = [
+      if (_search.isNotEmpty) '"$_search"',
+      if (_filter != RosterFilter.all) '"${_filter.label}"',
+    ].join(' and ');
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(28),
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          Icon(Icons.filter_alt_off_rounded, size: 40, color: Colors.grey.shade300),
+          const SizedBox(height: 12),
+          Text('No students match $what.',
+              textAlign: TextAlign.center, style: TextStyle(color: Colors.grey.shade500)),
+          if (_filter != RosterFilter.all) ...[
+            const SizedBox(height: 10),
+            TextButton(
+              onPressed: () => setState(() => _filter = RosterFilter.all),
+              child: const Text('Clear filter'),
+            ),
+          ],
+        ]),
       ),
     );
   }
@@ -860,7 +1188,11 @@ class _StudentsViewState extends State<StudentsView> {
     );
   }
 
-  Widget _rosterRow(QueryDocumentSnapshot<Map<String, dynamic>> doc) {
+  Widget _rosterRow(
+    QueryDocumentSnapshot<Map<String, dynamic>> doc,
+    List<QueryDocumentSnapshot<Map<String, dynamic>>> guardians, {
+    required bool guardiansLoaded,
+  }) {
     final m = doc.data();
     final name = (m['name'] ?? 'Unknown').toString();
     final number = (m['studentNumber'] ?? '').toString();
@@ -949,7 +1281,7 @@ class _StudentsViewState extends State<StudentsView> {
           tooltip: 'Remove from roster',
         ),
         ]),
-        _guardianPanel(doc.id, name),
+        _guardianPanel(doc.id, name, guardians, guardiansLoaded: guardiansLoaded),
       ]),
     );
   }
@@ -959,41 +1291,83 @@ class _StudentsViewState extends State<StudentsView> {
   /// The guardian record is deliberately separate from the parent's login: it
   /// exists as soon as the school provides a name, long before (or without) an
   /// account. Only staff can create or change it.
-  Widget _guardianPanel(String rosterId, String studentName) {
-    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-      stream: GuardianService.ofStudent(rosterId),
-      builder: (context, snap) {
-        final docs = snap.data?.docs ?? const [];
-        if (docs.isEmpty) {
-          return Padding(
-            padding: const EdgeInsets.only(top: 8, left: 46),
-            child: Row(children: [
-              Icon(Icons.person_off_outlined, size: 14, color: Colors.grey.shade400),
-              const SizedBox(width: 7),
-              Text('No guardian assigned',
-                  style: TextStyle(fontSize: 11.5, color: Colors.grey.shade500)),
-              const SizedBox(width: 10),
-              TextButton.icon(
-                onPressed: _busy ? null : () => _assignGuardian(rosterId, studentName),
-                icon: const Icon(Icons.person_add_alt_rounded, size: 14),
-                label: const Text('Assign guardian', style: TextStyle(fontSize: 11.5)),
-                style: TextButton.styleFrom(
-                  minimumSize: const Size(0, 28),
-                  padding: const EdgeInsets.symmetric(horizontal: 8),
-                  foregroundColor: AppTheme.effectivePrimary,
-                ),
-              ),
-            ]),
-          );
-        }
+  Widget _guardianPanel(
+    String rosterId,
+    String studentName,
+    List<QueryDocumentSnapshot<Map<String, dynamic>>> guardians, {
+    required bool guardiansLoaded,
+  }) {
+    if (!guardiansLoaded) {
+      return Padding(
+        padding: const EdgeInsets.only(top: 8, left: 46),
+        child: Row(children: [
+          SizedBox(
+            width: 11,
+            height: 11,
+            child: CircularProgressIndicator(strokeWidth: 1.6, color: Colors.grey.shade300),
+          ),
+          const SizedBox(width: 8),
+          Text('Loading guardians…',
+              style: TextStyle(fontSize: 11.5, color: Colors.grey.shade400)),
+        ]),
+      );
+    }
 
-        return Column(
-          children: [
-            for (final g in docs) _guardianRow(rosterId, studentName, g),
-          ],
-        );
-      },
-    );
+    if (guardians.isEmpty) {
+      return Padding(
+        padding: const EdgeInsets.only(top: 8, left: 46),
+        child: Row(children: [
+          Icon(Icons.person_off_outlined, size: 14, color: Colors.grey.shade400),
+          const SizedBox(width: 7),
+          Text('No guardian assigned',
+              style: TextStyle(fontSize: 11.5, color: Colors.grey.shade500)),
+          const SizedBox(width: 10),
+          TextButton.icon(
+            onPressed: _busy ? null : () => _assignGuardian(rosterId, studentName),
+            icon: const Icon(Icons.person_add_alt_rounded, size: 14),
+            label: const Text('Assign guardian', style: TextStyle(fontSize: 11.5)),
+            style: TextButton.styleFrom(
+              minimumSize: const Size(0, 28),
+              padding: const EdgeInsets.symmetric(horizontal: 8),
+              foregroundColor: AppTheme.effectivePrimary,
+            ),
+          ),
+        ]),
+      );
+    }
+
+    // Sorted so a linked parent is always the first line of the student's row —
+    // that is the state an admin scans for.
+    final sorted = guardians.toList()
+      ..sort((a, b) {
+        final al = GuardianService.isLinked(a.data()) ? 0 : 1;
+        final bl = GuardianService.isLinked(b.data()) ? 0 : 1;
+        return al.compareTo(bl);
+      });
+
+    return Column(children: [
+      for (final g in sorted) _guardianRow(rosterId, studentName, g),
+      if (sorted.length < GuardianService.maxPerStudent)
+        Padding(
+          padding: const EdgeInsets.only(top: 4, left: 40),
+          child: Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton.icon(
+              onPressed: _busy ? null : () => _assignGuardian(rosterId, studentName),
+              icon: const Icon(Icons.add_rounded, size: 14),
+              label: Text(
+                'Add second guardian',
+                style: TextStyle(fontSize: 11, color: Colors.grey.shade500),
+              ),
+              style: TextButton.styleFrom(
+                minimumSize: const Size(0, 26),
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                foregroundColor: Colors.grey.shade500,
+              ),
+            ),
+          ),
+        ),
+    ]);
   }
 
   Widget _guardianRow(
@@ -1004,12 +1378,24 @@ class _StudentsViewState extends State<StudentsView> {
     final g = doc.data();
     final status = (g['status'] ?? '').toString();
     final email = (g['email'] ?? '').toString();
+    final phone = (g['phone'] ?? '').toString();
     final activated = status == GuardianService.statusActivated;
     final canSend = status == GuardianService.statusActivationReady;
+    final noContact = GuardianService.hasNoContact(g);
+    final pending = GuardianService.isPending(g);
 
     final color = activated
         ? const Color(0xFF16A34A)
-        : (canSend ? AppTheme.effectivePrimary : AppTheme.accentColor);
+        : noContact
+            ? AppTheme.errorColor
+            : (pending ? AppTheme.accentColor : AppTheme.effectivePrimary);
+
+    // Whichever channel the code would actually travel on, so the admin can see
+    // at a glance why a guardian is reachable.
+    final contact = [
+      if (email.isNotEmpty) email,
+      if (phone.isNotEmpty) phone,
+    ].join(' · ');
 
     return Padding(
       padding: const EdgeInsets.only(top: 8, left: 46),
@@ -1020,10 +1406,14 @@ class _StudentsViewState extends State<StudentsView> {
         Expanded(
           child: Text(
             '${g['name']} · ${g['relationship'] ?? 'Guardian'}'
-            '${email.isEmpty ? '' : ' · $email'}',
+            '${contact.isEmpty ? '' : ' · $contact'}',
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
-            style: TextStyle(fontSize: 11.5, color: Colors.grey.shade700),
+            style: TextStyle(
+              fontSize: 11.5,
+              color: Colors.grey.shade700,
+              fontWeight: activated ? FontWeight.w600 : FontWeight.normal,
+            ),
           ),
         ),
         Container(
