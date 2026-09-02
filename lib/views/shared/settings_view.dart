@@ -514,11 +514,23 @@ class _SettingsViewState extends State<SettingsView> {
                 ],
               ),
             ),
+            _collapsible(
+              icon: Icons.brightness_6_outlined,
+              label: "Appearance",
+              subtitle: _appearanceLabel(AppTheme.mode.value),
+              child: const _AppearancePicker(),
+            ),
           ],
         ),
       ),
     );
   }
+
+  static String _appearanceLabel(ThemeMode m) => switch (m) {
+        ThemeMode.light => 'Light',
+        ThemeMode.dark => 'Dark',
+        ThemeMode.system => 'System default',
+      };
 
   Future<void> _showColorPicker(BuildContext context) async {
     final picked = await showDialog<Color>(
@@ -834,6 +846,84 @@ class _ColorPickerDialogState extends State<_ColorPickerDialog> {
           child: const Text("Apply"),
         ),
       ],
+    );
+  }
+}
+
+/// Light / Dark / System, applied at once and remembered.
+///
+/// The choice is stored on the device rather than the user's profile: theme is
+/// a property of the screen you are looking at, and a parent using a phone at
+/// night should not have their tablet flip too.
+class _AppearancePicker extends StatefulWidget {
+  const _AppearancePicker();
+
+  @override
+  State<_AppearancePicker> createState() => _AppearancePickerState();
+}
+
+class _AppearancePickerState extends State<_AppearancePicker> {
+  static const _options = <(ThemeMode, String, String, IconData)>[
+    (ThemeMode.light, 'Light', 'Always light, whatever the device is set to',
+        Icons.light_mode_rounded),
+    (ThemeMode.dark, 'Dark', 'Always dark — easier on the eyes at night',
+        Icons.dark_mode_rounded),
+    (ThemeMode.system, 'System default', 'Follow the phone\'s own setting',
+        Icons.brightness_auto_rounded),
+  ];
+
+  @override
+  Widget build(BuildContext context) {
+    final primary = AppTheme.effectivePrimary;
+
+    return ValueListenableBuilder<ThemeMode>(
+      valueListenable: AppTheme.mode,
+      builder: (context, mode, _) => Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          for (final (value, title, subtitle, icon) in _options)
+            InkWell(
+              borderRadius: BorderRadius.circular(12),
+              onTap: () => AppTheme.setMode(value),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 9, horizontal: 4),
+                child: Row(children: [
+                  Container(
+                    width: 36,
+                    height: 36,
+                    decoration: BoxDecoration(
+                      color: (mode == value ? primary : Colors.grey).withValues(alpha: 0.12),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: Icon(icon,
+                        size: 19, color: mode == value ? primary : Colors.grey.shade500),
+                  ),
+                  const SizedBox(width: 13),
+                  Expanded(
+                    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      Text(title,
+                          style: TextStyle(
+                            fontSize: 14,
+                            fontWeight: mode == value ? FontWeight.w700 : FontWeight.w500,
+                            color: mode == value ? primary : null,
+                          )),
+                      const SizedBox(height: 1),
+                      Text(subtitle,
+                          style: TextStyle(fontSize: 11.5, color: Colors.grey.shade500)),
+                    ]),
+                  ),
+                  // A check rather than a radio: the row is the target, and a
+                  // radio invites tapping the small circle instead.
+                  AnimatedOpacity(
+                    duration: const Duration(milliseconds: 180),
+                    opacity: mode == value ? 1 : 0,
+                    child: Icon(Icons.check_circle_rounded, size: 20, color: primary),
+                  ),
+                ]),
+              ),
+            ),
+        ],
+      ),
     );
   }
 }

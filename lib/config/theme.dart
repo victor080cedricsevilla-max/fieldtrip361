@@ -1,8 +1,61 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 class _ThemeModeNotifier extends ValueNotifier<ThemeMode> {
   _ThemeModeNotifier() : super(ThemeMode.light);
+}
+
+/// Colours for the frosted surfaces — the nav bar, the emergency button.
+///
+/// Glass reads as glass only when the tint, the border and the glow move
+/// together, and each of the three needs a different value per brightness.
+/// Grouping them means a widget picks one token set instead of branching on
+/// brightness at every colour it paints.
+class GlassTokens {
+  final Color surface; // translucent fill behind the blur
+  final Color border;
+  final Color shadow;
+  final Color activePill; // the sliding indicator behind the selected tab
+  final Color activeGlow;
+  final Color idleIcon;
+  final Color idleLabel;
+
+  const GlassTokens({
+    required this.surface,
+    required this.border,
+    required this.shadow,
+    required this.activePill,
+    required this.activeGlow,
+    required this.idleIcon,
+    required this.idleLabel,
+  });
+
+  /// Dark glass: a light film over a dark ground, lifted by a soft white edge.
+  static const dark = GlassTokens(
+    surface: Color(0xCC141A20),
+    border: Color(0x24FFFFFF),
+    shadow: Color(0x80000000),
+    activePill: Color(0x1FFFFFFF),
+    activeGlow: Color(0x40000000),
+    idleIcon: Color(0x8AFFFFFF),
+    idleLabel: Color(0x70FFFFFF),
+  );
+
+  /// Light glass: a white film, with the depth carried by the shadow instead
+  /// of the border — a bright edge on a bright page reads as nothing at all.
+  static const light = GlassTokens(
+    surface: Color(0xD9FFFFFF),
+    border: Color(0x14000000),
+    shadow: Color(0x1F000000),
+    activePill: Color(0x0D000000),
+    activeGlow: Color(0x1A000000),
+    idleIcon: Color(0x8A2C3E50),
+    idleLabel: Color(0x702C3E50),
+  );
+
+  static GlassTokens of(BuildContext context) =>
+      Theme.of(context).brightness == Brightness.dark ? dark : light;
 }
 
 class _ColorNotifier extends ValueNotifier<Color> {
@@ -41,9 +94,39 @@ class AppTheme {
 
   /// Listenable theme mode.
   static final _ThemeModeNotifier mode = _ThemeModeNotifier();
-  static void setMode(ThemeMode m) => mode.value = m;
+
+  static const _modeKey = 'themeMode';
+
+  /// Sets the mode and remembers it, so the choice survives a restart.
+  ///
+  /// The notifier is updated first: the preference write is a disk round trip,
+  /// and the user should not watch the app repaint a beat after their tap.
+  static Future<void> setMode(ThemeMode m) async {
+    mode.value = m;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_modeKey, m.name);
+    } catch (_) {
+      // A device that cannot persist still gets the theme it asked for; it
+      // just forgets on the next launch.
+    }
+  }
+
+  /// Restores the saved mode. Call once before the first frame.
+  static Future<void> loadSavedMode() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final saved = prefs.getString(_modeKey);
+      if (saved == null) return;
+      mode.value = ThemeMode.values.firstWhere(
+        (m) => m.name == saved,
+        orElse: () => ThemeMode.light,
+      );
+    } catch (_) {/* keep the default */}
+  }
+
   static void toggleMode() {
-    mode.value = mode.value == ThemeMode.dark ? ThemeMode.light : ThemeMode.dark;
+    setMode(mode.value == ThemeMode.dark ? ThemeMode.light : ThemeMode.dark);
   }
 
   static ThemeData get lightTheme => lightThemeWithColor(effectivePrimary);
@@ -166,18 +249,20 @@ class AppTheme {
     );
   }
 
-  static ThemeData get darkTheme {
+  static ThemeData get darkTheme => darkThemeWithColor(effectivePrimary);
+
+  static ThemeData darkThemeWithColor(Color primary) {
     return ThemeData(
       useMaterial3: true,
       brightness: Brightness.dark,
       scaffoldBackgroundColor: darkBg,
-      primaryColor: primaryColor,
+      primaryColor: primary,
       textTheme: GoogleFonts.poppinsTextTheme(ThemeData.dark().textTheme).apply(
         bodyColor: darkText2,
         displayColor: darkText2,
       ),
       colorScheme: ColorScheme.dark(
-        primary: primaryColor,
+        primary: primary,
         secondary: accentColor,
         error: errorColor,
         surface: darkSurface,
@@ -211,12 +296,12 @@ class AppTheme {
         ),
         focusedBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(12),
-          borderSide: BorderSide(color: primaryColor, width: 2),
+          borderSide: BorderSide(color: primary, width: 2),
         ),
       ),
       elevatedButtonTheme: ElevatedButtonThemeData(
         style: ElevatedButton.styleFrom(
-          backgroundColor: primaryColor,
+          backgroundColor: primary,
           foregroundColor: Colors.white,
           elevation: 0,
           padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),

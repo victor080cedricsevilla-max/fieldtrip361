@@ -8,6 +8,8 @@ import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import '../../config/theme.dart';
+import '../../widgets/glass_nav_bar.dart';
+import '../../widgets/glass_nav_scaffold.dart';
 import '../../controllers/auth_controller.dart';
 import '../auth/mobile_login_view.dart';
 import '../../repositories/directions_repository.dart';
@@ -60,36 +62,18 @@ class _ParentDashboardState extends State<ParentDashboard> {
   int _currentIndex = 0;
   final List<Widget> _screens = [const ParentTripsTab(), const ParentProfileTab()];
 
+  static const _navItems = <GlassNavItem>[
+    GlassNavItem(icon: Icons.route_outlined, activeIcon: Icons.route_rounded, label: "Trips"),
+    GlassNavItem(icon: Icons.person_outline, activeIcon: Icons.person_rounded, label: "Profile"),
+  ];
+
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      body: _screens[_currentIndex],
-      bottomNavigationBar: Container(
-        decoration: BoxDecoration(
-          color: Colors.white,
-          boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.06), blurRadius: 16, offset: const Offset(0, -4))],
-        ),
-        child: NavigationBar(
-          selectedIndex: _currentIndex,
-          onDestinationSelected: (i) => setState(() => _currentIndex = i),
-          backgroundColor: Colors.white,
-          indicatorColor: AppTheme.effectivePrimary.withValues(alpha: 0.12),
-          elevation: 0,
-          labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
-          destinations: [
-            NavigationDestination(
-              icon: Icon(Icons.route_outlined),
-              selectedIcon: Icon(Icons.route, color: AppTheme.effectivePrimary),
-              label: "Trips",
-            ),
-            NavigationDestination(
-              icon: Icon(Icons.person_outline),
-              selectedIcon: Icon(Icons.person, color: AppTheme.effectivePrimary),
-              label: "Profile",
-            ),
-          ],
-        ),
-      ),
+    return GlassNavScaffold(
+      pages: _screens,
+      items: _navItems,
+      currentIndex: _currentIndex,
+      onTap: (i) => setState(() => _currentIndex = i),
     );
   }
 }
@@ -172,7 +156,7 @@ class ParentTripsTab extends StatelessWidget {
               }
 
               return ListView.builder(
-                padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
+                padding: const EdgeInsets.fromLTRB(20, 16, 20, GlassNavScaffold.bottomInset),
                 itemCount: myTrips.length,
                 itemBuilder: (context, index) {
                   var doc = myTrips[index];

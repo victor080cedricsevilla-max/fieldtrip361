@@ -3,6 +3,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
 import '../../config/theme.dart';
+import '../../widgets/glass_nav_scaffold.dart';
 import '../../utils/document_service.dart';
 
 /// Read-only view of pre-trip paperwork for the buses this teacher runs.
@@ -95,7 +96,7 @@ class _TeacherDocumentsTabState extends State<TeacherDocumentsTab> {
                       (d) => '${d['tripId']}_${d['studentId']}_${d['type']}',
                     );
                     return ListView.separated(
-                      padding: const EdgeInsets.all(16),
+                      padding: const EdgeInsets.fromLTRB(16, 16, 16, GlassNavScaffold.bottomInset),
                       itemCount: trips.length,
                       separatorBuilder: (_, __) => const SizedBox(height: 14),
                       itemBuilder: (context, i) => _tripCard(trips[i], uid, latest),

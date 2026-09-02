@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import '../../config/theme.dart';
+import '../../widgets/glass_nav_scaffold.dart';
 
 // â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 // DM COMPOSE -- user search + chat creation
@@ -351,7 +352,7 @@ class _ChatListViewState extends State<ChatListView> {
                   );
                 }
                 return ListView.separated(
-                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+                  padding: const EdgeInsets.fromLTRB(16, 12, 16, GlassNavScaffold.bottomInset),
                   itemCount: docs.length,
                   separatorBuilder: (_, __) => const SizedBox(height: 10),
                   itemBuilder: (c, i) {

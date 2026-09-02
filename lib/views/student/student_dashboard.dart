@@ -12,6 +12,9 @@ import 'package:battery_plus/battery_plus.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter_ringtone_player/flutter_ringtone_player.dart';
 import '../../config/theme.dart';
+import '../../widgets/glass_emergency_button.dart';
+import '../../widgets/glass_nav_bar.dart';
+import '../../widgets/glass_nav_scaffold.dart';
 import '../../controllers/auth_controller.dart';
 import '../../utils/live_tracker.dart';
 import '../../utils/firestore_utils.dart';
@@ -381,66 +384,27 @@ class _StudentDashboardState extends State<StudentDashboard> {
   }
 
 
+  static const _navItems = <GlassNavItem>[
+    GlassNavItem(icon: Icons.route_outlined, activeIcon: Icons.route_rounded, label: "Trips"),
+    GlassNavItem(icon: Icons.qr_code_outlined, activeIcon: Icons.qr_code_rounded, label: "My QR"),
+    GlassNavItem(
+        icon: Icons.chat_bubble_outline_rounded,
+        activeIcon: Icons.chat_bubble_rounded,
+        label: "Chats"),
+    GlassNavItem(
+        icon: Icons.assignment_outlined, activeIcon: Icons.assignment_rounded, label: "Forms"),
+    GlassNavItem(icon: Icons.person_outline, activeIcon: Icons.person_rounded, label: "Profile"),
+  ];
+
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      body: Column(
-        children: [
-          _buildEmergencyBanner(),
-          Expanded(child: _pages[_selectedIndex]),
-        ],
-      ),
-      floatingActionButton: Padding(
-        padding: const EdgeInsets.only(bottom: 1.0),
-        child: FloatingActionButton(
-          onPressed: _showEmergencyButton,
-          backgroundColor: Colors.red,
-          child: const Icon(Icons.emergency, color: Colors.white, size: 32),
-        ),
-      ),
-      floatingActionButtonLocation: FloatingActionButtonLocation.centerFloat,
-      bottomNavigationBar: Container(
-        decoration: BoxDecoration(
-          color: Colors.white,
-          boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.06), blurRadius: 16, offset: const Offset(0, -4))],
-        ),
-        child: NavigationBar(
-          selectedIndex: _selectedIndex,
-          onDestinationSelected: (i) => setState(() => _selectedIndex = i),
-          backgroundColor: Colors.white,
-          indicatorColor: AppTheme.effectivePrimary.withValues(alpha: 0.12),
-          elevation: 0,
-          labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
-          height: 70,
-          destinations: [
-            NavigationDestination(
-              icon: Icon(Icons.route_outlined),
-              selectedIcon: Icon(Icons.route, color: AppTheme.effectivePrimary),
-              label: "Trips",
-            ),
-            NavigationDestination(
-              icon: Icon(Icons.qr_code_outlined),
-              selectedIcon: Icon(Icons.qr_code, color: AppTheme.effectivePrimary),
-              label: "My QR",
-            ),
-            NavigationDestination(
-              icon: Icon(Icons.chat_bubble_outline_rounded),
-              selectedIcon: Icon(Icons.chat_bubble_rounded, color: AppTheme.effectivePrimary),
-              label: "Chats",
-            ),
-            NavigationDestination(
-              icon: Icon(Icons.assignment_outlined),
-              selectedIcon: Icon(Icons.assignment, color: AppTheme.effectivePrimary),
-              label: "Forms",
-            ),
-            NavigationDestination(
-              icon: Icon(Icons.person_outline),
-              selectedIcon: Icon(Icons.person, color: AppTheme.effectivePrimary),
-              label: "Profile",
-            ),
-          ],
-        ),
-      ),
+    return GlassNavScaffold(
+      pages: _pages,
+      items: _navItems,
+      currentIndex: _selectedIndex,
+      onTap: (i) => setState(() => _selectedIndex = i),
+      banner: _buildEmergencyBanner(),
+      floatingAction: GlassEmergencyButton(onPressed: _showEmergencyButton),
     );
   }
 }
@@ -504,7 +468,7 @@ class StudentTripsTab extends StatelessWidget {
           }
 
           return ListView.builder(
-            padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
+            padding: const EdgeInsets.fromLTRB(20, 16, 20, GlassNavScaffold.bottomInset),
             itemCount: myTrips.length,
             itemBuilder: (context, index) {
               final doc = myTrips[index];

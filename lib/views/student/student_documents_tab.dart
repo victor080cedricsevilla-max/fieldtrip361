@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 
 import '../../config/theme.dart';
+import '../../widgets/glass_nav_scaffold.dart';
 import '../../utils/document_service.dart';
 
 /// Pre-trip paperwork, listed per trip: print the blank form the admin attached
@@ -238,7 +239,7 @@ class _StudentDocumentsTabState extends State<StudentDocumentsTab> {
             );
 
             return ListView(
-              padding: const EdgeInsets.fromLTRB(16, 16, 16, 28),
+              padding: const EdgeInsets.fromLTRB(16, 16, 16, GlassNavScaffold.bottomInset),
               children: [
                 _howItWorks(),
                 const SizedBox(height: 18),

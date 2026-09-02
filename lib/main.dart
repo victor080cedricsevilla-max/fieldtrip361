@@ -54,6 +54,10 @@ Future<void> _showLocalChatNotification(RemoteMessage msg) async {
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
+  // Before the first frame: restoring the theme afterwards would show the app
+  // in light mode for a moment and then flip it.
+  await AppTheme.loadSavedMode();
+
   try {
     await Firebase.initializeApp(
       options: DefaultFirebaseOptions.currentPlatform,
@@ -189,13 +193,19 @@ class _FieldTrip360AppState extends State<FieldTrip360App> {
 
   @override
   Widget build(BuildContext context) {
+    // Two notifiers, so a colour change and a light/dark change each rebuild
+    // the app on their own.
     return ValueListenableBuilder<Color>(
       valueListenable: AppTheme.primaryColorNotifier,
-      builder: (context, _, __) => MaterialApp(
+      builder: (context, _, __) => ValueListenableBuilder<ThemeMode>(
+        valueListenable: AppTheme.mode,
+        builder: (context, mode, ___) => MaterialApp(
         navigatorKey: _navigatorKey,
         title: 'FieldTrip360',
         debugShowCheckedModeBanner: false,
         theme: AppTheme.lightTheme,
+        darkTheme: AppTheme.darkTheme,
+        themeMode: mode,
         home: kIsWeb ? const LoginView() : const MobileLoginView(),
         routes: {
           '/admin-login': (context) => const LoginView(),
@@ -205,6 +215,7 @@ class _FieldTrip360AppState extends State<FieldTrip360App> {
           '/student/dashboard': (context) => const StudentDashboard(),
           '/parent/dashboard': (context) => const ParentDashboard(),
         },
+        ),
       ),
     );
   }
