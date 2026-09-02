@@ -1,0 +1,77 @@
+workflows:
+  # ── iOS, unsigned ──────────────────────────────────────────────────────────
+  #
+  # Produces an IPA with no signature at all, for Sideloadly to sign with a
+  # personal Apple ID. Nothing here needs an Apple Developer Program
+  # membership: no certificates, no provisioning profiles, no App Store Connect
+  # key.
+  #
+  # The bundle identifier must stay com.example.fieldtrip361 all the way
+  # through Sideloadly. It is what GoogleService-Info.plist declares, and
+  # Firebase refuses to configure against a different one — the app opens to a
+  # blank screen and no login works.
+  ios-unsigned:
+    name: iOS (unsigned IPA for Sideloadly)
+    instance_type: mac_mini_m2
+    max_build_duration: 60
+    environment:
+      flutter: 3.35.7
+      xcode: latest
+      cocoapods: default
+    scripts:
+      - name: Fetch packages
+        script: flutter pub get
+
+      - name: Install pods
+        script: |
+          find . -name "Podfile" -execdir pod install \;
+
+      - name: Build unsigned Runner.app
+        script: flutter build ios --release --no-codesign
+
+      # `flutter build ipa` wants an export options plist and therefore a
+      # signing identity. An IPA is just a zip with the app inside Payload/, so
+      # it is assembled by hand instead.
+      - name: Package as IPA
+        script: |
+          mkdir -p build/ios/ipa/Payload
+          cp -r build/ios/iphoneos/Runner.app build/ios/ipa/Payload/
+          cd build/ios/ipa
+          zip -r -q FieldTrip360.ipa Payload
+          echo "built: $(ls -lh FieldTrip360.ipa)"
+    artifacts:
+      - build/ios/ipa/*.ipa
+      - flutter_drive.log
+    publishing:
+      email:
+        recipients:
+          - codebp2025@gmail.com
+        notify:
+          success: true
+          failure: true
+
+  # ── Android ────────────────────────────────────────────────────────────────
+  #
+  # Debug-signed, which is what installs on a phone straight from a download.
+  # A release APK would need the keystore, and this is the demo build.
+  android-apk:
+    name: Android APK
+    instance_type: mac_mini_m2
+    max_build_duration: 60
+    environment:
+      flutter: 3.35.7
+    scripts:
+      - name: Fetch packages
+        script: flutter pub get
+
+      - name: Build APK
+        script: flutter build apk --release
+    artifacts:
+      - build/app/outputs/flutter-apk/*.apk
+    publishing:
+      email:
+        recipients:
+          - codebp2025@gmail.com
+        notify:
+          success: true
+          failure: true
