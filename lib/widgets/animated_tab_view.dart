@@ -69,28 +69,36 @@ class _AnimatedTabViewState extends State<AnimatedTabView>
       animation: _controller,
       builder: (context, _) {
         final t = reduceMotion ? 1.0 : Curves.easeOutCubic.transform(_controller.value);
-        return Stack(
-          children: [
-            for (var i = 0; i < widget.children.length; i++)
-              _layer(i, t),
-          ],
+        // A Stack takes its size from its non-positioned children, and every
+        // layer here is either positioned or zero-sized, so left alone it
+        // collapses to nothing along whichever axis its parent leaves loose.
+        // The column above gives a tight height and a loose width, which
+        // rendered the pages zero-wide — blank, with only the bar visible.
+        return SizedBox.expand(
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              for (var i = 0; i < widget.children.length; i++)
+                _layer(i, t),
+            ],
+          ),
         );
       },
     );
   }
 
+  /// Builds one page's layer.
+  ///
+  /// Every layer gets the identical chain of wrappers and differs only in
+  /// their arguments. Swapping a hidden page to a different set of widgets
+  /// would change the shape of the tree, Flutter would fail to match the
+  /// element underneath, and the page's State — its scroll offset, its loaded
+  /// data, its half-typed form — would be thrown away on every tab change,
+  /// which is the one thing this widget exists to prevent.
   Widget _layer(int i, double t) {
     final isCurrent = i == _current;
     final isLeaving = i == _previous;
-
-    // Everything else stays mounted but takes no space, paints nothing, and
-    // has its tickers stopped so off-screen pages cost no frames.
-    if (!isCurrent && !isLeaving) {
-      return Offstage(
-        offstage: true,
-        child: TickerMode(enabled: false, child: widget.children[i]),
-      );
-    }
+    final visible = isCurrent || isLeaving;
 
     // A short travel: the slide is there to say which way the tabs moved, not
     // to make the page look like it came from somewhere far away.
@@ -99,14 +107,22 @@ class _AnimatedTabViewState extends State<AnimatedTabView>
         ? (1 - t) * travel * _direction
         : -t * travel * _direction;
 
+    // Positioned like the rest: a bare Offstage is a zero-sized non-positioned
+    // child, and a Stack sizes itself to those — it would collapse the lot.
     return Positioned.fill(
       child: IgnorePointer(
-        ignoring: isLeaving,
-        child: Opacity(
-          opacity: isCurrent ? t : (1 - t),
-          child: FractionalTranslation(
-            translation: Offset(dx, 0),
-            child: widget.children[i],
+        ignoring: !isCurrent,
+        child: Offstage(
+          offstage: !visible,
+          child: TickerMode(
+            enabled: visible,
+            child: Opacity(
+              opacity: !visible ? 1 : (isCurrent ? t : 1 - t),
+              child: FractionalTranslation(
+                translation: Offset(visible ? dx : 0, 0),
+                child: widget.children[i],
+              ),
+            ),
           ),
         ),
       ),
