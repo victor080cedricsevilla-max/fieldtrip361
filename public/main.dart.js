@@ -67521,9 +67521,9 @@ h=A.c([],t.s)
 if(a1.c===0)J.d1(h,"Our team will contact you to finalise your custom capacity.")
 else J.d1(h,"Your capacity is now "+A.k(J.ay(k,"capacity"))+" students, effective immediately.")
 J.d1(h,"")
-if(j>0)J.d1(h,"Prorated amount due: $"+A.k(j)+" \u2014 this covers the upgrade for the "+A.k(J.ay(k,"daysRemaining"))+" days left in your current period. Your next renewal is $"+A.k(J.ay(k,"newMonthly"))+".")
-else if(i>0)J.d1(h,"You have $"+A.k(i)+" of unused time credited to your next invoice. Your next renewal is $"+A.k(J.ay(k,"newMonthly"))+".")
-else J.d1(h,"Your next renewal is $"+A.k(J.ay(k,"newMonthly"))+".")
+if(j>0)J.d1(h,"Prorated amount due: \u20b1"+A.k(j)+" \u2014 this covers the upgrade for the "+A.k(J.ay(k,"daysRemaining"))+" days left in your current period. Your next renewal is \u20b1"+A.k(J.ay(k,"newMonthly"))+".")
+else if(i>0)J.d1(h,"You have \u20b1"+A.k(i)+" of unused time credited to your next invoice. Your next renewal is \u20b1"+A.k(J.ay(k,"newMonthly"))+".")
+else J.d1(h,"Your next renewal is \u20b1"+A.k(J.ay(k,"newMonthly"))+".")
 J.d1(h,"")
 J.d1(h,"Nothing has been charged \u2014 billing is not switched on yet.")
 m.atE(J.ahO(h,"\n"),"You are now on "+f)
@@ -67632,9 +67632,9 @@ b=B.o.aI((d-p)*f)
 if(k)a="Your current plan"
 else if(c)a=g
 else if(i)a="Custom pricing \u2014 we will contact you"
-else if(b>0)a="$"+b+" now, then $"+d+"/mo"
+else if(b>0)a="\u20b1"+b+" now, then \u20b1"+d+"/mo"
 else{h=""+d
-a=b<0?"$"+-b+" credited, then $"+h+"/mo":"$"+h+"/mo"}a0=k||c
+a=b<0?"\u20b1"+-b+" credited, then \u20b1"+h+"/mo":"\u20b1"+h+"/mo"}a0=k||c
 h=a0?0.55:1
 a1=k?$.a2().a.U(0.06):B.A
 a2=new A.b1(12,12)
@@ -67699,7 +67699,7 @@ g=A.t(J.W(g==null?"Your school":g),a,a,a,B.iz,a,a,a)
 f=n==="annual"?"billed annually":"billed monthly"
 e=t.p
 f=A.aw(A.a8(A.c([g,B.cK,A.t(r.b+" \xb7 "+f,a,a,a,A.E(a,a,B.a5,a,a,a,a,a,a,a,a,12,a,a,a,a,a,!0,a,a,a,a,a,a,a,a),a,a,a)],e),B.T,B.p,B.u),1)
-g=j?"Custom":"$"+o
+g=j?"Custom":"\u20b1"+o
 d=$.a2()
 g=A.c([A.t(g,a,a,a,A.E(a,a,d.a,a,a,a,a,a,a,a,a,20,a,a,B.X,a,a,!0,a,a,a,a,a,a,a,a),a,a,a)],e)
 if(l)g.push(A.t("per month",a,a,a,A.E(a,a,B.a_,a,a,a,a,a,a,a,a,10.5,a,a,a,a,a,!0,a,a,a,a,a,a,a,a),a,a,a))
@@ -67717,7 +67717,7 @@ f=A.cA(B.nt,1)
 c=A.ax(B.adt,B.a_,a,a,15)
 b=m===1?"day":"days"
 b=A.c([A.ah(A.c([c,B.aS,A.aw(A.t(""+m+" "+b+" left in this billing period",a,a,a,A.E(a,a,B.bh,a,a,a,a,a,a,a,a,11.5,a,a,a,a,a,!0,a,a,a,a,a,a,a,a),a,a,a),1)],e),B.w,B.p,B.u,0)],e)
-if(k>0)B.h.M(b,A.c([B.a_m,A.ah(A.c([A.ax(B.adc,B.bp,a,a,15),B.aS,A.aw(A.t("Prorated $"+k+" recorded from your last plan change (not charged \u2014 billing is not live yet).",a,a,a,A.E(a,a,B.ep,a,a,a,a,a,a,a,a,11.5,a,a,a,a,1.4,!0,a,a,a,a,a,a,a,a),a,a,a),1)],e),B.w,B.p,B.u,0)],e))
+if(k>0)B.h.M(b,A.c([B.a_m,A.ah(A.c([A.ax(B.adc,B.bp,a,a,15),B.aS,A.aw(A.t("Prorated \u20b1"+k+" recorded from your last plan change (not charged \u2014 billing is not live yet).",a,a,a,A.E(a,a,B.ep,a,a,a,a,a,a,a,a,11.5,a,a,a,a,1.4,!0,a,a,a,a,a,a,a,a),a,a,a),1)],e),B.w,B.p,B.u,0)],e))
 g.push(A.a1(a,A.a8(b,B.T,B.p,B.u),B.y,a,a,new A.a4(B.nu,a,f,l,a,a,B.K),a,a,a,a,B.e4,a,a,a))
 g.push(B.b0)
 l=a0.f

@@ -848,7 +848,7 @@ const TIERS = {
   enterprise: { capacity: 0, label: "Enterprise" },
 };
 
-const RATE_PER_STUDENT = 1; // USD per student per month
+const RATE_PER_STUDENT = 1; // PHP per student per month
 const ANNUAL_DISCOUNT = 0.2;
 
 function normEmail(v) {

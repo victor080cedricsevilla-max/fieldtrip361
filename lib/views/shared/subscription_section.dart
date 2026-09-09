@@ -5,6 +5,13 @@ import 'package:flutter/material.dart';
 import '../../config/theme.dart';
 import '../../utils/school_context.dart';
 
+/// Currency shown against every amount on this screen.
+///
+/// The platform bills Philippine schools, so the figures are pesos. Kept in one
+/// place because a screen that mixes symbols reads as a pricing error, and this
+/// screen quotes a monthly rate, a proration and a credit in three places each.
+const _currency = '₱';
+
 /// The capacity tiers a school can be on. Mirrors TIERS in functions/index.js.
 class PlanTier {
   final String key;
@@ -98,14 +105,14 @@ class _SubscriptionSectionState extends State<SubscriptionSection> {
             'Your capacity is now ${d['capacity']} students, effective immediately.',
           '',
           if (due > 0)
-            'Prorated amount due: \$$due — this covers the upgrade for the '
+            'Prorated amount due: $_currency$due — this covers the upgrade for the '
                 '${d['daysRemaining']} days left in your current period. Your next '
-                'renewal is \$${d['newMonthly']}.'
+                'renewal is $_currency${d['newMonthly']}.'
           else if (credit > 0)
-            'You have \$$credit of unused time credited to your next invoice. '
-                'Your next renewal is \$${d['newMonthly']}.'
+            'You have $_currency$credit of unused time credited to your next invoice. '
+                'Your next renewal is $_currency${d['newMonthly']}.'
           else
-            'Your next renewal is \$${d['newMonthly']}.',
+            'Your next renewal is $_currency${d['newMonthly']}.',
           '',
           'Nothing has been charged — billing is not switched on yet.',
         ].join('\n'),
@@ -262,11 +269,11 @@ class _SubscriptionSectionState extends State<SubscriptionSection> {
     } else if (tier.capacity == 0) {
       note = 'Custom pricing — we will contact you';
     } else if (difference > 0) {
-      note = '\$$difference now, then \$$newMonthly/mo';
+      note = '$_currency$difference now, then $_currency$newMonthly/mo';
     } else if (difference < 0) {
-      note = '\$${-difference} credited, then \$$newMonthly/mo';
+      note = '$_currency${-difference} credited, then $_currency$newMonthly/mo';
     } else {
-      note = '\$$newMonthly/mo';
+      note = '$_currency$newMonthly/mo';
     }
 
     final disabled = isCurrent || tooSmall;
@@ -380,7 +387,7 @@ class _SubscriptionSectionState extends State<SubscriptionSection> {
               ]),
             ),
             Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
-              Text(unlimited ? 'Custom' : '\$$price',
+              Text(unlimited ? 'Custom' : '$_currency$price',
                   style: TextStyle(
                       fontSize: 20, fontWeight: FontWeight.bold,
                       color: AppTheme.effectivePrimary)),
@@ -447,7 +454,7 @@ class _SubscriptionSectionState extends State<SubscriptionSection> {
                   const SizedBox(width: 8),
                   Expanded(
                     child: Text(
-                      'Prorated \$$pending recorded from your last plan change '
+                      'Prorated $_currency$pending recorded from your last plan change '
                       '(not charged — billing is not live yet).',
                       style: TextStyle(
                           fontSize: 11.5, color: Colors.orange.shade900, height: 1.4),
