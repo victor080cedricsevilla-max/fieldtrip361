@@ -35,6 +35,7 @@ class AuthController {
     String? surname,
     String? lrn,
     String? activationCode,
+    String? acceptedTermsVersion,
   }) async {
     try {
       UserCredential userCredential = await _auth.createUserWithEmailAndPassword(
@@ -53,6 +54,12 @@ class AuthController {
         'role': role,
         'status': 'approved',
         'createdAt': FieldValue.serverTimestamp(),
+        // The consent record: which wording they agreed to, and when. An older
+        // version here is how you find who must accept a revised notice.
+        if (acceptedTermsVersion != null) ...{
+          'termsAcceptedVersion': acceptedTermsVersion,
+          'termsAcceptedAt': FieldValue.serverTimestamp(),
+        },
       };
 
       if (role == 'student' && lrn != null) {

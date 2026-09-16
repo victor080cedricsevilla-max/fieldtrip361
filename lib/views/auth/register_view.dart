@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import '../../../controllers/auth_controller.dart';
 import '../../../config/theme.dart';
+import 'terms_agreement_box.dart';
+import 'terms_content.dart';
 
 enum _PasswordStrength { empty, weak, moderate, strong }
 
@@ -86,6 +88,10 @@ class _RegisterViewState extends State<RegisterView> {
   bool _obscurePassword = true;
   _PasswordStrength _pwStrength = _PasswordStrength.empty;
 
+  /// Only true once the notice has been scrolled through and the box ticked —
+  /// the panel itself refuses to tick before that.
+  bool _agreedToTerms = false;
+
   @override
   void initState() {
     super.initState();
@@ -121,6 +127,14 @@ class _RegisterViewState extends State<RegisterView> {
       return;
     }
 
+    // Backstop for the disabled button: consent is what makes the rest of this
+    // lawful, so it is checked here too and not only in the widget tree.
+    if (!_agreedToTerms) {
+      setState(() => _errorMessage =
+          "Please read the Terms & Conditions to the end and tick the box to continue.");
+      return;
+    }
+
     setState(() {
       _isLoading = true;
       _errorMessage = null;
@@ -141,6 +155,7 @@ class _RegisterViewState extends State<RegisterView> {
       lrn: _selectedRole == 'student' ? _lrnController.text.trim() : null,
       activationCode:
           _selectedRole == 'parent' ? _activationCodeController.text.trim() : null,
+      acceptedTermsVersion: kTermsVersion,
     );
 
     if (!mounted) return;
@@ -197,173 +212,192 @@ class _RegisterViewState extends State<RegisterView> {
       body: Center(
         child: SingleChildScrollView(
           padding: const EdgeInsets.all(30),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Text(
-                "Sign Up",
-                style: Theme.of(context).textTheme.headlineMedium?.copyWith(
-                      fontWeight: FontWeight.bold,
-                      color: AppTheme.effectivePrimary,
-                    ),
-                textAlign: TextAlign.center,
-              ),
-              const SizedBox(height: 10),
-              const Text(
-                "Select your role to get started",
-                textAlign: TextAlign.center,
-                style: TextStyle(color: Colors.grey),
-              ),
-              const SizedBox(height: 30),
-
-              if (_errorMessage != null)
-                Container(
-                  padding: const EdgeInsets.all(10),
-                  margin: const EdgeInsets.only(bottom: 20),
-                  color: AppTheme.errorColor.withValues(alpha: 0.1),
-                  child: Text(_errorMessage!, style: const TextStyle(color: AppTheme.errorColor)),
-                ),
-
-              Row(
-                children: [
-                  Expanded(
-                    child: TextField(
-                      controller: _firstNameController,
-                      textCapitalization: TextCapitalization.words,
-                      decoration: const InputDecoration(
-                        labelText: "First Name",
-                        prefixIcon: Icon(Icons.person_outline),
+          // Phones are narrower than this, so the cap only bites on the web
+          // build, where a full-window form would stretch the terms panel into
+          // unreadable lines.
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 460),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Text(
+                  "Sign Up",
+                  style: Theme.of(context).textTheme.headlineMedium?.copyWith(
+                        fontWeight: FontWeight.bold,
+                        color: AppTheme.effectivePrimary,
                       ),
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 10),
+                const Text(
+                  "Select your role to get started",
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: Colors.grey),
+                ),
+                const SizedBox(height: 30),
+
+                if (_errorMessage != null)
+                  Container(
+                    padding: const EdgeInsets.all(10),
+                    margin: const EdgeInsets.only(bottom: 20),
+                    color: AppTheme.errorColor.withValues(alpha: 0.1),
+                    child: Text(_errorMessage!, style: const TextStyle(color: AppTheme.errorColor)),
+                  ),
+
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: _firstNameController,
+                        textCapitalization: TextCapitalization.words,
+                        decoration: const InputDecoration(
+                          labelText: "First Name",
+                          prefixIcon: Icon(Icons.person_outline),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: TextField(
+                        controller: _surnameController,
+                        textCapitalization: TextCapitalization.words,
+                        decoration: const InputDecoration(
+                          labelText: "Surname",
+                          prefixIcon: Icon(Icons.badge_outlined),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 15),
+
+                TextField(
+                  controller: _emailController,
+                  keyboardType: TextInputType.emailAddress,
+                  decoration: const InputDecoration(labelText: "Email Address", prefixIcon: Icon(Icons.email)),
+                ),
+                const SizedBox(height: 15),
+
+                TextField(
+                  controller: _passwordController,
+                  obscureText: _obscurePassword,
+                  decoration: InputDecoration(
+                    labelText: "Password",
+                    prefixIcon: const Icon(Icons.lock),
+                    suffixIcon: IconButton(
+                      icon: Icon(
+                        _obscurePassword ? Icons.visibility_off_outlined : Icons.visibility_outlined,
+                      ),
+                      tooltip: _obscurePassword ? "Show password" : "Hide password",
+                      onPressed: () => setState(() => _obscurePassword = !_obscurePassword),
                     ),
                   ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: TextField(
-                      controller: _surnameController,
-                      textCapitalization: TextCapitalization.words,
-                      decoration: const InputDecoration(
-                        labelText: "Surname",
-                        prefixIcon: Icon(Icons.badge_outlined),
-                      ),
+                ),
+                if (_pwStrength != _PasswordStrength.empty) ...[
+                  const SizedBox(height: 8),
+                  _PasswordStrengthBar(strength: _pwStrength),
+                ],
+                const SizedBox(height: 20),
+
+                const Text("I am a:", style: TextStyle(fontWeight: FontWeight.bold)),
+                const SizedBox(height: 5),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                  decoration: BoxDecoration(
+                    border: Border.all(color: Colors.grey[300]!),
+                    borderRadius: BorderRadius.circular(8),
+                    color: Colors.grey[50],
+                  ),
+                  child: DropdownButtonHideUnderline(
+                    child: DropdownButton<String>(
+                      value: _selectedRole,
+                      isExpanded: true,
+                      items: _roles.map((String role) {
+                        return DropdownMenuItem<String>(
+                          value: role,
+                          child: Text(role.toUpperCase(), style: const TextStyle(fontWeight: FontWeight.bold)),
+                        );
+                      }).toList(),
+                      onChanged: (String? newValue) {
+                        setState(() {
+                          _selectedRole = newValue!;
+                        });
+                      },
+                    ),
+                  ),
+                ),
+
+                if (_selectedRole == 'student') ...[
+                  const SizedBox(height: 20),
+                  TextField(
+                    controller: _lrnController,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(
+                      labelText: "Learner Reference Number (LRN)",
+                      prefixIcon: Icon(Icons.badge),
                     ),
                   ),
                 ],
-              ),
-              const SizedBox(height: 15),
 
-              TextField(
-                controller: _emailController,
-                keyboardType: TextInputType.emailAddress,
-                decoration: const InputDecoration(labelText: "Email Address", prefixIcon: Icon(Icons.email)),
-              ),
-              const SizedBox(height: 15),
-
-              TextField(
-                controller: _passwordController,
-                obscureText: _obscurePassword,
-                decoration: InputDecoration(
-                  labelText: "Password",
-                  prefixIcon: const Icon(Icons.lock),
-                  suffixIcon: IconButton(
-                    icon: Icon(
-                      _obscurePassword ? Icons.visibility_off_outlined : Icons.visibility_outlined,
-                    ),
-                    tooltip: _obscurePassword ? "Show password" : "Hide password",
-                    onPressed: () => setState(() => _obscurePassword = !_obscurePassword),
-                  ),
-                ),
-              ),
-              if (_pwStrength != _PasswordStrength.empty) ...[
-                const SizedBox(height: 8),
-                _PasswordStrengthBar(strength: _pwStrength),
-              ],
-              const SizedBox(height: 20),
-
-              const Text("I am a:", style: TextStyle(fontWeight: FontWeight.bold)),
-              const SizedBox(height: 5),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 12),
-                decoration: BoxDecoration(
-                  border: Border.all(color: Colors.grey[300]!),
-                  borderRadius: BorderRadius.circular(8),
-                  color: Colors.grey[50],
-                ),
-                child: DropdownButtonHideUnderline(
-                  child: DropdownButton<String>(
-                    value: _selectedRole,
-                    isExpanded: true,
-                    items: _roles.map((String role) {
-                      return DropdownMenuItem<String>(
-                        value: role,
-                        child: Text(role.toUpperCase(), style: const TextStyle(fontWeight: FontWeight.bold)),
-                      );
-                    }).toList(),
-                    onChanged: (String? newValue) {
-                      setState(() {
-                        _selectedRole = newValue!;
-                      });
-                    },
-                  ),
-                ),
-              ),
-
-              if (_selectedRole == 'student') ...[
-                const SizedBox(height: 20),
-                TextField(
-                  controller: _lrnController,
-                  keyboardType: TextInputType.number,
-                  decoration: const InputDecoration(
-                    labelText: "Learner Reference Number (LRN)",
-                    prefixIcon: Icon(Icons.badge),
-                  ),
-                ),
-              ],
-
-              // The code the school emailed the guardian. It is what ties this
-              // account to a specific child — a parent cannot pick a student
-              // themselves, which is the point.
-              if (_selectedRole == 'parent') ...[
-                const SizedBox(height: 20),
-                TextField(
-                  controller: _activationCodeController,
-                  textCapitalization: TextCapitalization.characters,
-                  decoration: const InputDecoration(
-                    labelText: "Parent Activation Code",
-                    hintText: "e.g. NU-7K4P-92XM",
-                    prefixIcon: Icon(Icons.vpn_key_outlined),
-                  ),
-                ),
-                const SizedBox(height: 8),
-                Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  Icon(Icons.info_outline_rounded, size: 15, color: Colors.grey.shade500),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      "Your child's school emails this code to you. Leave it blank if "
-                      "you don't have it yet — you can add your child later from the app.",
-                      style: TextStyle(
-                          fontSize: 11.5, color: Colors.grey.shade600, height: 1.4),
+                // The code the school emailed the guardian. It is what ties this
+                // account to a specific child — a parent cannot pick a student
+                // themselves, which is the point.
+                if (_selectedRole == 'parent') ...[
+                  const SizedBox(height: 20),
+                  TextField(
+                    controller: _activationCodeController,
+                    textCapitalization: TextCapitalization.characters,
+                    decoration: const InputDecoration(
+                      labelText: "Parent Activation Code",
+                      hintText: "e.g. NU-7K4P-92XM",
+                      prefixIcon: Icon(Icons.vpn_key_outlined),
                     ),
                   ),
-                ]),
-              ],
+                  const SizedBox(height: 8),
+                  Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    Icon(Icons.info_outline_rounded, size: 15, color: Colors.grey.shade500),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        "Your child's school emails this code to you. Leave it blank if "
+                        "you don't have it yet — you can add your child later from the app.",
+                        style: TextStyle(
+                            fontSize: 11.5, color: Colors.grey.shade600, height: 1.4),
+                      ),
+                    ),
+                  ]),
+                ],
 
-              const SizedBox(height: 30),
+                const SizedBox(height: 26),
 
-              SizedBox(
-                height: 50,
-                child: ElevatedButton(
-                  onPressed: _isLoading ? null : _handleRegister,
-                  style: ElevatedButton.styleFrom(backgroundColor: AppTheme.effectivePrimary),
-                  child: _isLoading
-                      ? const CircularProgressIndicator(color: Colors.white)
-                      : const Text(
-                          "CREATE ACCOUNT",
-                          style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-                        ),
+                // Consent gate: the account cannot be created until this notice
+                // has actually been scrolled through and agreed to.
+                TermsAgreementBox(
+                  accepted: _agreedToTerms,
+                  onAcceptedChanged: (value) => setState(() {
+                    _agreedToTerms = value;
+                    if (value) _errorMessage = null;
+                  }),
                 ),
-              ),
-            ],
+
+                const SizedBox(height: 22),
+
+                SizedBox(
+                  height: 50,
+                  child: ElevatedButton(
+                    onPressed:
+                        (_isLoading || !_agreedToTerms) ? null : _handleRegister,
+                    style: ElevatedButton.styleFrom(backgroundColor: AppTheme.effectivePrimary),
+                    child: _isLoading
+                        ? const CircularProgressIndicator(color: Colors.white)
+                        : const Text(
+                            "CREATE ACCOUNT",
+                            style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                          ),
+                  ),
+                ),
+              ],
+            ),
           ),
         ),
       ),
