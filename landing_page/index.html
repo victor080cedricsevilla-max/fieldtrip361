@@ -1160,14 +1160,14 @@
           <div class="calc-count"><span id="calcCount">100</span> <small>students</small></div>
         </div>
         <div class="calc-price">
-          <div class="calc-amount" id="calcPrice">$100</div>
+          <div class="calc-amount" id="calcPrice">₱100</div>
           <div class="calc-period" id="calcPeriod">per month</div>
         </div>
       </div>
       <input type="range" min="100" max="1000" step="100" value="100" class="calc-slider" id="calcSlider" aria-label="Number of students" />
       <div class="calc-ticks"><span>100 min</span><span>1,000+</span></div>
       <p class="calc-note" id="calcNote"><strong>Minimum 100 students.</strong> Round up to the next hundred above your actual count — e.g. 90 students → choose 100.</p>
-      <a href="#" class="btn-hero-primary calc-cta" id="calcCta">Subscribe — $100/mo</a>
+      <a href="#" class="btn-hero-primary calc-cta" id="calcCta">Subscribe — ₱100/mo</a>
     </div>
 
     <!-- Tier cards -->
@@ -1177,7 +1177,7 @@
       <div class="pricing-card reveal" data-students="100">
         <div class="pc-name">Starter</div>
         <div class="pc-cap">Up to 100 students</div>
-        <div class="pc-price"><span class="pc-amount">$100</span><span class="pc-per">/mo</span></div>
+        <div class="pc-price"><span class="pc-amount">₱100</span><span class="pc-per">/mo</span></div>
         <div class="pc-sub"></div>
         <ul class="pc-features">
           <li><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#00C4B4" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>Live GPS trip tracking</li>
@@ -1193,7 +1193,7 @@
       <div class="pricing-card reveal" data-students="200" style="transition-delay:.05s">
         <div class="pc-name">Growth</div>
         <div class="pc-cap">Up to 200 students</div>
-        <div class="pc-price"><span class="pc-amount">$200</span><span class="pc-per">/mo</span></div>
+        <div class="pc-price"><span class="pc-amount">₱200</span><span class="pc-per">/mo</span></div>
         <div class="pc-sub"></div>
         <ul class="pc-features">
           <li><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#00C4B4" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>Everything in Starter</li>
@@ -1210,7 +1210,7 @@
         <div class="pc-badge">Most Popular</div>
         <div class="pc-name">Professional</div>
         <div class="pc-cap">Up to 300 students</div>
-        <div class="pc-price"><span class="pc-amount">$300</span><span class="pc-per">/mo</span></div>
+        <div class="pc-price"><span class="pc-amount">₱300</span><span class="pc-per">/mo</span></div>
         <div class="pc-sub"></div>
         <ul class="pc-features">
           <li><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#00C4B4" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>Everything in Growth</li>
@@ -1226,7 +1226,7 @@
       <div class="pricing-card reveal" data-students="500" style="transition-delay:.15s">
         <div class="pc-name">Scale</div>
         <div class="pc-cap">Up to 500 students</div>
-        <div class="pc-price"><span class="pc-amount">$500</span><span class="pc-per">/mo</span></div>
+        <div class="pc-price"><span class="pc-amount">₱500</span><span class="pc-per">/mo</span></div>
         <div class="pc-sub"></div>
         <ul class="pc-features">
           <li><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#00C4B4" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>Everything in Professional</li>
@@ -1362,7 +1362,7 @@
 
   // ── Pricing calculator + billing toggle ──
   (function () {
-    const RATE = 1;           // $ per student per month
+    const RATE = 1;           // ₱ per student per month
     const ANNUAL_OFF = 0.20;  // 20% off when billed annually
     let annual = false;
 
@@ -1376,7 +1376,7 @@
     const btAnnual  = document.getElementById('btAnnual');
     if (!slider) return;
 
-    const money = n => '$' + n.toLocaleString('en-US');
+    const money = n => '₱' + n.toLocaleString('en-US');
     const perMonth = students => {
       const base = students * RATE;
       return annual ? Math.round(base * (1 - ANNUAL_OFF)) : base;
