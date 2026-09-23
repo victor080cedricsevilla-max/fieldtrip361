@@ -97,14 +97,18 @@ service cloud.firestore {
 
     match /users/{userId} {
       allow read: if isSignedIn() && (
-                    // A super admin sees school-administrator accounts only.
-                    (isSuperAdmin() && resource.data.role == 'admin')
-                    // Everyone else keeps the access the app already relied on,
-                    // and a super admin is explicitly excluded from it.
-                    || (!isSuperAdmin() && (
-                          request.auth.uid == userId
-                          || myRole() in ['admin', 'teacher', 'student', 'parent']
-                       ))
+                    // Your own record, whatever your role. Sign-in reads this
+                    // the moment it completes, so excluding anyone from their
+                    // own document locks them out of the app entirely.
+                    request.auth.uid == userId
+                    // A super admin additionally sees school-administrator
+                    // accounts — and nothing else. No students, no parents, no
+                    // teachers.
+                    || (isSuperAdmin() && resource.data.role == 'admin')
+                    // School users keep the access the app already relied on.
+                    // A super admin is deliberately excluded from this clause.
+                    || (!isSuperAdmin()
+                        && myRole() in ['admin', 'teacher', 'student', 'parent'])
                   );
 
       allow create: if isSignedIn()
