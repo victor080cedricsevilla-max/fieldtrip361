@@ -9,36 +9,107 @@ service cloud.firestore {
       return request.auth != null;
     }
 
+    function myDoc() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
     function myRole() {
-      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role;
+      return myDoc().role;
+    }
+
+    // A disabled account keeps a valid ID token until it expires, so every
+    // privileged path re-checks the stored status. Disabling also calls Auth
+    // disableUser() + revokeRefreshTokens(), which stops the refresh.
+    function isActive() {
+      return myDoc().get('accountStatus', 'active') != 'disabled';
+    }
+
+    // Super-admin authority comes from a custom claim, never from a document:
+    // a claim cannot be written by any client, and it survives no matter how a
+    // user document is edited.
+    function isSuperAdmin() {
+      return isSignedIn()
+             && 'superAdmin' in request.auth.token
+             && request.auth.token.superAdmin == true;
     }
 
     function isAdmin() {
-      return isSignedIn() && myRole() == 'admin';
+      return isSignedIn() && myRole() == 'admin' && isActive();
     }
 
     function isTeacher() {
-      return isSignedIn() && myRole() == 'teacher';
+      return isSignedIn() && myRole() == 'teacher' && isActive();
     }
 
     function isTeacherOrAdmin() {
-      return isSignedIn() && (isTeacher() || myRole() == 'admin');
+      return isSignedIn() && (myRole() == 'teacher' || myRole() == 'admin') && isActive();
     }
 
     function mySchoolId() {
-      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('schoolId', '');
+      return myDoc().get('schoolId', '');
     }
 
     // ── Users ────────────────────────────────────────────────────────────────
+    //
+    // The super admin operates the platform, not the schools on it. They may
+    // read school-administrator records only — never students, parents or
+    // teachers — so the platform console can never become a directory of
+    // minors. This is the rule the privacy requirement rests on; hiding the UI
+    // would not be enough.
+
+    function createdRoleIsSelfService() {
+      // Registration may only mint the three self-service roles. 'admin' is
+      // provisioned by an approved subscription and 'super_admin' by the
+      // trusted bootstrap — neither can be claimed from a client.
+      return request.resource.data.role in ['student', 'parent', 'teacher'];
+    }
+
+    function createIsUnprivileged() {
+      // Tenancy, approval and relationship fields are server-owned even on the
+      // very first write. Without this a new account could arrive pre-attached
+      // to a school, pre-approved, or already listing someone else's children.
+      return createdRoleIsSelfService()
+             && request.resource.data.get('status', 'approved') == 'approved'
+             && request.resource.data.get('accountStatus', 'active') == 'active'
+             && !('schoolId'   in request.resource.data)
+             && !('schoolIds'  in request.resource.data)
+             && !('rosterId'   in request.resource.data)
+             && !('children'   in request.resource.data)
+             && !('parentIds'  in request.resource.data)
+             && !('studentId'  in request.resource.data)
+             && !('disabledReason' in request.resource.data)
+             && request.resource.data.get('mustChangePassword', false) == false;
+    }
 
     match /users/{userId} {
-      allow read: if isSignedIn();
-      allow create: if isSignedIn() && request.auth.uid == userId;
+      allow read: if isSignedIn() && (
+                    // A super admin sees school-administrator accounts only.
+                    (isSuperAdmin() && resource.data.role == 'admin')
+                    // Everyone else keeps the access the app already relied on,
+                    // and a super admin is explicitly excluded from it.
+                    || (!isSuperAdmin() && (
+                          request.auth.uid == userId
+                          || myRole() in ['admin', 'teacher', 'student', 'parent']
+                       ))
+                  );
+
+      allow create: if isSignedIn()
+                    && request.auth.uid == userId
+                    && createIsUnprivileged();
+
       allow update: if isSignedIn() && (
                     // Owner updates their own doc with field-level restrictions.
                     (request.auth.uid == userId
                     && !('role'   in request.resource.data.diff(resource.data).affectedKeys())
                     && !('status' in request.resource.data.diff(resource.data).affectedKeys())
+                    // Account suspension is a platform decision, enforced in
+                    // setSchoolAdminAccountStatus — never self-serve.
+                    && !('accountStatus'  in request.resource.data.diff(resource.data).affectedKeys())
+                    && !('disabledReason' in request.resource.data.diff(resource.data).affectedKeys())
+                    && !('disabledBy'     in request.resource.data.diff(resource.data).affectedKeys())
+                    // Clearing the first-login requirement is done by
+                    // changeMyPassword, so it can only follow a real change.
+                    && !('mustChangePassword' in request.resource.data.diff(resource.data).affectedKeys())
                     // Relationship and tenancy fields are server-owned. Letting an
                     // owner edit these would let a parent append any student to
                     // their own children[] and read that child's trips.
@@ -76,21 +147,116 @@ service cloud.firestore {
         allow read, write: if isSignedIn() && request.auth.uid == userId;
       }
 
+      // Which platform announcements this admin has opened. Held per user so an
+      // announcement never carries a recipient list.
+      match /announcementReads/{announcementId} {
+        allow read, write: if isSignedIn() && request.auth.uid == userId;
+      }
     }
 
     // ── Schools ──────────────────────────────────────────────────────────────
-    // Created by the createSchoolSubscription function. Capacity and student
+    // Created when a super admin approves an application. Capacity and student
     // counts are subscription-critical, so clients may only read them — every
     // mutation goes through a Cloud Function (the Admin SDK bypasses rules).
 
     match /schools/{schoolId} {
-      allow read: if isSignedIn() && mySchoolId() == schoolId;
+      allow read: if isSuperAdmin() || (isSignedIn() && mySchoolId() == schoolId);
+      allow write: if false;
+    }
+
+    // ── School subscription applications ─────────────────────────────────────
+    // An applicant is a signed-in account with a verified email and no school
+    // access at all. Every state change runs through a Cloud Function so status,
+    // reference numbers and review deadlines cannot be set from a client.
+
+    function isApplicationOwner() {
+      return isSignedIn() && resource.data.applicantUid == request.auth.uid;
+    }
+
+    match /schoolApplications/{applicationId} {
+      allow read: if isSuperAdmin() || isApplicationOwner();
+      allow write: if false;
+
+      // Uploaded verification documents and their OCR extraction.
+      match /documents/{documentId} {
+        allow read: if isSuperAdmin()
+                    || (isSignedIn()
+                        && get(/databases/$(database)/documents/schoolApplications/$(applicationId))
+                             .data.applicantUid == request.auth.uid);
+        allow write: if false;
+      }
+
+      // Submission / resubmission / decision history.
+      match /events/{eventId} {
+        allow read: if isSuperAdmin()
+                    || (isSignedIn()
+                        && get(/databases/$(database)/documents/schoolApplications/$(applicationId))
+                             .data.applicantUid == request.auth.uid);
+        allow write: if false;
+      }
+    }
+
+    // ── Subscription receipts ────────────────────────────────────────────────
+    // Issued on activation. Payment is bypassed in the current build and every
+    // receipt says so on its face.
+
+    match /receipts/{receiptId} {
+      allow read: if isSuperAdmin()
+                  || (isAdmin() && resource.data.schoolId == mySchoolId());
+      allow write: if false;
+    }
+
+    // ── Platform announcements ───────────────────────────────────────────────
+    // Published by a super admin, read by school administrators. The document
+    // carries no recipient list, so it can never leak who else subscribes.
+
+    match /announcements/{announcementId} {
+      allow read: if isSuperAdmin()
+                  || (isAdmin() && resource.data.status == 'published');
+      allow write: if false;
+    }
+
+    // ── Customer support ─────────────────────────────────────────────────────
+    // A requester reads only their own tickets. Being a school admin does not
+    // grant sight of a student's, parent's or teacher's support conversation.
+
+    function isTicketOwner() {
+      return isSignedIn() && resource.data.requester.uid == request.auth.uid;
+    }
+
+    match /supportTickets/{ticketId} {
+      allow read: if isSuperAdmin() || isTicketOwner();
+      allow write: if false;
+
+      match /messages/{messageId} {
+        allow read: if isSuperAdmin()
+                    || (isSignedIn()
+                        && get(/databases/$(database)/documents/supportTickets/$(ticketId))
+                             .data.requester.uid == request.auth.uid);
+        allow write: if false;
+      }
+    }
+
+    // ── Platform audit log ───────────────────────────────────────────────────
+    // Platform-management actions only (approvals, suspensions, announcements).
+    // School activity stays in activity_logs, which a super admin cannot read.
+
+    match /platformAuditLogs/{logId} {
+      allow read: if isSuperAdmin();
+      allow write: if false;
+    }
+
+    // ── Platform configuration ───────────────────────────────────────────────
+
+    match /platformConfig/{docId} {
+      allow read: if isSuperAdmin();
       allow write: if false;
     }
 
     // ── Roster — students registered to a school (CSV or manual) ─────────────
     // Readable only by staff of the owning school; written by importRoster /
     // claimRosterRecord / removeRosterEntry so capacity cannot be bypassed.
+    // Deliberately unreachable by a super admin.
 
     match /roster/{rosterId} {
       allow read: if isTeacherOrAdmin() && resource.data.schoolId == mySchoolId();
@@ -126,6 +292,8 @@ service cloud.firestore {
     // so there is no separate template collection. Students create their own
     // submission; the AI verdict and any admin override are written by Cloud
     // Functions, so clients can never set a status themselves.
+    // Medical clearances are sensitive personal information — a super admin has
+    // no rule granting access here.
 
     match /documentSubmissions/{submissionId} {
       allow read: if isSignedIn() && (
@@ -160,7 +328,7 @@ service cloud.firestore {
       // Admins see their own school's trips. Everyone else — including teachers,
       // who are deliberately not school-scoped — sees only trips they are
       // assigned to. Parents match through their children.
-      allow read: if isSignedIn() && (
+      allow read: if isSignedIn() && !isSuperAdmin() && (
         (isAdmin() && tripSchoolOk()) ||
         request.auth.uid in tripMembers() ||
         // Brief window right after creation, before the chat-sync function has
@@ -175,28 +343,60 @@ service cloud.firestore {
       allow create: if isAdmin()
                     && request.resource.data.get('schoolId', '') == mySchoolId();
       allow delete: if isAdmin() && tripSchoolOk();
-      // Teachers running a bus update trip state (start, attendance, stops).
+      // A facilitator running a bus may move the trip along — start it, mark a
+      // destination arrived or departed, complete it — and nothing else.
+      //
+      // They may NOT write `buses`. Attendance and seat numbers live inside
+      // that array, so any rule that let a facilitator edit it would also let
+      // them mark a student present without the token, the assignment check or
+      // the student's own location ever being examined. Those writes go through
+      // recordAttendanceScan, recordManualAttendance and setPassengerSeat,
+      // which run with the Admin SDK and are not subject to these rules.
+      function facilitatorTripFields() {
+        return request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['stopStatuses', 'activeStopIndex', 'status', 'completedAt', 'updatedAt']);
+      }
+
+      // An administrator composes a trip: buses, stops, assignments, forms.
+      // That work ends when the bus leaves. Attendance lives inside `buses`, so
+      // once a trip is no longer `pending` the array is closed to them too —
+      // otherwise "admin sets the trip up" would still leave a way to mark a
+      // student present without ever being on the bus.
+      function adminTripFields() {
+        return !('buses' in request.resource.data.diff(resource.data).affectedKeys())
+               || resource.data.get('status', 'pending') == 'pending';
+      }
+
       allow update: if isSignedIn() && (
-        (isAdmin() && tripSchoolOk()) ||
-        (isTeacher() && request.auth.uid in tripMembers()) ||
-        (isTeacherOrAdmin() && !('allMemberIds' in resource.data))
+        (isAdmin() && tripSchoolOk() && adminTripFields()) ||
+        (isTeacher() && request.auth.uid in tripMembers() && facilitatorTripFields()) ||
+        // Trips created before the chat-sync function wrote allMemberIds: a
+        // facilitator can still run them, under the same field whitelist.
+        (isTeacher() && !('allMemberIds' in resource.data) && facilitatorTripFields())
       );
 
       // Geofence alerts — studentId MUST equal the caller's UID.
       match /alerts/{alertId} {
-        allow read: if isSignedIn();
+        allow read: if isSignedIn() && !isSuperAdmin();
         allow create: if isSignedIn()
                       && request.resource.data.studentId == request.auth.uid
                       && request.resource.data.studentId is string
                       && request.resource.data.distance is number;
         allow update: if isTeacherOrAdmin();
       }
+
+      // Per-student geofence-warning exemptions for this trip. Written only by
+      // setGeofenceExemption so the reason and actor are always recorded.
+      match /geofenceExemptions/{studentId} {
+        allow read: if isSignedIn() && !isSuperAdmin();
+        allow write: if false;
+      }
     }
 
     // ── Chats ────────────────────────────────────────────────────────────────
 
     match /chats/{chatId} {
-      allow read: if isSignedIn()
+      allow read: if isSignedIn() && !isSuperAdmin()
                   && (isAdmin() || request.auth.uid in resource.data.memberIds);
       allow write: if isAdmin();
       // Non-admin users may create DM chats where they are one of exactly 2 members.
@@ -206,7 +406,7 @@ service cloud.firestore {
                     && request.resource.data.memberIds.size() == 2;
 
       match /messages/{messageId} {
-        allow read: if isSignedIn()
+        allow read: if isSignedIn() && !isSuperAdmin()
                     && (isAdmin() || request.auth.uid in
                        get(/databases/$(database)/documents/chats/$(chatId)).data.memberIds);
         allow create: if isSignedIn()
@@ -223,7 +423,7 @@ service cloud.firestore {
     // Only the involved student, teachers, and admins can read emergencies.
 
     match /emergencies/{emergencyId} {
-      allow read: if isSignedIn() && (
+      allow read: if isSignedIn() && !isSuperAdmin() && (
         isTeacherOrAdmin() ||
         request.auth.uid == resource.data.studentId
       );
@@ -237,33 +437,30 @@ service cloud.firestore {
     }
 
     // ── Parent ↔ Student link requests ───────────────────────────────────────
-    // Parent creates a pending request; student approves or rejects it.
+    // Legacy: superseded by guardian activation codes. Kept read-only for any
+    // historic documents.
 
     match /linkRequests/{reqId} {
-      allow read: if isSignedIn()
+      allow read: if isSignedIn() && !isSuperAdmin()
                   && (request.auth.uid == resource.data.parentId
                       || request.auth.uid == resource.data.studentId
                       || isAdmin());
-      allow create: if isSignedIn()
-                    && request.resource.data.parentId == request.auth.uid
-                    && request.resource.data.status == 'pending'
-                    && myRole() == 'parent';
-      allow update: if isSignedIn()
-                    && resource.data.studentId == request.auth.uid
-                    && request.resource.data.diff(resource.data).affectedKeys()
-                       .hasOnly(['status'])
-                    && request.resource.data.status in ['approved', 'rejected'];
-      allow delete: if isAdmin();
+      allow write: if false;
     }
 
     // ── Locations — GPS coordinates, separate from users to avoid read fanout ─
+    // Students appear on the live map of everyone on their trip, which is why
+    // this stays broad for school roles. A super admin is excluded outright:
+    // the platform operator has no business knowing where a child is.
 
     match /locations/{uid} {
-      allow read: if isSignedIn();
+      allow read: if isSignedIn() && !isSuperAdmin();
       allow write: if isSignedIn() && request.auth.uid == uid;
     }
 
-    // ── Activity logs — admin read/write ────────────────────────────────────
+    // ── Activity logs — school-scoped, admin read/write ──────────────────────
+    // Platform-management actions are in platformAuditLogs instead, so a super
+    // admin never needs to read a school's operational log.
 
     match /activity_logs/{logId} {
       allow read: if isAdmin();

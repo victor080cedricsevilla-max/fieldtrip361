@@ -2,12 +2,47 @@ rules_version = '2';
 service firebase.storage {
   match /b/{bucket}/o {
 
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function userDoc() {
+      return firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function userRole() {
+      return userDoc().role;
+    }
+
+    function userSchoolId() {
+      return userDoc().get('schoolId', '');
+    }
+
+    function isActive() {
+      return userDoc().get('accountStatus', 'active') != 'disabled';
+    }
+
+    // Platform operator. Holds a custom claim, so no document write can grant it.
+    function isSuperAdmin() {
+      return signedIn()
+             && 'superAdmin' in request.auth.token
+             && request.auth.token.superAdmin == true;
+    }
+
+    function isSchoolStaffOf(schoolId) {
+      return signedIn()
+             && !isSuperAdmin()
+             && isActive()
+             && (userRole() == 'admin' || userRole() == 'teacher')
+             && userSchoolId() == schoolId;
+    }
+
     // Profile photos: owner can write, any authenticated user can read.
     // A wildcard must cover a whole path segment, so the filename is matched in
     // full and ownership is checked against it (the app writes "<uid>.jpg").
     match /profile_photos/{fileName} {
-      allow read: if request.auth != null;
-      allow write: if request.auth != null
+      allow read: if signedIn();
+      allow write: if signedIn()
                    && fileName == request.auth.uid + '.jpg'
                    && request.resource.size < 5 * 1024 * 1024
                    && request.resource.contentType.matches('image/.*');
@@ -15,39 +50,64 @@ service firebase.storage {
 
     // Emergency sounds: owner can write/read/delete
     match /emergency_sounds/{userId}/{fileName} {
-      allow read: if request.auth != null;
-      allow write, delete: if request.auth != null && request.auth.uid == userId
+      allow read: if signedIn();
+      allow write, delete: if signedIn() && request.auth.uid == userId
                            && request.resource.size < 10 * 1024 * 1024;
     }
 
-    function userRole() {
-      return firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data.role;
-    }
-
     // Blank waiver / medical-clearance forms an admin attaches to a trip.
-    // Every signed-in user may download one; only admins may publish.
+    // Every signed-in user may download one; only admins of that school publish.
     match /trip_documents/{schoolId}/{tripId}/{fileName} {
-      allow read: if request.auth != null;
-      allow write: if request.auth != null
+      allow read: if signedIn();
+      allow write: if signedIn()
                    && userRole() == 'admin'
+                   && userSchoolId() == schoolId
+                   && isActive()
                    && request.resource.size < 10 * 1024 * 1024;
       // Split from write: request.resource is null on delete, so a size check
       // here would silently deny every cleanup of a replaced template.
-      allow delete: if request.auth != null && userRole() == 'admin';
+      allow delete: if signedIn() && userRole() == 'admin' && userSchoolId() == schoolId;
     }
 
-    // Filled-in, parent-signed forms uploaded by a student. Readable by the
-    // student who owns it and by school staff reviewing it.
+    // Filled-in, parent-signed forms uploaded by a student. These carry medical
+    // information, so access is the student who owns it plus staff *of that
+    // school* — not any administrator on the platform, and never a super admin.
     match /document_submissions/{schoolId}/{userId}/{fileName} {
-      allow read: if request.auth != null
-                  && (request.auth.uid == userId
-                      || userRole() == 'admin'
-                      || userRole() == 'teacher');
-      allow write: if request.auth != null
+      allow read: if signedIn()
+                  && (request.auth.uid == userId || isSchoolStaffOf(schoolId));
+      allow write: if signedIn()
                    && request.auth.uid == userId
                    && request.resource.size < 15 * 1024 * 1024
                    && (request.resource.contentType.matches('image/.*')
                        || request.resource.contentType == 'application/pdf');
+    }
+
+    // School-verification documents attached to a subscription application.
+    // Readable by the applicant who uploaded them and by the super admin who
+    // reviews them — nobody else, and never through a public URL.
+    match /school_applications/{applicationId}/{userId}/{fileName} {
+      allow read: if isSuperAdmin()
+                  || (signedIn() && request.auth.uid == userId);
+      allow write: if signedIn()
+                   && request.auth.uid == userId
+                   && request.auth.token.email_verified == true
+                   && request.resource.size < 10 * 1024 * 1024
+                   && (request.resource.contentType.matches('image/(jpeg|jpg|png)')
+                       || request.resource.contentType == 'application/pdf');
+      allow delete: if signedIn() && request.auth.uid == userId;
+    }
+
+    // Optional attachment on a support ticket. The requester uploads it; the
+    // super admin reads it to resolve the ticket. No other school sees it.
+    match /support_attachments/{userId}/{fileName} {
+      allow read: if isSuperAdmin()
+                  || (signedIn() && request.auth.uid == userId);
+      allow write: if signedIn()
+                   && request.auth.uid == userId
+                   && request.resource.size < 10 * 1024 * 1024
+                   && (request.resource.contentType.matches('image/.*')
+                       || request.resource.contentType == 'application/pdf');
+      allow delete: if signedIn() && request.auth.uid == userId;
     }
   }
 }
