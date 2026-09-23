@@ -144,7 +144,7 @@ function emailShell({ heading, bodyHtml, footerHtml }) {
   return `
 <div style="font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;background:#f5f7f9;padding:32px 16px;">
   <div style="max-width:560px;margin:0 auto;background:#ffffff;border-radius:16px;overflow:hidden;box-shadow:0 2px 12px rgba(0,0,0,.06);">
-    <div style="background:#2F3BB3;padding:28px 32px;">
+    <div style="background:#00C4B4;padding:28px 32px;">
       <div style="color:#ffffff;font-size:20px;font-weight:700;letter-spacing:-.3px;">FieldTrip360</div>
       <div style="color:rgba(255,255,255,.85);font-size:13px;margin-top:4px;">Smart field trip management</div>
     </div>

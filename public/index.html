@@ -764,6 +764,15 @@
     setTimeout(() => landing.classList.add('hidden'), 400);
   }
 
+  // Deep links into the Flutter app — "#/apply" from the Subscribe button, or
+  // the link in one of our emails — arrive as a full page load, which paints
+  // the marketing page again on top of the route that was asked for. Standing
+  // the overlay down before the first frame is what makes those links work;
+  // without it the button appeared to do nothing but change the address bar.
+  if (window.location.hash.startsWith('#/') && window.location.hash !== '#/') {
+    landing.classList.add('hidden');
+  }
+
   // ── Pricing calculator, billing toggle & subscribe flow ──
   (function () {
     const RATE = 10;          // ₱ per student per month, unless the tier sets its own

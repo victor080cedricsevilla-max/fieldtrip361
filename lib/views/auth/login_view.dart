@@ -221,29 +221,7 @@ class _LoginForm extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           if (showCompactBrand) ...[
-            Row(
-              children: [
-                Container(
-                  width: 42,
-                  height: 42,
-                  decoration: BoxDecoration(
-                    color: t.brand,
-                    borderRadius: BorderRadius.circular(Radii.base),
-                  ),
-                  child: const Icon(Icons.route_rounded, color: Colors.white, size: 23),
-                ),
-                const SizedBox(width: Insets.md),
-                Text(
-                  'FieldTrip360',
-                  style: TextStyle(
-                    fontSize: FontSizes.title,
-                    fontWeight: FontWeight.w700,
-                    letterSpacing: -0.4,
-                    color: t.text,
-                  ),
-                ),
-              ],
-            ),
+            const BrandLockup(),
             const SizedBox(height: Insets.xxl),
           ],
 

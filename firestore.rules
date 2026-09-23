@@ -33,6 +33,20 @@ service cloud.firestore {
              && request.auth.token.superAdmin == true;
     }
 
+    /**
+     * Someone who belongs to a school.
+     *
+     * "Signed in" is not the same thing. Anonymous sign-in exists so a registrar
+     * can attach files to a subscription application without inventing a
+     * password, which means a bare `isSignedIn()` now includes anyone at all.
+     * Anything describing a real person at a real school checks this instead.
+     */
+    function isSchoolUser() {
+      return isSignedIn()
+             && myRole() in ['admin', 'teacher', 'student', 'parent']
+             && isActive();
+    }
+
     function isAdmin() {
       return isSignedIn() && myRole() == 'admin' && isActive();
     }
@@ -377,7 +391,7 @@ service cloud.firestore {
 
       // Geofence alerts — studentId MUST equal the caller's UID.
       match /alerts/{alertId} {
-        allow read: if isSignedIn() && !isSuperAdmin();
+        allow read: if isSchoolUser() && !isSuperAdmin();
         allow create: if isSignedIn()
                       && request.resource.data.studentId == request.auth.uid
                       && request.resource.data.studentId is string
@@ -388,7 +402,7 @@ service cloud.firestore {
       // Per-student geofence-warning exemptions for this trip. Written only by
       // setGeofenceExemption so the reason and actor are always recorded.
       match /geofenceExemptions/{studentId} {
-        allow read: if isSignedIn() && !isSuperAdmin();
+        allow read: if isSchoolUser() && !isSuperAdmin();
         allow write: if false;
       }
     }
@@ -454,7 +468,7 @@ service cloud.firestore {
     // the platform operator has no business knowing where a child is.
 
     match /locations/{uid} {
-      allow read: if isSignedIn() && !isSuperAdmin();
+      allow read: if isSchoolUser() && !isSuperAdmin();
       allow write: if isSignedIn() && request.auth.uid == uid;
     }
 

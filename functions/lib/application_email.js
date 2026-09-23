@@ -29,9 +29,17 @@ function supportLine() {
   return addr ? `If you have questions, reply to this email or write to ${addr}.` : "";
 }
 
-function statusUrl(applicationId) {
+/**
+ * The link back into the application.
+ *
+ * It carries the access key because the applicant never made a password — the
+ * anonymous session that created the application lives in one browser, and this
+ * email may well be opened on a different device.
+ */
+function statusUrl(applicationId, accessKey) {
   const base = (appBaseUrl.value() || "").replace(/\/+$/, "");
-  return `${base}/#/apply/status?id=${encodeURIComponent(applicationId)}`;
+  const key = accessKey ? `&k=${encodeURIComponent(accessKey)}` : "";
+  return `${base}/?app=${encodeURIComponent(applicationId)}${key}#/apply`;
 }
 
 function formatManilaDate(date) {
@@ -55,7 +63,7 @@ function acknowledgementEmail({ application, applicationId }) {
     "to 14 calendar days. We will email you if additional documents are required " +
     "and once a decision has been made.";
 
-  const url = statusUrl(applicationId);
+  const url = statusUrl(applicationId, application.accessKey);
   const submitted = formatManilaDate(application.submittedAt?.toDate?.() || new Date());
 
   const text = [
@@ -83,7 +91,7 @@ function acknowledgementEmail({ application, applicationId }) {
         <div style="font-size:11px;font-weight:600;color:#6B7280;text-transform:uppercase;letter-spacing:.05em;">Submitted</div>
         <div style="font-size:14px;color:#1F2937;margin-top:4px;">${escapeHtml(submitted)}</div>
       </div>
-      <a href="${escapeHtml(url)}" style="display:inline-block;background:#2F3BB3;color:#ffffff;text-decoration:none;padding:12px 22px;border-radius:10px;font-size:14px;font-weight:600;">Track your application</a>
+      <a href="${escapeHtml(url)}" style="display:inline-block;background:#00C4B4;color:#ffffff;text-decoration:none;padding:12px 22px;border-radius:10px;font-size:14px;font-weight:600;">Track your application</a>
       <p style="margin:22px 0 0;font-size:13px;line-height:1.7;color:#6B7280;">${escapeHtml(supportLine())}</p>`,
     footerHtml: "You are receiving this because a subscription application was submitted with this email address.",
   });
@@ -92,7 +100,7 @@ function acknowledgementEmail({ application, applicationId }) {
 }
 
 function documentsRequestedEmail({ application, applicationId, reason, requestedDocTypes, docLabels }) {
-  const url = statusUrl(applicationId);
+  const url = statusUrl(applicationId, application.accessKey);
   const list = (requestedDocTypes || []).map((t) => docLabels[t] || t);
 
   const text = [
@@ -128,7 +136,7 @@ function documentsRequestedEmail({ application, applicationId, reason, requested
         Once you upload them, the 7-banking-day review target is re-counted from the day your
         documents are complete. Your original submission date does not change.
       </p>
-      <a href="${escapeHtml(url)}" style="display:inline-block;background:#2F3BB3;color:#ffffff;text-decoration:none;padding:12px 22px;border-radius:10px;font-size:14px;font-weight:600;">Upload the documents</a>
+      <a href="${escapeHtml(url)}" style="display:inline-block;background:#00C4B4;color:#ffffff;text-decoration:none;padding:12px 22px;border-radius:10px;font-size:14px;font-weight:600;">Upload the documents</a>
       <p style="margin:22px 0 0;font-size:13px;line-height:1.7;color:#6B7280;">${escapeHtml(supportLine())}</p>`,
   });
 
@@ -215,9 +223,9 @@ function approvalEmail({ application, adminEmail, tempPassword, receipt }) {
         <div style="font-size:11px;font-weight:600;color:#6B7280;text-transform:uppercase;letter-spacing:.05em;">Email</div>
         <div style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:14px;color:#1F2937;margin:4px 0 14px;word-break:break-all;">${escapeHtml(adminEmail)}</div>
         <div style="font-size:11px;font-weight:600;color:#6B7280;text-transform:uppercase;letter-spacing:.05em;">Temporary password</div>
-        <div style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:18px;font-weight:700;color:#2F3BB3;margin-top:4px;letter-spacing:.5px;">${escapeHtml(tempPassword)}</div>
+        <div style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:18px;font-weight:700;color:#00C4B4;margin-top:4px;letter-spacing:.5px;">${escapeHtml(tempPassword)}</div>
       </div>
-      <a href="${escapeHtml(loginUrl)}" style="display:inline-block;background:#2F3BB3;color:#ffffff;text-decoration:none;padding:12px 22px;border-radius:10px;font-size:14px;font-weight:600;">Sign in</a>
+      <a href="${escapeHtml(loginUrl)}" style="display:inline-block;background:#00C4B4;color:#ffffff;text-decoration:none;padding:12px 22px;border-radius:10px;font-size:14px;font-weight:600;">Sign in</a>
 
       <div style="margin-top:28px;border-top:1px solid #E5E7EB;padding-top:22px;">
         <div style="font-size:13px;font-weight:700;color:#1F2937;margin-bottom:12px;">Subscription acknowledgement receipt</div>

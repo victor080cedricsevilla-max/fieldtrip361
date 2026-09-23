@@ -127,20 +127,43 @@ async function nextCounter(db, key, prefix) {
   return `${prefix}-${year}-${String(n).padStart(4, "0")}`;
 }
 
-/** The caller, asserted to be signed in with a verified email address. */
-async function requireVerifiedApplicant(request) {
-  if (!request.auth) throw new HttpsError("unauthenticated", "Sign in required.");
-  if (request.auth.token.email_verified !== true) {
+/**
+ * The applicant's session.
+ *
+ * Applying does not create a login. The browser signs in anonymously, which
+ * gives a uid that Storage rules can scope an upload to — so a file can only be
+ * attached to the application that uploaded it — without asking a registrar to
+ * invent a password for an account they will never use again. The account they
+ * eventually receive is provisioned on approval, with its own credentials.
+ *
+ * Someone already signed in as a school user is refused: applying from a
+ * teacher's browser would otherwise attach the application to their account.
+ */
+async function requireApplicantSession(request) {
+  if (!request.auth) {
     throw new HttpsError(
-      "failed-precondition",
-      "Verify your email address before continuing. Check your inbox for the link."
+      "unauthenticated",
+      "Your session expired. Reload the page and try again."
     );
   }
-  return {
-    uid: request.auth.uid,
-    email: normEmail(request.auth.token.email),
-    db: admin.firestore(),
-  };
+  const db = admin.firestore();
+  const uid = request.auth.uid;
+
+  const snap = await db.collection("users").doc(uid).get();
+  const role = snap.exists ? snap.get("role") : null;
+  if (role && role !== ROLES.applicant) {
+    throw new HttpsError(
+      "failed-precondition",
+      "You are signed in to a FieldTrip360 account. Sign out before applying for a new school."
+    );
+  }
+
+  return { uid, db };
+}
+
+/** A key that lets the applicant reopen their application from an emailed link. */
+function generateAccessKey() {
+  return require("crypto").randomBytes(24).toString("base64url");
 }
 
 /** Loads an application the caller owns, or throws. */
@@ -217,7 +240,7 @@ function sanitizeApplicationInput(body) {
  * a status or a school id — those are written only by this function.
  */
 exports.saveSchoolApplication = onCall(async (request) => {
-  const { uid, email, db } = await requireVerifiedApplicant(request);
+  const { uid, db } = await requireApplicantSession(request);
   await checkRateLimit(uid, "save_application", 20);
 
   const input = sanitizeApplicationInput(request.data || {});
@@ -227,27 +250,14 @@ exports.saveSchoolApplication = onCall(async (request) => {
   );
   const requirements = requirementsFor(input.institutionType);
 
-  // The account exists for the application only. It is given the applicant role
-  // explicitly here rather than at sign-up, so the client never writes a role.
-  const userRef = db.collection("users").doc(uid);
-  const userSnap = await userRef.get();
-  const existingRole = userSnap.exists ? userSnap.get("role") : null;
-  if (existingRole && existingRole !== ROLES.applicant) {
+  // Where every message about this application goes, including the decision
+  // and, if approved, the sign-in details.
+  const email = normEmail(request.data?.email);
+  if (!isValidEmail(email)) {
     throw new HttpsError(
-      "failed-precondition",
-      "This account already belongs to a school. Apply with a different email address."
+      "invalid-argument",
+      "Enter the email address we should send the decision to."
     );
-  }
-  if (!userSnap.exists) {
-    await userRef.set({
-      uid,
-      email,
-      name: input.representative.name,
-      role: ROLES.applicant,
-      status: "approved",
-      accountStatus: ACCOUNT_STATUS.active,
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
-    });
   }
 
   const existing = await db
@@ -294,6 +304,9 @@ exports.saveSchoolApplication = onCall(async (request) => {
     ...payload,
     reference,
     applicantUid: uid,
+    // Lets them reopen the application from the link in our email, on any
+    // device — an anonymous session only lives in the browser that started it.
+    accessKey: generateAccessKey(),
     status: STATUS.draft,
     submittedAt: null,
     documentsCompletedAt: null,
@@ -315,7 +328,7 @@ exports.saveSchoolApplication = onCall(async (request) => {
  * re-checks the path so a crafted request cannot register someone else's file.
  */
 exports.attachApplicationDocument = onCall(async (request) => {
-  const { uid, db } = await requireVerifiedApplicant(request);
+  const { uid, db } = await requireApplicantSession(request);
   await checkRateLimit(uid, "attach_document", 40);
 
   const applicationId = sanitizeText(request.data?.applicationId, 64);
@@ -397,7 +410,7 @@ exports.attachApplicationDocument = onCall(async (request) => {
 });
 
 exports.removeApplicationDocument = onCall(async (request) => {
-  const { uid, db } = await requireVerifiedApplicant(request);
+  const { uid, db } = await requireApplicantSession(request);
   const applicationId = sanitizeText(request.data?.applicationId, 64);
   const documentId = sanitizeText(request.data?.documentId, 64);
   if (!applicationId || !documentId) {
@@ -431,7 +444,7 @@ exports.removeApplicationDocument = onCall(async (request) => {
  * complete — which is what the applicant was told would happen.
  */
 exports.submitSchoolApplication = onCall(async (request) => {
-  const { uid, db } = await requireVerifiedApplicant(request);
+  const { uid, db } = await requireApplicantSession(request);
   await checkRateLimit(uid, "submit_application", 10);
 
   const applicationId = sanitizeText(request.data?.applicationId, 64);
@@ -512,6 +525,45 @@ exports.submitSchoolApplication = onCall(async (request) => {
     reviewTargetAt: reviewTargetAt.toISOString(),
     processingDeadlineAt: processingDeadlineAt.toISOString(),
   };
+});
+
+/**
+ * Reopens an application from the link in our email.
+ *
+ * An anonymous session lives in one browser, so a registrar who opens the
+ * "we need more documents" email on their phone would otherwise be locked out
+ * of their own application. The key in that link re-binds the application to
+ * whatever session is asking, which is safe because the key is unguessable and
+ * only ever travels to the address on the application.
+ */
+exports.openApplicationWithKey = onCall(async (request) => {
+  const { uid, db } = await requireApplicantSession(request);
+  await checkRateLimit(uid, "open_application", 20);
+
+  const applicationId = sanitizeText(request.data?.applicationId, 64);
+  const accessKey = sanitizeText(request.data?.accessKey, 80);
+  if (!applicationId || !accessKey) {
+    throw new HttpsError("invalid-argument", "This link is incomplete.");
+  }
+
+  const ref = db.collection("schoolApplications").doc(applicationId);
+  const snap = await ref.get();
+  if (!snap.exists) throw new HttpsError("not-found", "That application no longer exists.");
+
+  const stored = snap.get("accessKey");
+  const ok =
+    typeof stored === "string" &&
+    stored.length === accessKey.length &&
+    require("crypto").timingSafeEqual(Buffer.from(stored), Buffer.from(accessKey));
+  if (!ok) {
+    throw new HttpsError("permission-denied", "This link is no longer valid.");
+  }
+
+  if (snap.get("applicantUid") !== uid) {
+    await ref.update({ applicantUid: uid, reboundAt: admin.firestore.FieldValue.serverTimestamp() });
+  }
+
+  return { applicationId, status: snap.get("status"), reference: snap.get("reference") };
 });
 
 // ─── Reviewer-facing callables ────────────────────────────────────────────────

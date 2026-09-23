@@ -6,10 +6,13 @@ import 'package:flutter/foundation.dart';
 
 /// Client side of the school subscription application.
 ///
-/// Every state change goes through a Cloud Function: the applicant's browser
-/// never writes an application document, a status, a reference number or a
-/// review deadline. Uploads go to a folder keyed to the applicant's own uid,
-/// which Storage rules restrict to them and the reviewer.
+/// Applying does not create a login. The browser signs in anonymously, which is
+/// only ever used to tie an upload to the session that made it — a registrar is
+/// not asked to invent a password for an account they would use once. The
+/// account they receive is provisioned on approval, with its own credentials.
+///
+/// Every state change goes through a Cloud Function: the browser never writes an
+/// application document, a status, a reference number or a review deadline.
 class ApplicationService {
   ApplicationService._();
 
@@ -25,48 +28,37 @@ class ApplicationService {
     return Map<String, dynamic>.from(res.data);
   }
 
-  /// Creates the applicant account. The role is assigned by the server on the
-  /// first save — this only establishes the sign-in and sends the verification
-  /// email that the rest of the flow depends on.
-  static Future<void> registerApplicant({
-    required String email,
-    required String password,
-  }) async {
-    final cred = await FirebaseAuth.instance.createUserWithEmailAndPassword(
-      email: email.trim(),
-      password: password,
-    );
-    await cred.user?.sendEmailVerification();
+  /// Ensures there is a session to attach uploads to.
+  ///
+  /// Reuses whatever is already signed in — including a real account, which the
+  /// server refuses with a clear message rather than silently applying on
+  /// someone else's behalf.
+  static Future<User?> ensureSession() async {
+    final existing = FirebaseAuth.instance.currentUser;
+    if (existing != null) return existing;
+    try {
+      final cred = await FirebaseAuth.instance.signInAnonymously();
+      return cred.user;
+    } catch (e) {
+      debugPrint('anonymous sign-in failed: $e');
+      return null;
+    }
   }
 
-  static Future<void> signIn({required String email, required String password}) async {
-    await FirebaseAuth.instance.signInWithEmailAndPassword(
-      email: email.trim(),
-      password: password,
-    );
+  static bool get isSchoolAccount {
+    final u = FirebaseAuth.instance.currentUser;
+    return u != null && !u.isAnonymous;
   }
 
-  static Future<void> resendVerification() async {
-    await FirebaseAuth.instance.currentUser?.sendEmailVerification();
-  }
-
-  /// Firebase caches `emailVerified`; a reload is the only way to see that the
-  /// applicant has clicked the link in another tab.
-  static Future<bool> refreshEmailVerified() async {
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) return false;
-    await user.reload();
-    return FirebaseAuth.instance.currentUser?.emailVerified ?? false;
-  }
-
-  static Future<Map<String, dynamic>> saveApplication({
+  /// Creates or updates the draft. Returns the application id.
+  static Future<Map<String, dynamic>> save({
     required String schoolName,
     required String legalName,
     required String institutionType,
     required String address,
+    required String email,
     required String repName,
     required String repPosition,
-    required String repEmail,
     required String repPhone,
     required String tier,
     required String billingCycle,
@@ -76,10 +68,11 @@ class ApplicationService {
         'legalName': legalName,
         'institutionType': institutionType,
         'address': address,
+        'email': email,
         'representative': {
           'name': repName,
           'position': repPosition,
-          'email': repEmail,
+          'email': email,
           'phone': repPhone,
         },
         'tier': tier,
@@ -98,7 +91,7 @@ class ApplicationService {
     void Function(double progress)? onProgress,
   }) async {
     final uid = FirebaseAuth.instance.currentUser?.uid;
-    if (uid == null) throw StateError('Sign in before uploading.');
+    if (uid == null) throw StateError('No session. Reload the page and try again.');
 
     final ext = fileName.contains('.') ? fileName.split('.').last.toLowerCase() : 'pdf';
     final stamp = DateTime.now().millisecondsSinceEpoch;
@@ -137,9 +130,18 @@ class ApplicationService {
   static Future<Map<String, dynamic>> submit(String applicationId) =>
       _call('submitSchoolApplication', {'applicationId': applicationId});
 
-  /// The applicant's own application, live. Security rules scope this to the
-  /// owner, so a guessed id returns nothing.
-  static Stream<QuerySnapshot<Map<String, dynamic>>> myApplications() {
+  /// Reopens an application from the link in our email, on any device.
+  static Future<Map<String, dynamic>> openWithKey({
+    required String applicationId,
+    required String accessKey,
+  }) =>
+      _call('openApplicationWithKey', {
+        'applicationId': applicationId,
+        'accessKey': accessKey,
+      });
+
+  /// The application belonging to this session, live.
+  static Stream<QuerySnapshot<Map<String, dynamic>>> mine() {
     final uid = FirebaseAuth.instance.currentUser?.uid;
     if (uid == null) return const Stream.empty();
     return _db
@@ -154,4 +156,15 @@ class ApplicationService {
       .collection('documents')
       .orderBy('uploadedAt')
       .snapshots();
+
+  /// Turns a callable failure into the sentence the server wrote, rather than
+  /// the SDK's wrapper around it.
+  static String describeError(Object e) {
+    if (e is FirebaseFunctionsException) {
+      return e.message ?? 'That did not work. Please try again.';
+    }
+    final s = e.toString();
+    final m = RegExp(r'\[firebase_\w+/[a-z-]+\]\s*(.+)$').firstMatch(s);
+    return m?.group(1) ?? 'That did not work. Please try again.';
+  }
 }

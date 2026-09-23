@@ -3,11 +3,10 @@ import 'package:flutter/material.dart';
 /// Design tokens for the platform surfaces: the web sign-in and the
 /// super-admin console.
 ///
-/// The school-facing app is teal. The platform operator's surfaces are indigo,
-/// because they are a different product: one runs a field trip, the other runs
-/// the service schools subscribe to. Seeing indigo means "you are administering
-/// FieldTrip360 itself", which matters when the same person holds both kinds of
-/// account.
+/// They share the app's palette on purpose: a registrar applying on the website
+/// and an administrator signing in should recognise the same product they see on
+/// the phone. Teal carries the actions, deep slate carries the brand panels and
+/// the sidebar.
 ///
 /// Every value a console screen paints comes from here. An off-scale padding or
 /// a one-off hex in a screen file is a bug, not a detail.
@@ -55,19 +54,34 @@ class Motion {
   static const Curve exit = Curves.easeIn;
 }
 
-/// The indigo brand ramp used by the platform surfaces.
+/// The brand ramp, taken from the app's own palette so the sign-in, the
+/// application form and the console read as the same product as the phone app.
+///
+/// Teal is the action colour. It is bright, so the darker steps below carry the
+/// text on it: white on the 50% tint would fail contrast, while white on [i600]
+/// clears 4.5:1 comfortably. Deep slate is used for the large brand panels,
+/// where a full-bleed teal would overwhelm the form beside it.
 class Brand {
   Brand._();
-  static const Color i50 = Color(0xFFEEF0FB);
-  static const Color i100 = Color(0xFFD8DCF6);
-  static const Color i200 = Color(0xFFB4BCEE);
-  static const Color i400 = Color(0xFF5A67E0);
-  static const Color i500 = Color(0xFF4450D6);
 
-  /// Primary action colour. White text on this is ~8.4:1.
-  static const Color i600 = Color(0xFF2F3BB3);
-  static const Color i700 = Color(0xFF252E8E);
-  static const Color i900 = Color(0xFF161B54);
+  /// Tints, for badges and quiet fills.
+  static const Color i50 = Color(0xFFE6F8F6);
+  static const Color i100 = Color(0xFFC2EFEA);
+  static const Color i200 = Color(0xFF8FE2DA);
+
+  static const Color i400 = Color(0xFF14B8A6);
+  static const Color i500 = Color(0xFF00A89A);
+
+  /// Primary action colour — the app's teal, darkened just enough that white
+  /// text on it reaches 4.59:1.
+  static const Color i600 = Color(0xFF008478);
+  static const Color i700 = Color(0xFF00695F);
+
+  /// The deep slate used for sidebars and brand panels — `AppTheme.secondary`.
+  static const Color i900 = Color(0xFF2C3E50);
+
+  /// The app's unmodified teal, for accents on dark ground.
+  static const Color accent = Color(0xFF00C4B4);
 }
 
 /// A semantic status colour: a fill, a border and a foreground that read
@@ -153,7 +167,7 @@ class ConsoleTokens {
       BoxShadow(color: Color(0x0A101828), blurRadius: 2, offset: Offset(0, 1)),
     ],
     neutral: StatusTone(fg: Color(0xFF475467), bg: Color(0xFFF2F4F7), border: Color(0xFFD0D5DD)),
-    info: StatusTone(fg: Color(0xFF252E8E), bg: Color(0xFFEEF0FB), border: Color(0xFFB4BCEE)),
+    info: StatusTone(fg: Color(0xFF00695F), bg: Color(0xFFE6F8F6), border: Color(0xFF8FE2DA)),
     warning: StatusTone(fg: Color(0xFF92400E), bg: Color(0xFFFEF3C7), border: Color(0xFFFCD34D)),
     success: StatusTone(fg: Color(0xFF15803D), bg: Color(0xFFDCFCE7), border: Color(0xFF86EFAC)),
     danger: StatusTone(fg: Color(0xFFB42318), bg: Color(0xFFFEE4E2), border: Color(0xFFFDA29B)),
@@ -171,16 +185,16 @@ class ConsoleTokens {
     brand: Brand.i400,
     brandHover: Brand.i500,
     onBrand: Colors.white,
-    sidebar: Color(0xFF141A2E),
-    sidebarText: Color(0xFFE8EAF6),
-    sidebarTextMuted: Color(0xB3E8EAF6),
+    sidebar: Color(0xFF1B2733),
+    sidebarText: Color(0xFFE8EDF2),
+    sidebarTextMuted: Color(0xB3E8EDF2),
     sidebarActive: Color(0x33FFFFFF),
     focusRing: Brand.i400,
     cardShadow: [
       BoxShadow(color: Color(0x4D000000), blurRadius: 16, offset: Offset(0, 4)),
     ],
     neutral: StatusTone(fg: Color(0xFFCBD2DE), bg: Color(0xFF232A33), border: Color(0xFF3B4453)),
-    info: StatusTone(fg: Color(0xFFB4BCEE), bg: Color(0xFF1E2447), border: Color(0xFF3A448C)),
+    info: StatusTone(fg: Color(0xFF8FE2DA), bg: Color(0xFF10322E), border: Color(0xFF1F6B62)),
     warning: StatusTone(fg: Color(0xFFFCD34D), bg: Color(0xFF3A2E10), border: Color(0xFF7C5E14)),
     success: StatusTone(fg: Color(0xFF86EFAC), bg: Color(0xFF12301F), border: Color(0xFF2F6B44)),
     danger: StatusTone(fg: Color(0xFFFDA29B), bg: Color(0xFF3A1B18), border: Color(0xFF8C2F28)),

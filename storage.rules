@@ -85,12 +85,16 @@ service firebase.storage {
     // School-verification documents attached to a subscription application.
     // Readable by the applicant who uploaded them and by the super admin who
     // reviews them — nobody else, and never through a public URL.
+    //
+    // Applying does not create a login, so the session here is anonymous. That
+    // is enough for what this rule has to do: tie an upload to the session that
+    // made it. Who the school is gets established by the documents themselves,
+    // which a person reads before any account exists.
     match /school_applications/{applicationId}/{userId}/{fileName} {
       allow read: if isSuperAdmin()
                   || (signedIn() && request.auth.uid == userId);
       allow write: if signedIn()
                    && request.auth.uid == userId
-                   && request.auth.token.email_verified == true
                    && request.resource.size < 10 * 1024 * 1024
                    && (request.resource.contentType.matches('image/(jpeg|jpg|png)')
                        || request.resource.contentType == 'application/pdf');

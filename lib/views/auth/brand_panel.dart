@@ -26,10 +26,13 @@ class BrandPanel extends StatelessWidget {
   Widget build(BuildContext context) {
     return DecoratedBox(
       decoration: const BoxDecoration(
+        // Deep slate, not teal: a full-bleed panel in the action colour would
+        // shout over the form beside it, and leave the primary button with
+        // nothing to stand out against.
         gradient: LinearGradient(
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
-          colors: [Brand.i600, Brand.i700],
+          colors: [Brand.i900, Color(0xFF1B2733)],
         ),
       ),
       child: Stack(
@@ -43,30 +46,7 @@ class BrandPanel extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Row(
-                  children: [
-                    Container(
-                      width: 46,
-                      height: 46,
-                      decoration: BoxDecoration(
-                        color: Colors.white.withValues(alpha: 0.16),
-                        borderRadius: BorderRadius.circular(Radii.base),
-                      ),
-                      child: const Icon(Icons.route_rounded,
-                          color: Colors.white, size: 25),
-                    ),
-                    const SizedBox(width: Insets.md),
-                    const Text(
-                      'FieldTrip360',
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: FontSizes.title,
-                        fontWeight: FontWeight.w700,
-                        letterSpacing: -0.4,
-                      ),
-                    ),
-                  ],
-                ),
+                const BrandLockup(onDark: true),
                 const Spacer(),
                 ConstrainedBox(
                   constraints: const BoxConstraints(maxWidth: 460),
@@ -140,6 +120,67 @@ class BrandPanel extends StatelessWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+/// The FieldTrip360 mark and wordmark, top-left of every entry screen.
+///
+/// The real logo rather than a stand-in glyph: this is the first thing a
+/// registrar sees, and it should be the same mark that is on the phone app.
+class BrandLockup extends StatelessWidget {
+  final bool onDark;
+  final double size;
+
+  const BrandLockup({super.key, this.onDark = false, this.size = 44});
+
+  @override
+  Widget build(BuildContext context) {
+    final t = ConsoleTokens.of(context);
+    final fg = onDark ? Colors.white : t.text;
+
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(
+          width: size,
+          height: size,
+          padding: EdgeInsets.all(size * 0.16),
+          decoration: BoxDecoration(
+            color: onDark ? Colors.white.withValues(alpha: 0.12) : Brand.i50,
+            borderRadius: BorderRadius.circular(Radii.base),
+          ),
+          child: Image.asset(
+            'assets/icon/ft360_logo.png',
+            fit: BoxFit.contain,
+            // A missing asset must not take the sign-in screen down with it.
+            errorBuilder: (_, __, ___) => Icon(
+              Icons.route_rounded,
+              color: onDark ? Colors.white : Brand.i600,
+              size: size * 0.55,
+            ),
+          ),
+        ),
+        const SizedBox(width: Insets.md),
+        Text.rich(
+          TextSpan(
+            children: [
+              TextSpan(
+                text: 'FieldTrip',
+                style: TextStyle(color: fg, fontWeight: FontWeight.w700),
+              ),
+              TextSpan(
+                text: '360',
+                style: TextStyle(
+                  color: onDark ? Brand.accent : Brand.i600,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ],
+          ),
+          style: const TextStyle(fontSize: FontSizes.title, letterSpacing: -0.4),
+        ),
+      ],
     );
   }
 }

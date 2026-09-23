@@ -11,10 +11,10 @@ import 'application_service.dart';
 
 /// Applying for a school subscription.
 ///
-/// Four steps, in the order the applicant can actually complete them: prove the
-/// email address, describe the school, attach the documents that school type
-/// requires, then submit. Nothing here creates an account with access — an
-/// applicant remains an applicant until a reviewer decides.
+/// One form, no account to create. A registrar tells us about the school,
+/// attaches what their kind of institution is asked for, picks a plan and
+/// submits — then a person reads it. The sign-in details only exist if that
+/// person approves, and they arrive by email with the receipt.
 class ApplyView extends StatefulWidget {
   const ApplyView({super.key});
 
@@ -23,61 +23,120 @@ class ApplyView extends StatefulWidget {
 }
 
 class _ApplyViewState extends State<ApplyView> {
-  int _step = 0;
+  bool _ready = false;
+  String? _sessionError;
+
+  @override
+  void initState() {
+    super.initState();
+    _begin();
+  }
+
+  Future<void> _begin() async {
+    // A link from our email carries the application and its key, so the form
+    // can be reopened on a phone even though the session that created it lives
+    // in a desktop browser.
+    final appId = Uri.base.queryParameters['app'];
+    final key = Uri.base.queryParameters['k'];
+
+    final user = await ApplicationService.ensureSession();
+    if (user == null) {
+      if (mounted) {
+        setState(() {
+          _sessionError =
+              'We could not start a secure session. Check your connection and reload.';
+          _ready = true;
+        });
+      }
+      return;
+    }
+
+    if (appId != null && key != null) {
+      try {
+        await ApplicationService.openWithKey(applicationId: appId, accessKey: key);
+      } catch (e) {
+        if (mounted) setState(() => _sessionError = ApplicationService.describeError(e));
+      }
+    }
+    if (mounted) setState(() => _ready = true);
+  }
 
   @override
   Widget build(BuildContext context) {
     final t = ConsoleTokens.of(context);
     final twoColumn = MediaQuery.sizeOf(context).width >= Breakpoints.loginStack;
 
-    final content = StreamBuilder<User?>(
-      stream: FirebaseAuth.instance.authStateChanges(),
-      builder: (context, authSnap) {
-        final user = authSnap.data ?? FirebaseAuth.instance.currentUser;
-        if (user == null) {
-          return _AccountStep(onDone: () => setState(() => _step = 1));
-        }
-        return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-          stream: ApplicationService.myApplications(),
-          builder: (context, appSnap) {
-            if (appSnap.hasError) {
-              return ConsoleErrorState(
-                title: 'Your application could not be loaded',
-                message: 'Check your connection and try again.',
-                technicalDetail: appSnap.error.toString(),
-                onRetry: () => setState(() {}),
-              );
+    Widget content;
+    if (!_ready) {
+      content = const Padding(
+        padding: EdgeInsets.symmetric(vertical: Insets.huge),
+        child: DelayedLoader(child: ConsoleSkeleton(rows: 3, rowHeight: 80)),
+      );
+    } else if (ApplicationService.isSchoolAccount) {
+      content = ConsoleEmptyState(
+        icon: Icons.account_circle_outlined,
+        title: 'You are signed in to FieldTrip360',
+        message: 'Applying for a new school needs a signed-out browser, so the '
+            'application is not attached to your existing account.',
+        action: ConsoleButton(
+          label: 'Sign out and apply',
+          icon: Icons.logout_rounded,
+          onPressed: () async {
+            await FirebaseAuth.instance.signOut();
+            if (mounted) {
+              setState(() => _ready = false);
+              _begin();
             }
-            if (!appSnap.hasData) {
-              return const DelayedLoader(child: ConsoleSkeleton(rows: 3, rowHeight: 80));
-            }
-
-            final docs = appSnap.data!.docs;
-            final live = docs.where((d) {
-              final s = (d.data()['status'] ?? '').toString();
-              return s != ApplicationStatus.rejected;
-            }).toList();
-            final current = live.isEmpty ? null : live.first;
-            final status = current == null
-                ? null
-                : (current.data()['status'] ?? '').toString();
-
-            // Once submitted there is nothing left to fill in — the applicant
-            // sees where their application stands instead of an empty form.
-            if (current != null &&
-                status != ApplicationStatus.draft &&
-                status != ApplicationStatus.needsMoreDocuments) {
-              return _StatusPanel(applicationId: current.id, data: current.data());
-            }
-
-            return _ApplicationSteps(
-              step: _step,
-              onStep: (s) => setState(() => _step = s),
-              application: current,
-            );
           },
-        );
-      },
+        ),
+      );
+    } else {
+      content = StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+        stream: ApplicationService.mine(),
+        builder: (context, snap) {
+          if (snap.hasError) {
+            return ConsoleErrorState(
+              title: 'Your application could not be loaded',
+              message: 'Check your connection and try again.',
+              technicalDetail: snap.error.toString(),
+              onRetry: () => setState(() {}),
+            );
+          }
+          if (!snap.hasData) {
+            return const DelayedLoader(child: ConsoleSkeleton(rows: 3, rowHeight: 80));
+          }
+
+          final live = snap.data!.docs
+              .where((d) => (d.data()['status'] ?? '') != ApplicationStatus.rejected)
+              .toList();
+          final current = live.isEmpty ? null : live.first;
+          final status = (current?.data()['status'] ?? '').toString();
+
+          // Once it is with the reviewer there is nothing left to fill in.
+          if (current != null &&
+              status != ApplicationStatus.draft &&
+              status != ApplicationStatus.needsMoreDocuments) {
+            return _StatusPanel(data: current.data());
+          }
+
+          return _ApplicationForm(
+            applicationId: current?.id,
+            existing: current?.data(),
+            banner: _sessionError,
+          );
+        },
+      );
+    }
+
+    final panel = BrandPanel(
+      headline: 'Bring FieldTrip360\nto your school.',
+      supporting: 'Tell us about your institution and attach your verification '
+          'documents. A person reviews every application.',
+      points: const [
+        'Reviewed within 7 banking days',
+        'Processing may take up to 14 calendar days',
+        'No student information is ever requested to verify a school',
+      ],
     );
 
     return Scaffold(
@@ -85,27 +144,17 @@ class _ApplyViewState extends State<ApplyView> {
       body: twoColumn
           ? Row(
               children: [
-                const Expanded(
-                  flex: 4,
-                  child: BrandPanel(
-                    headline: 'Bring FieldTrip360\nto your school.',
-                    supporting:
-                        'Tell us about your institution and attach your verification '
-                        'documents. A person reviews every application.',
-                    points: [
-                      'Reviewed within 7 banking days',
-                      'Processing may take up to 14 calendar days',
-                      'No student information is ever requested to verify a school',
-                    ],
-                  ),
-                ),
+                Expanded(flex: 4, child: panel),
                 Expanded(
                   flex: 6,
-                  child: Center(
-                    child: SingleChildScrollView(
-                      padding: const EdgeInsets.all(Insets.xxxl),
+                  child: SingleChildScrollView(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: Insets.xxxl,
+                      vertical: Insets.xxl,
+                    ),
+                    child: Center(
                       child: ConstrainedBox(
-                        constraints: const BoxConstraints(maxWidth: 620),
+                        constraints: const BoxConstraints(maxWidth: 640),
                         child: content,
                       ),
                     ),
@@ -116,11 +165,18 @@ class _ApplyViewState extends State<ApplyView> {
           : SafeArea(
               child: SingleChildScrollView(
                 padding: const EdgeInsets.all(Insets.lg),
-                child: Center(
-                  child: ConstrainedBox(
-                    constraints: const BoxConstraints(maxWidth: 620),
-                    child: content,
-                  ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const BrandLockup(),
+                    const SizedBox(height: Insets.xl),
+                    Center(
+                      child: ConstrainedBox(
+                        constraints: const BoxConstraints(maxWidth: 640),
+                        child: content,
+                      ),
+                    ),
+                  ],
                 ),
               ),
             ),
@@ -128,78 +184,171 @@ class _ApplyViewState extends State<ApplyView> {
   }
 }
 
-// ─── Step 1: the account ──────────────────────────────────────────────────────
+// ─── The form ─────────────────────────────────────────────────────────────────
 
-class _AccountStep extends StatefulWidget {
-  final VoidCallback onDone;
-  const _AccountStep({required this.onDone});
+class _ApplicationForm extends StatefulWidget {
+  final String? applicationId;
+  final Map<String, dynamic>? existing;
+  final String? banner;
+
+  const _ApplicationForm({this.applicationId, this.existing, this.banner});
 
   @override
-  State<_AccountStep> createState() => _AccountStepState();
+  State<_ApplicationForm> createState() => _ApplicationFormState();
 }
 
-class _AccountStepState extends State<_AccountStep> {
+class _ApplicationFormState extends State<_ApplicationForm> {
+  final _schoolName = TextEditingController();
+  final _legalName = TextEditingController();
+  final _address = TextEditingController();
   final _email = TextEditingController();
-  final _password = TextEditingController();
-  bool _signingIn = false;
-  bool _busy = false;
-  bool _obscure = true;
-  String? _error;
+  final _repName = TextEditingController();
+  final _repPosition = TextEditingController();
+  final _repPhone = TextEditingController();
+
+  String _institutionType = InstitutionType.privateIncorporated;
+  String _tier = _fromUrl('tier', _knownTiers, 'starter');
+  String _cycle = _fromUrl('cycle', const {'monthly', 'annual'}, 'monthly');
+
+  String? _applicationId;
+  bool _saving = false;
+  bool _submitting = false;
+  Map<String, dynamic>? _submitted;
+  final Map<String, String?> _errors = {};
+  String? _formError;
+
+  static const _knownTiers = {
+    'starter', 'growth', 'professional', 'scale', 'campus', 'enterprise',
+  };
+
+  static String _fromUrl(String key, Set<String> allowed, String fallback) {
+    final v = Uri.base.queryParameters[key];
+    return allowed.contains(v) ? v! : fallback;
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _applicationId = widget.applicationId;
+    _hydrate();
+  }
+
+  @override
+  void didUpdateWidget(covariant _ApplicationForm old) {
+    super.didUpdateWidget(old);
+    if (old.applicationId != widget.applicationId) {
+      _applicationId = widget.applicationId;
+      _hydrate();
+    }
+  }
+
+  void _hydrate() {
+    final d = widget.existing;
+    if (d == null) return;
+    _schoolName.text = (d['schoolName'] ?? '').toString();
+    _legalName.text = (d['legalName'] ?? '').toString();
+    _address.text = (d['address'] ?? '').toString();
+    _email.text = (d['email'] ?? '').toString();
+    final rep = (d['representative'] ?? const {}) as Map;
+    _repName.text = (rep['name'] ?? '').toString();
+    _repPosition.text = (rep['position'] ?? '').toString();
+    _repPhone.text = (rep['phone'] ?? '').toString();
+    _institutionType = (d['institutionType'] ?? _institutionType).toString();
+    final plan = (d['plan'] ?? const {}) as Map;
+    _tier = (plan['tier'] ?? _tier).toString();
+    _cycle = (plan['billingCycle'] ?? _cycle).toString();
+  }
 
   @override
   void dispose() {
-    _email.dispose();
-    _password.dispose();
+    for (final c in [
+      _schoolName, _legalName, _address, _email, _repName, _repPosition, _repPhone,
+    ]) {
+      c.dispose();
+    }
     super.dispose();
   }
 
+  bool _validate() {
+    setState(() {
+      _errors.clear();
+      if (_schoolName.text.trim().length < 2) {
+        _errors['schoolName'] = "Enter the school's name.";
+      }
+      final email = _email.text.trim();
+      if (!RegExp(r'^[^\s@]+@[^\s@]+\.[^\s@]{2,}$').hasMatch(email)) {
+        _errors['email'] = 'Enter the email address we should send the decision to.';
+      }
+      if (_repName.text.trim().isEmpty) {
+        _errors['repName'] = "Enter the representative's full name.";
+      }
+    });
+    return _errors.isEmpty;
+  }
+
+  /// Saved as soon as the details are valid, because the documents cannot be
+  /// attached until the application exists to attach them to.
+  Future<bool> _save({bool silent = false}) async {
+    if (!_validate()) return false;
+    if (!silent) setState(() => _saving = true);
+    try {
+      final res = await ApplicationService.save(
+        schoolName: _schoolName.text.trim(),
+        legalName: _legalName.text.trim().isEmpty
+            ? _schoolName.text.trim()
+            : _legalName.text.trim(),
+        institutionType: _institutionType,
+        address: _address.text.trim(),
+        email: _email.text.trim(),
+        repName: _repName.text.trim(),
+        repPosition: _repPosition.text.trim(),
+        repPhone: _repPhone.text.trim(),
+        tier: _tier,
+        billingCycle: _cycle,
+      );
+      if (mounted) {
+        setState(() {
+          _applicationId = res['applicationId']?.toString();
+          _formError = null;
+        });
+      }
+      return true;
+    } catch (e) {
+      if (mounted) setState(() => _formError = ApplicationService.describeError(e));
+      return false;
+    } finally {
+      if (mounted && !silent) setState(() => _saving = false);
+    }
+  }
+
   Future<void> _submit() async {
-    final email = _email.text.trim();
-    if (!RegExp(r'^[^\s@]+@[^\s@]+\.[^\s@]{2,}$').hasMatch(email)) {
-      setState(() => _error = 'Enter a valid email address.');
-      return;
-    }
-    if (_password.text.length < 8) {
-      setState(() => _error = 'Use at least 8 characters for your password.');
-      return;
-    }
+    if (!await _save(silent: true)) return;
+    final id = _applicationId;
+    if (id == null) return;
 
     setState(() {
-      _busy = true;
-      _error = null;
+      _submitting = true;
+      _formError = null;
     });
     try {
-      if (_signingIn) {
-        await ApplicationService.signIn(email: email, password: _password.text);
-      } else {
-        await ApplicationService.registerApplicant(
-          email: email,
-          password: _password.text,
-        );
-      }
-      widget.onDone();
-    } on FirebaseAuthException catch (e) {
-      setState(() {
-        _error = switch (e.code) {
-          'email-already-in-use' =>
-            'An account already uses that email. Switch to "I already started" to sign in.',
-          'wrong-password' || 'invalid-credential' =>
-            'Incorrect email or password.',
-          'user-not-found' => 'No account found for that email.',
-          'weak-password' => 'Choose a longer password.',
-          _ => e.message ?? 'That did not work. Please try again.',
-        };
-      });
+      final res = await ApplicationService.submit(id);
+      if (mounted) setState(() => _submitted = res);
     } catch (e) {
-      setState(() => _error = 'That did not work. Please try again.');
+      if (mounted) setState(() => _formError = ApplicationService.describeError(e));
     } finally {
-      if (mounted) setState(() => _busy = false);
+      if (mounted) setState(() => _submitting = false);
     }
   }
 
   @override
   Widget build(BuildContext context) {
     final t = ConsoleTokens.of(context);
+    if (_submitted != null) return _SubmittedPanel(result: _submitted!);
+
+    final requested = ((widget.existing?['requestedDocTypes'] as List?) ?? const [])
+        .map((e) => e.toString())
+        .toList();
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -215,521 +364,193 @@ class _AccountStepState extends State<_AccountStep> {
         ),
         const SizedBox(height: Insets.sm),
         Text(
-          'Start with the email address we should send the decision to. We will '
-          'send a link to confirm it is yours.',
+          'One form. A person reads it, and you hear back by email either way.',
           style: TextStyle(fontSize: FontSizes.body, height: 1.55, color: t.textMuted),
         ),
         const SizedBox(height: Insets.xl),
-        SegmentedButton<bool>(
-          segments: const [
-            ButtonSegment(value: false, label: Text('New application')),
-            ButtonSegment(value: true, label: Text('I already started')),
-          ],
-          selected: {_signingIn},
-          onSelectionChanged: (s) => setState(() {
-            _signingIn = s.first;
-            _error = null;
-          }),
-        ),
-        const SizedBox(height: Insets.xl),
-        if (_error != null) ...[
-          Semantics(
-            liveRegion: true,
-            child: Container(
-              padding: const EdgeInsets.all(Insets.md),
-              decoration: BoxDecoration(
-                color: t.danger.bg,
-                border: Border.all(color: t.danger.border),
-                borderRadius: Radii.control,
-              ),
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Icon(Icons.error_outline_rounded, size: 18, color: t.danger.fg),
-                  const SizedBox(width: Insets.sm),
-                  Expanded(
-                    child: Text(
-                      _error!,
-                      style: TextStyle(fontSize: FontSizes.body, color: t.danger.fg),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
+
+        if (widget.banner != null) ...[
+          _Notice(text: widget.banner!, tone: t.warning, icon: Icons.link_off_rounded),
           const SizedBox(height: Insets.lg),
         ],
-        ConsoleField(
-          label: 'Work email address',
-          required: true,
-          helper: 'Use an address at the school where possible.',
-          child: TextField(
-            controller: _email,
-            keyboardType: TextInputType.emailAddress,
-            autofillHints: const [AutofillHints.email],
-            decoration: const InputDecoration(hintText: 'registrar@school.edu.ph'),
-          ),
-        ),
-        const SizedBox(height: Insets.lg),
-        ConsoleField(
-          label: 'Password',
-          required: true,
-          helper: _signingIn ? null : 'At least 8 characters.',
-          child: TextField(
-            controller: _password,
-            obscureText: _obscure,
-            autofillHints: [
-              _signingIn ? AutofillHints.password : AutofillHints.newPassword,
-            ],
-            onSubmitted: (_) => _submit(),
-            decoration: InputDecoration(
-              hintText: 'Password',
-              suffixIcon: IconButton(
-                icon: Icon(_obscure
-                    ? Icons.visibility_off_outlined
-                    : Icons.visibility_outlined),
-                tooltip: _obscure ? 'Show password' : 'Hide password',
-                onPressed: () => setState(() => _obscure = !_obscure),
-              ),
-            ),
-          ),
-        ),
-        const SizedBox(height: Insets.xl),
-        ConsoleButton(
-          label: _signingIn ? 'Continue' : 'Create account & continue',
-          icon: Icons.arrow_forward_rounded,
-          busy: _busy,
-          onPressed: _busy ? null : _submit,
-        ),
-      ],
-    );
-  }
-}
-
-// ─── Steps 2–4 ────────────────────────────────────────────────────────────────
-
-class _ApplicationSteps extends StatefulWidget {
-  final int step;
-  final ValueChanged<int> onStep;
-  final QueryDocumentSnapshot<Map<String, dynamic>>? application;
-
-  const _ApplicationSteps({
-    required this.step,
-    required this.onStep,
-    required this.application,
-  });
-
-  @override
-  State<_ApplicationSteps> createState() => _ApplicationStepsState();
-}
-
-class _ApplicationStepsState extends State<_ApplicationSteps> {
-  final _schoolName = TextEditingController();
-  final _legalName = TextEditingController();
-  final _address = TextEditingController();
-  final _repName = TextEditingController();
-  final _repPosition = TextEditingController();
-  final _repPhone = TextEditingController();
-
-  String _institutionType = InstitutionType.privateIncorporated;
-
-  // Preselected from the plan they clicked on the website, so they are not
-  // asked to choose the same thing twice. The server prices the plan itself, so
-  // a tampered parameter buys nothing.
-  String _tier = _tierFromUrl();
-  String _billingCycle = _cycleFromUrl();
-
-  static const _knownTiers = {
-    'starter', 'growth', 'professional', 'scale', 'campus', 'enterprise',
-  };
-
-  static String _tierFromUrl() {
-    final t = Uri.base.queryParameters['tier'];
-    return _knownTiers.contains(t) ? t! : 'starter';
-  }
-
-  static String _cycleFromUrl() =>
-      Uri.base.queryParameters['cycle'] == 'annual' ? 'annual' : 'monthly';
-
-  bool _verified = false;
-  bool _checkingVerification = false;
-  bool _busy = false;
-  String? _error;
-  String? _applicationId;
-  Map<String, dynamic>? _submitResult;
-
-  @override
-  void initState() {
-    super.initState();
-    _hydrate();
-    _checkVerification();
-  }
-
-  @override
-  void didUpdateWidget(covariant _ApplicationSteps oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.application?.id != widget.application?.id) _hydrate();
-  }
-
-  void _hydrate() {
-    final d = widget.application?.data();
-    if (d == null) return;
-    _applicationId = widget.application!.id;
-    _schoolName.text = (d['schoolName'] ?? '').toString();
-    _legalName.text = (d['legalName'] ?? '').toString();
-    _address.text = (d['address'] ?? '').toString();
-    final rep = (d['representative'] ?? const {}) as Map;
-    _repName.text = (rep['name'] ?? '').toString();
-    _repPosition.text = (rep['position'] ?? '').toString();
-    _repPhone.text = (rep['phone'] ?? '').toString();
-    _institutionType = (d['institutionType'] ?? _institutionType).toString();
-    final plan = (d['plan'] ?? const {}) as Map;
-    _tier = (plan['tier'] ?? _tier).toString();
-    _billingCycle = (plan['billingCycle'] ?? _billingCycle).toString();
-  }
-
-  @override
-  void dispose() {
-    _schoolName.dispose();
-    _legalName.dispose();
-    _address.dispose();
-    _repName.dispose();
-    _repPosition.dispose();
-    _repPhone.dispose();
-    super.dispose();
-  }
-
-  Future<void> _checkVerification() async {
-    setState(() => _checkingVerification = true);
-    final ok = await ApplicationService.refreshEmailVerified();
-    if (mounted) {
-      setState(() {
-        _verified = ok;
-        _checkingVerification = false;
-      });
-    }
-  }
-
-  Future<void> _saveDetails() async {
-    if (_schoolName.text.trim().length < 2) {
-      setState(() => _error = 'Enter the school\'s name.');
-      return;
-    }
-    if (_repName.text.trim().isEmpty) {
-      setState(() => _error = 'Enter the authorized representative\'s name.');
-      return;
-    }
-    setState(() {
-      _busy = true;
-      _error = null;
-    });
-    try {
-      final res = await ApplicationService.saveApplication(
-        schoolName: _schoolName.text.trim(),
-        legalName: _legalName.text.trim().isEmpty
-            ? _schoolName.text.trim()
-            : _legalName.text.trim(),
-        institutionType: _institutionType,
-        address: _address.text.trim(),
-        repName: _repName.text.trim(),
-        repPosition: _repPosition.text.trim(),
-        repEmail: FirebaseAuth.instance.currentUser?.email ?? '',
-        repPhone: _repPhone.text.trim(),
-        tier: _tier,
-        billingCycle: _billingCycle,
-      );
-      if (mounted) {
-        setState(() => _applicationId = res['applicationId']?.toString());
-        widget.onStep(2);
-      }
-    } catch (e) {
-      if (mounted) setState(() => _error = _friendly(e));
-    } finally {
-      if (mounted) setState(() => _busy = false);
-    }
-  }
-
-  Future<void> _submit() async {
-    final id = _applicationId;
-    if (id == null) return;
-    setState(() {
-      _busy = true;
-      _error = null;
-    });
-    try {
-      final res = await ApplicationService.submit(id);
-      if (mounted) setState(() => _submitResult = res);
-    } catch (e) {
-      if (mounted) setState(() => _error = _friendly(e));
-    } finally {
-      if (mounted) setState(() => _busy = false);
-    }
-  }
-
-  String _friendly(Object e) {
-    final s = e.toString();
-    final match = RegExp(r'\[firebase_functions/[a-z-]+\]\s*(.+)$').firstMatch(s);
-    if (match != null) return match.group(1)!;
-    return 'That did not work. Please try again.';
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final t = ConsoleTokens.of(context);
-
-    if (_submitResult != null) {
-      return _SubmittedPanel(result: _submitResult!);
-    }
-
-    if (!_verified) {
-      return _VerifyEmailPanel(
-        email: FirebaseAuth.instance.currentUser?.email ?? '',
-        checking: _checkingVerification,
-        onCheck: _checkVerification,
-      );
-    }
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        _StepIndicator(current: widget.step),
-        const SizedBox(height: Insets.xl),
-        if (_error != null) ...[
-          Semantics(
-            liveRegion: true,
-            child: Container(
-              padding: const EdgeInsets.all(Insets.md),
-              decoration: BoxDecoration(
-                color: t.danger.bg,
-                border: Border.all(color: t.danger.border),
-                borderRadius: Radii.control,
-              ),
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Icon(Icons.error_outline_rounded, size: 18, color: t.danger.fg),
-                  const SizedBox(width: Insets.sm),
-                  Expanded(
-                    child: Text(
-                      _error!,
-                      style: TextStyle(fontSize: FontSizes.body, color: t.danger.fg),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-          const SizedBox(height: Insets.lg),
-        ],
-        if (widget.step <= 1) _detailsForm(t) else _documentsStep(t),
-      ],
-    );
-  }
-
-  Widget _detailsForm(ConsoleTokens t) {
-    final requested = ((widget.application?.data()['requestedDocTypes'] as List?) ?? const [])
-        .map((e) => e.toString())
-        .toList();
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
         if (requested.isNotEmpty) ...[
-          _RequestedDocsBanner(types: requested),
+          _Notice(
+            tone: t.warning,
+            icon: Icons.upload_file_rounded,
+            text: 'We asked for more documents:\n'
+                '${requested.map((r) => '•  ${ApplicationDocType.label(r)}').join('\n')}\n\n'
+                'Attach them below and submit again. Your original submission date '
+                'does not change.',
+          ),
           const SizedBox(height: Insets.lg),
         ],
-        Text(
-          'About your school',
-          style: TextStyle(
-            fontSize: FontSizes.heading,
-            fontWeight: FontWeight.w700,
-            letterSpacing: -0.4,
-            color: t.text,
+        if (_formError != null) ...[
+          _Notice(text: _formError!, tone: t.danger, icon: Icons.error_outline_rounded),
+          const SizedBox(height: Insets.lg),
+        ],
+
+        _SectionCard(
+          title: 'About the school',
+          child: Column(
+            children: [
+              ConsoleField(
+                label: 'School name',
+                required: true,
+                errorText: _errors['schoolName'],
+                child: TextField(
+                  controller: _schoolName,
+                  autofillHints: const [AutofillHints.organizationName],
+                  decoration: const InputDecoration(
+                    hintText: 'e.g. San Rafael National High School',
+                  ),
+                ),
+              ),
+              const SizedBox(height: Insets.lg),
+              ConsoleField(
+                label: 'Registered legal name',
+                helper: 'Leave blank if it is the same as above.',
+                child: TextField(
+                  controller: _legalName,
+                  decoration: const InputDecoration(
+                    hintText: 'As printed on your registration',
+                  ),
+                ),
+              ),
+              const SizedBox(height: Insets.lg),
+              ConsoleField(
+                label: 'Kind of institution',
+                required: true,
+                helper: 'This decides which documents we ask for — a public school '
+                    'is never asked for an SEC registration.',
+                child: DropdownMenu<String>(
+                  initialSelection: _institutionType,
+                  expandedInsets: EdgeInsets.zero,
+                  onSelected: (v) => setState(() => _institutionType = v ?? _institutionType),
+                  dropdownMenuEntries: InstitutionType.all
+                      .map((v) => DropdownMenuEntry(value: v, label: InstitutionType.label(v)))
+                      .toList(),
+                ),
+              ),
+              const SizedBox(height: Insets.lg),
+              ConsoleField(
+                label: 'School address',
+                child: TextField(
+                  controller: _address,
+                  minLines: 2,
+                  maxLines: 3,
+                  decoration: const InputDecoration(
+                    hintText: 'Street, barangay, city, province',
+                  ),
+                ),
+              ),
+            ],
           ),
+        ),
+        const SizedBox(height: Insets.lg),
+
+        _SectionCard(
+          title: 'Who we should contact',
+          subtitle: 'Every message about this application goes to this address, '
+              'including the sign-in details if it is approved.',
+          child: Column(
+            children: [
+              ConsoleField(
+                label: 'Email address',
+                required: true,
+                errorText: _errors['email'],
+                child: TextField(
+                  controller: _email,
+                  keyboardType: TextInputType.emailAddress,
+                  autofillHints: const [AutofillHints.email],
+                  autocorrect: false,
+                  decoration: const InputDecoration(hintText: 'registrar@school.edu.ph'),
+                ),
+              ),
+              const SizedBox(height: Insets.lg),
+              ConsoleField(
+                label: 'Authorized representative',
+                required: true,
+                errorText: _errors['repName'],
+                child: TextField(
+                  controller: _repName,
+                  autofillHints: const [AutofillHints.name],
+                  decoration: const InputDecoration(hintText: 'Full name'),
+                ),
+              ),
+              const SizedBox(height: Insets.lg),
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(
+                    child: ConsoleField(
+                      label: 'Position',
+                      child: TextField(
+                        controller: _repPosition,
+                        decoration: const InputDecoration(hintText: 'e.g. Principal'),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: Insets.md),
+                  Expanded(
+                    child: ConsoleField(
+                      label: 'Contact number',
+                      child: TextField(
+                        controller: _repPhone,
+                        keyboardType: TextInputType.phone,
+                        decoration: const InputDecoration(hintText: '09xx xxx xxxx'),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: Insets.lg),
+
+        _SectionCard(
+          title: 'Subscription plan',
+          subtitle: 'Pay for capacity. Pick the tier just above your real student '
+              'count — you can change it later.',
+          child: _PlanPicker(
+            tier: _tier,
+            cycle: _cycle,
+            onTier: (v) => setState(() => _tier = v),
+            onCycle: (v) => setState(() => _cycle = v),
+          ),
+        ),
+        const SizedBox(height: Insets.lg),
+
+        _DocumentsCard(
+          applicationId: _applicationId,
+          institutionType: _institutionType,
+          requestedDocTypes: requested,
+          onNeedApplication: () => _save(silent: true),
+          saving: _saving,
         ),
         const SizedBox(height: Insets.xl),
-        ConsoleField(
-          label: 'School name',
-          required: true,
-          helper: 'As people normally write it.',
-          child: TextField(
-            controller: _schoolName,
-            decoration: const InputDecoration(hintText: 'e.g. San Rafael National High School'),
-          ),
+
+        _SubmitBar(
+          applicationId: _applicationId,
+          institutionType: _institutionType,
+          requestedDocTypes: requested,
+          submitting: _submitting,
+          onSubmit: _submit,
         ),
-        const SizedBox(height: Insets.lg),
-        ConsoleField(
-          label: 'Registered legal name',
-          helper: 'Leave blank if it is the same as above.',
-          child: TextField(
-            controller: _legalName,
-            decoration: const InputDecoration(hintText: 'As printed on your registration'),
-          ),
-        ),
-        const SizedBox(height: Insets.lg),
-        ConsoleField(
-          label: 'Kind of institution',
-          required: true,
-          helper: 'This decides which documents we ask for — a public school is '
-              'never asked for an SEC registration.',
-          child: DropdownMenu<String>(
-            initialSelection: _institutionType,
-            expandedInsets: EdgeInsets.zero,
-            onSelected: (v) => setState(() => _institutionType = v ?? _institutionType),
-            dropdownMenuEntries: InstitutionType.all
-                .map((v) => DropdownMenuEntry(value: v, label: InstitutionType.label(v)))
-                .toList(),
-          ),
-        ),
-        const SizedBox(height: Insets.lg),
-        ConsoleField(
-          label: 'School address',
-          child: TextField(
-            controller: _address,
-            minLines: 2,
-            maxLines: 3,
-            decoration: const InputDecoration(hintText: 'Street, barangay, city, province'),
-          ),
-        ),
-        const SizedBox(height: Insets.xl),
-        Text(
-          'Authorized representative',
-          style: TextStyle(
-            fontSize: FontSizes.bodyLg,
-            fontWeight: FontWeight.w600,
-            color: t.text,
-          ),
-        ),
-        const SizedBox(height: Insets.md),
-        ConsoleField(
-          label: 'Full name',
-          required: true,
-          child: TextField(controller: _repName),
-        ),
-        const SizedBox(height: Insets.lg),
-        ConsoleField(
-          label: 'Position',
-          child: TextField(
-            controller: _repPosition,
-            decoration: const InputDecoration(hintText: 'e.g. Principal, Registrar'),
-          ),
-        ),
-        const SizedBox(height: Insets.lg),
-        ConsoleField(
-          label: 'Contact number',
-          child: TextField(
-            controller: _repPhone,
-            keyboardType: TextInputType.phone,
-            decoration: const InputDecoration(hintText: '09xx xxx xxxx'),
-          ),
-        ),
-        const SizedBox(height: Insets.xl),
-        Text(
-          'Plan',
-          style: TextStyle(
-            fontSize: FontSizes.bodyLg,
-            fontWeight: FontWeight.w600,
-            color: t.text,
-          ),
-        ),
-        const SizedBox(height: Insets.md),
-        _PlanPicker(
-          tier: _tier,
-          billingCycle: _billingCycle,
-          onTier: (v) => setState(() => _tier = v),
-          onCycle: (v) => setState(() => _billingCycle = v),
-        ),
-        const SizedBox(height: Insets.xl),
-        ConsoleButton(
-          label: 'Save and choose documents',
-          icon: Icons.arrow_forward_rounded,
-          busy: _busy,
-          onPressed: _busy ? null : _saveDetails,
-        ),
+        const SizedBox(height: Insets.giant),
       ],
     );
   }
-
-  Widget _documentsStep(ConsoleTokens t) {
-    final id = _applicationId;
-    if (id == null) {
-      return ConsoleEmptyState(
-        icon: Icons.assignment_outlined,
-        title: 'Fill in your school details first',
-        message: 'We use the kind of institution to decide which documents to ask for.',
-        action: ConsoleButton(
-          label: 'Back to details',
-          kind: ConsoleButtonKind.secondary,
-          onPressed: () => widget.onStep(1),
-        ),
-      );
-    }
-
-    return _DocumentsStep(
-      applicationId: id,
-      application: widget.application!.data(),
-      busy: _busy,
-      onBack: () => widget.onStep(1),
-      onSubmit: _submit,
-    );
-  }
 }
 
-class _StepIndicator extends StatelessWidget {
-  final int current;
-  const _StepIndicator({required this.current});
+// ─── Pieces ───────────────────────────────────────────────────────────────────
 
-  static const _labels = ['Account', 'School details', 'Documents'];
+class _SectionCard extends StatelessWidget {
+  final String title;
+  final String? subtitle;
+  final Widget child;
 
-  @override
-  Widget build(BuildContext context) {
-    final t = ConsoleTokens.of(context);
-    final index = current.clamp(0, 2);
-    return Row(
-      children: List.generate(_labels.length, (i) {
-        final done = i < index;
-        final active = i == index;
-        return Expanded(
-          child: Padding(
-            padding: EdgeInsets.only(right: i == _labels.length - 1 ? 0 : Insets.sm),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Container(
-                  height: 4,
-                  decoration: BoxDecoration(
-                    color: done || active ? t.brand : t.border,
-                    borderRadius: BorderRadius.circular(999),
-                  ),
-                ),
-                const SizedBox(height: Insets.sm),
-                Text(
-                  '${i + 1}. ${_labels[i]}',
-                  style: TextStyle(
-                    fontSize: FontSizes.caption,
-                    fontWeight: active ? FontWeight.w700 : FontWeight.w500,
-                    color: active ? t.text : t.textMuted,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        );
-      }),
-    );
-  }
-}
-
-class _VerifyEmailPanel extends StatelessWidget {
-  final String email;
-  final bool checking;
-  final VoidCallback onCheck;
-
-  const _VerifyEmailPanel({
-    required this.email,
-    required this.checking,
-    required this.onCheck,
-  });
+  const _SectionCard({required this.title, this.subtitle, required this.child});
 
   @override
   Widget build(BuildContext context) {
@@ -738,126 +559,84 @@ class _VerifyEmailPanel extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(Icons.mark_email_unread_outlined, size: 30, color: t.brand),
-          const SizedBox(height: Insets.md),
           Text(
-            'Confirm your email address',
+            title,
             style: TextStyle(
-              fontSize: FontSizes.title,
-              fontWeight: FontWeight.w700,
+              fontSize: FontSizes.bodyLg,
+              fontWeight: FontWeight.w600,
               color: t.text,
             ),
           ),
-          const SizedBox(height: Insets.sm),
-          Text(
-            'We sent a link to $email. Open it, then come back to this page and '
-            'continue. We verify the address because every decision on your '
-            'application is sent there.',
-            style: TextStyle(fontSize: FontSizes.body, height: 1.6, color: t.textMuted),
-          ),
-          const SizedBox(height: Insets.xl),
-          Wrap(
-            spacing: Insets.sm,
-            runSpacing: Insets.sm,
-            children: [
-              ConsoleButton(
-                label: 'I have confirmed it',
-                icon: Icons.refresh_rounded,
-                busy: checking,
-                onPressed: checking ? null : onCheck,
+          if (subtitle != null) ...[
+            const SizedBox(height: Insets.xs),
+            Text(
+              subtitle!,
+              style: TextStyle(
+                fontSize: FontSizes.caption,
+                height: 1.55,
+                color: t.textMuted,
               ),
-              ConsoleButton(
-                label: 'Send the link again',
-                icon: Icons.send_rounded,
-                kind: ConsoleButtonKind.secondary,
-                onPressed: () async {
-                  await ApplicationService.resendVerification();
-                  if (context.mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('Verification email sent.')),
-                    );
-                  }
-                },
-              ),
-            ],
-          ),
+            ),
+          ],
+          const SizedBox(height: Insets.lg),
+          child,
         ],
       ),
     );
   }
 }
 
-class _RequestedDocsBanner extends StatelessWidget {
-  final List<String> types;
-  const _RequestedDocsBanner({required this.types});
+class _Notice extends StatelessWidget {
+  final String text;
+  final StatusTone tone;
+  final IconData icon;
+
+  const _Notice({required this.text, required this.tone, required this.icon});
 
   @override
   Widget build(BuildContext context) {
-    final t = ConsoleTokens.of(context);
-    return Container(
-      padding: const EdgeInsets.all(Insets.lg),
-      decoration: BoxDecoration(
-        color: t.warning.bg,
-        border: Border.all(color: t.warning.border),
-        borderRadius: Radii.control,
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Icon(Icons.upload_file_rounded, size: 18, color: t.warning.fg),
-              const SizedBox(width: Insets.sm),
-              Text(
-                'We asked for more documents',
-                style: TextStyle(
-                  fontSize: FontSizes.body,
-                  fontWeight: FontWeight.w700,
-                  color: t.warning.fg,
-                ),
+    return Semantics(
+      liveRegion: true,
+      child: Container(
+        padding: const EdgeInsets.all(Insets.md),
+        decoration: BoxDecoration(
+          color: tone.bg,
+          border: Border.all(color: tone.border),
+          borderRadius: Radii.control,
+        ),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(icon, size: 18, color: tone.fg),
+            const SizedBox(width: Insets.sm),
+            Expanded(
+              child: Text(
+                text,
+                style: TextStyle(fontSize: FontSizes.body, height: 1.55, color: tone.fg),
               ),
-            ],
-          ),
-          const SizedBox(height: Insets.sm),
-          ...types.map((t2) => Text(
-                '• ${ApplicationDocType.label(t2)}',
-                style: TextStyle(
-                  fontSize: FontSizes.body,
-                  height: 1.7,
-                  color: t.warning.fg,
-                ),
-              )),
-          const SizedBox(height: Insets.sm),
-          Text(
-            'Upload them below and submit again. Your original submission date '
-            'stays as it was.',
-            style: TextStyle(
-              fontSize: FontSizes.caption,
-              height: 1.55,
-              color: t.warning.fg,
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
 }
 
+/// The plans, with what each one costs. Mirrors functions/lib/pricing.js; the
+/// server prices the plan itself on save, so this is display only.
 class _PlanPicker extends StatelessWidget {
   final String tier;
-  final String billingCycle;
+  final String cycle;
   final ValueChanged<String> onTier;
   final ValueChanged<String> onCycle;
 
   const _PlanPicker({
     required this.tier,
-    required this.billingCycle,
+    required this.cycle,
     required this.onTier,
     required this.onCycle,
   });
 
-  // Mirrors functions/lib/pricing.js. Shown so the applicant knows what they
-  // are asking for; the server prices the plan itself on save.
   static const _tiers = [
     ('starter', 'Starter', 100, 1000),
     ('growth', 'Growth', 200, 2000),
@@ -870,38 +649,41 @@ class _PlanPicker extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final t = ConsoleTokens.of(context);
+    final annual = cycle == 'annual';
+    final selected = _tiers.firstWhere((e) => e.$1 == tier, orElse: () => _tiers.first);
+    final monthly = annual ? (selected.$4 * 0.8).round() : selected.$4;
+    final total = annual ? monthly * 12 : monthly;
+
     return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         SegmentedButton<String>(
           segments: const [
             ButtonSegment(value: 'monthly', label: Text('Monthly')),
-            ButtonSegment(value: 'annual', label: Text('Annual (−20%)')),
+            ButtonSegment(value: 'annual', label: Text('Annual · save 20%')),
           ],
-          selected: {billingCycle},
+          selected: {cycle},
           onSelectionChanged: (s) => onCycle(s.first),
         ),
         const SizedBox(height: Insets.md),
-        ..._tiers.map((entry) {
-          final (key, label, capacity, monthly) = entry;
-          final selected = key == tier;
-          final price = billingCycle == 'annual'
-              ? (monthly * 12 * 0.8).round()
-              : monthly;
+        ..._tiers.map((e) {
+          final (key, label, capacity, base) = e;
+          final isSelected = key == tier;
+          final price = annual ? (base * 0.8).round() : base;
           return Padding(
             padding: const EdgeInsets.only(bottom: Insets.sm),
             child: ConsoleCard(
               onTap: () => onTier(key),
-              accent: selected ? t.brand : null,
+              accent: isSelected ? t.brand : null,
               padding: const EdgeInsets.all(Insets.md),
               child: Row(
                 children: [
                   Icon(
-                    selected
+                    isSelected
                         ? Icons.radio_button_checked_rounded
                         : Icons.radio_button_unchecked_rounded,
                     size: 20,
-                    color: selected ? t.brand : t.textFaint,
+                    color: isSelected ? t.brand : t.textFaint,
                   ),
                   const SizedBox(width: Insets.md),
                   Expanded(
@@ -929,9 +711,7 @@ class _PlanPicker extends StatelessWidget {
                     ),
                   ),
                   Text(
-                    capacity == 0
-                        ? 'Custom'
-                        : '${formatPeso(price)}/${billingCycle == 'annual' ? 'yr' : 'mo'}',
+                    capacity == 0 ? 'Custom' : '${formatPeso(price)}/mo',
                     style: TextStyle(
                       fontSize: FontSizes.body,
                       fontWeight: FontWeight.w700,
@@ -943,42 +723,187 @@ class _PlanPicker extends StatelessWidget {
             ),
           );
         }),
+        const SizedBox(height: Insets.sm),
+        Container(
+          padding: const EdgeInsets.all(Insets.lg),
+          decoration: BoxDecoration(
+            color: t.info.bg,
+            border: Border.all(color: t.info.border),
+            borderRadius: Radii.control,
+          ),
+          child: Row(
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      selected.$3 == 0
+                          ? 'Enterprise — quoted individually'
+                          : '${selected.$2} · up to ${selected.$3} students',
+                      style: TextStyle(
+                        fontSize: FontSizes.caption,
+                        fontWeight: FontWeight.w600,
+                        color: t.info.fg,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      annual ? 'Billed once a year' : 'Billed every month',
+                      style: TextStyle(fontSize: FontSizes.caption, color: t.info.fg),
+                    ),
+                  ],
+                ),
+              ),
+              if (selected.$3 != 0)
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    Text(
+                      formatPeso(total),
+                      style: TextStyle(
+                        fontSize: FontSizes.heading,
+                        fontWeight: FontWeight.w700,
+                        letterSpacing: -0.5,
+                        color: t.info.fg,
+                      ),
+                    ),
+                    Text(
+                      annual ? 'per year' : 'per month',
+                      style: TextStyle(fontSize: FontSizes.caption, color: t.info.fg),
+                    ),
+                  ],
+                ),
+            ],
+          ),
+        ),
+        const SizedBox(height: Insets.sm),
+        Text(
+          'No payment is collected during this trial. Your subscription is '
+          'activated on approval and the receipt says so on its face.',
+          style: TextStyle(fontSize: FontSizes.caption, height: 1.5, color: t.textFaint),
+        ),
       ],
     );
   }
 }
 
-class _DocumentsStep extends StatefulWidget {
-  final String applicationId;
-  final Map<String, dynamic> application;
-  final bool busy;
-  final VoidCallback onBack;
-  final VoidCallback onSubmit;
+/// Which documents this institution type needs, and the upload for each.
+/// Mirrors INSTITUTION_REQUIREMENTS in functions/lib/applications.js.
+class _DocumentsCard extends StatefulWidget {
+  final String? applicationId;
+  final String institutionType;
+  final List<String> requestedDocTypes;
+  final Future<bool> Function() onNeedApplication;
+  final bool saving;
 
-  const _DocumentsStep({
+  const _DocumentsCard({
     required this.applicationId,
-    required this.application,
-    required this.busy,
-    required this.onBack,
-    required this.onSubmit,
+    required this.institutionType,
+    required this.requestedDocTypes,
+    required this.onNeedApplication,
+    required this.saving,
   });
 
+  static const _requirements = <String, (List<String>, List<String>)>{
+    InstitutionType.privateIncorporated: (
+      [
+        ApplicationDocType.secRegistration,
+        ApplicationDocType.depedPermit,
+        ApplicationDocType.authorizationLetter,
+      ],
+      [
+        ApplicationDocType.articlesOfIncorporation,
+        ApplicationDocType.schoolIdentifier,
+        ApplicationDocType.addressProof,
+      ],
+    ),
+    InstitutionType.publicSchool: (
+      [
+        ApplicationDocType.governmentEstablishment,
+        ApplicationDocType.authorizationLetter,
+      ],
+      [
+        ApplicationDocType.schoolIdentifier,
+        ApplicationDocType.addressProof,
+        ApplicationDocType.depedPermit,
+      ],
+    ),
+    InstitutionType.stateUniversity: (
+      [
+        ApplicationDocType.governmentEstablishment,
+        ApplicationDocType.authorizationLetter,
+      ],
+      [
+        ApplicationDocType.chedRecognition,
+        ApplicationDocType.schoolIdentifier,
+        ApplicationDocType.addressProof,
+      ],
+    ),
+    InstitutionType.tvet: (
+      [
+        ApplicationDocType.tesdaRegistration,
+        ApplicationDocType.authorizationLetter,
+      ],
+      [
+        ApplicationDocType.secRegistration,
+        ApplicationDocType.schoolIdentifier,
+        ApplicationDocType.addressProof,
+      ],
+    ),
+    InstitutionType.other: (
+      [ApplicationDocType.authorizationLetter],
+      [
+        ApplicationDocType.secRegistration,
+        ApplicationDocType.depedPermit,
+        ApplicationDocType.chedRecognition,
+        ApplicationDocType.tesdaRegistration,
+        ApplicationDocType.governmentEstablishment,
+        ApplicationDocType.schoolIdentifier,
+        ApplicationDocType.addressProof,
+        ApplicationDocType.other,
+      ],
+    ),
+  };
+
+  static (List<String>, List<String>) requirementsFor(String type) =>
+      _requirements[type] ?? _requirements[InstitutionType.other]!;
+
   @override
-  State<_DocumentsStep> createState() => _DocumentsStepState();
+  State<_DocumentsCard> createState() => _DocumentsCardState();
 }
 
-class _DocumentsStepState extends State<_DocumentsStep> {
-  String? _uploadingType;
+class _DocumentsCardState extends State<_DocumentsCard> {
+  String? _uploading;
   double _progress = 0;
-  String? _uploadError;
+  String? _error;
 
-  Future<void> _pickAndUpload(String type) async {
+  Future<void> _pick(String type) async {
     setState(() {
-      _uploadError = null;
-      _uploadingType = type;
+      _error = null;
+      _uploading = type;
       _progress = 0;
     });
     try {
+      // The application has to exist before a file can hang off it.
+      var id = widget.applicationId;
+      if (id == null) {
+        final ok = await widget.onNeedApplication();
+        if (!ok) {
+          setState(() {
+            _uploading = null;
+            _error = 'Fill in the school name, email and representative first.';
+          });
+          return;
+        }
+        if (!mounted) return;
+        id = widget.applicationId;
+        if (id == null) {
+          setState(() => _uploading = null);
+          return;
+        }
+      }
+
       final picked = await FilePicker.platform.pickFiles(
         type: FileType.custom,
         allowedExtensions: const ['pdf', 'jpg', 'jpeg', 'png'],
@@ -986,117 +911,81 @@ class _DocumentsStepState extends State<_DocumentsStep> {
       );
       final file = picked?.files.firstOrNull;
       if (file == null || file.bytes == null) {
-        setState(() => _uploadingType = null);
+        setState(() => _uploading = null);
         return;
       }
       if (file.size > 10 * 1024 * 1024) {
         setState(() {
-          _uploadError = 'That file is larger than 10 MB. Please upload a smaller scan.';
-          _uploadingType = null;
+          _error = 'That file is larger than 10 MB. Please upload a smaller scan.';
+          _uploading = null;
         });
         return;
       }
 
       final ext = (file.extension ?? 'pdf').toLowerCase();
-      final contentType = switch (ext) {
-        'pdf' => 'application/pdf',
-        'png' => 'image/png',
-        _ => 'image/jpeg',
-      };
-
       await ApplicationService.uploadDocument(
-        applicationId: widget.applicationId,
+        applicationId: id,
         type: type,
         bytes: file.bytes!,
         fileName: file.name,
-        contentType: contentType,
+        contentType: switch (ext) {
+          'pdf' => 'application/pdf',
+          'png' => 'image/png',
+          _ => 'image/jpeg',
+        },
         onProgress: (p) {
           if (mounted) setState(() => _progress = p);
         },
       );
     } catch (e) {
-      if (mounted) {
-        setState(() => _uploadError = 'The upload did not finish. Please try again.');
-      }
+      if (mounted) setState(() => _error = ApplicationService.describeError(e));
     } finally {
-      if (mounted) setState(() => _uploadingType = null);
+      if (mounted) setState(() => _uploading = null);
     }
   }
 
   @override
   Widget build(BuildContext context) {
     final t = ConsoleTokens.of(context);
-    final required = ((widget.application['requestedDocTypes'] as List?) ??
-            (widget.application['requiredDocTypes'] as List?) ??
-            const [])
-        .map((e) => e.toString())
-        .toList();
-    final optional = ((widget.application['optionalDocTypes'] as List?) ?? const [])
-        .map((e) => e.toString())
-        .where((e) => !required.contains(e))
-        .toList();
+    final (required, optional) = _DocumentsCard.requirementsFor(widget.institutionType);
+    final needed = widget.requestedDocTypes.isNotEmpty ? widget.requestedDocTypes : required;
 
-    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-      stream: ApplicationService.documents(widget.applicationId),
-      builder: (context, snap) {
-        final docs = snap.data?.docs ?? const [];
-        final live = docs.where((d) => d.data()['superseded'] != true).toList();
-        final present = live.map((d) => (d.data()['type'] ?? '').toString()).toSet();
-        final missing = required.where((r) => !present.contains(r)).toList();
+    return _SectionCard(
+      title: 'Verification documents',
+      subtitle: 'PDF, JPG or PNG, up to 10 MB each. We never ask for student '
+          'lists, student numbers, attendance or medical records to verify a school.',
+      child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+        stream: widget.applicationId == null
+            ? const Stream.empty()
+            : ApplicationService.documents(widget.applicationId!),
+        builder: (context, snap) {
+          final live = (snap.data?.docs ?? const [])
+              .where((d) => d.data()['superseded'] != true)
+              .toList();
 
-        return Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Text(
-              'Verification documents',
-              style: TextStyle(
-                fontSize: FontSizes.heading,
-                fontWeight: FontWeight.w700,
-                letterSpacing: -0.4,
-                color: t.text,
-              ),
-            ),
-            const SizedBox(height: Insets.sm),
-            Text(
-              'PDF, JPG or PNG, up to 10 MB each. We never ask for student lists, '
-              'student numbers, attendance or medical records to verify a school.',
-              style: TextStyle(fontSize: FontSizes.body, height: 1.55, color: t.textMuted),
-            ),
-            const SizedBox(height: Insets.xl),
-            if (_uploadError != null) ...[
-              Semantics(
-                liveRegion: true,
-                child: Text(
-                  _uploadError!,
-                  style: TextStyle(fontSize: FontSizes.body, color: t.danger.fg),
-                ),
-              ),
-              const SizedBox(height: Insets.md),
-            ],
-            Text(
-              'Required',
-              style: TextStyle(
-                fontSize: FontSizes.body,
-                fontWeight: FontWeight.w700,
-                color: t.text,
-              ),
-            ),
-            const SizedBox(height: Insets.sm),
-            ...required.map((type) => _DocRow(
-                  type: type,
-                  uploaded: live.where((d) => d.data()['type'] == type).toList(),
-                  uploading: _uploadingType == type,
-                  progress: _progress,
-                  onUpload: () => _pickAndUpload(type),
-                  onRemove: (id) => ApplicationService.removeDocument(
-                    applicationId: widget.applicationId,
-                    documentId: id,
-                  ),
-                )),
-            if (optional.isNotEmpty) ...[
-              const SizedBox(height: Insets.lg),
+          Widget rowFor(String type) => _DocRow(
+                type: type,
+                uploaded: live.where((d) => d.data()['type'] == type).toList(),
+                uploading: _uploading == type,
+                progress: _progress,
+                onUpload: () => _pick(type),
+                onRemove: widget.applicationId == null
+                    ? null
+                    : (docId) => ApplicationService.removeDocument(
+                          applicationId: widget.applicationId!,
+                          documentId: docId,
+                        ),
+              );
+
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              if (_error != null) ...[
+                _Notice(text: _error!, tone: t.danger, icon: Icons.error_outline_rounded),
+                const SizedBox(height: Insets.md),
+              ],
               Text(
-                'Optional — helpful if you have them',
+                'Required',
                 style: TextStyle(
                   fontSize: FontSizes.body,
                   fontWeight: FontWeight.w700,
@@ -1104,56 +993,24 @@ class _DocumentsStepState extends State<_DocumentsStep> {
                 ),
               ),
               const SizedBox(height: Insets.sm),
-              ...optional.map((type) => _DocRow(
-                    type: type,
-                    uploaded: live.where((d) => d.data()['type'] == type).toList(),
-                    uploading: _uploadingType == type,
-                    progress: _progress,
-                    onUpload: () => _pickAndUpload(type),
-                    onRemove: (id) => ApplicationService.removeDocument(
-                      applicationId: widget.applicationId,
-                      documentId: id,
-                    ),
-                  )),
-            ],
-            const SizedBox(height: Insets.xl),
-            if (missing.isNotEmpty)
-              Container(
-                padding: const EdgeInsets.all(Insets.md),
-                decoration: BoxDecoration(
-                  color: t.warning.bg,
-                  border: Border.all(color: t.warning.border),
-                  borderRadius: Radii.control,
+              ...needed.map(rowFor),
+              if (optional.isNotEmpty) ...[
+                const SizedBox(height: Insets.lg),
+                Text(
+                  'Optional — helpful if you have them',
+                  style: TextStyle(
+                    fontSize: FontSizes.body,
+                    fontWeight: FontWeight.w700,
+                    color: t.text,
+                  ),
                 ),
-                child: Text(
-                  'Still to attach: ${missing.map(ApplicationDocType.label).join(', ')}.',
-                  style: TextStyle(fontSize: FontSizes.body, color: t.warning.fg),
-                ),
-              ),
-            const SizedBox(height: Insets.lg),
-            Row(
-              children: [
-                ConsoleButton(
-                  label: 'Back',
-                  icon: Icons.arrow_back_rounded,
-                  kind: ConsoleButtonKind.ghost,
-                  onPressed: widget.onBack,
-                ),
-                const Spacer(),
-                ConsoleButton(
-                  label: 'Submit application',
-                  icon: Icons.send_rounded,
-                  busy: widget.busy,
-                  onPressed: missing.isEmpty && !widget.busy ? widget.onSubmit : null,
-                  disabledReason: missing.isEmpty
-                      ? null
-                      : 'Attach the required documents first',
-                ),
+                const SizedBox(height: Insets.sm),
+                ...optional.where((o) => !needed.contains(o)).map(rowFor),
               ],
-            ),
-          ],
-        );
-      },
+            ],
+          );
+        },
+      ),
     );
   }
 }
@@ -1164,7 +1021,7 @@ class _DocRow extends StatelessWidget {
   final bool uploading;
   final double progress;
   final VoidCallback onUpload;
-  final Future<void> Function(String documentId) onRemove;
+  final Future<void> Function(String documentId)? onRemove;
 
   const _DocRow({
     required this.type,
@@ -1244,36 +1101,114 @@ class _DocRow extends StatelessWidget {
                 ),
               ),
             ],
-            ...uploaded.map((d) {
-              final data = d.data();
-              return Padding(
-                padding: const EdgeInsets.only(top: Insets.sm),
-                child: Row(
-                  children: [
-                    Icon(Icons.description_outlined, size: 15, color: t.textFaint),
-                    const SizedBox(width: Insets.sm),
-                    Expanded(
-                      child: Text(
-                        (data['fileName'] ?? 'document').toString(),
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          fontSize: FontSizes.caption,
-                          color: t.textMuted,
+            ...uploaded.map((d) => Padding(
+                  padding: const EdgeInsets.only(top: Insets.sm),
+                  child: Row(
+                    children: [
+                      Icon(Icons.description_outlined, size: 15, color: t.textFaint),
+                      const SizedBox(width: Insets.sm),
+                      Expanded(
+                        child: Text(
+                          (d.data()['fileName'] ?? 'document').toString(),
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: FontSizes.caption,
+                            color: t.textMuted,
+                          ),
                         ),
                       ),
-                    ),
-                    IconButton(
-                      icon: const Icon(Icons.close_rounded, size: 16),
-                      tooltip: 'Remove this file',
-                      onPressed: () => onRemove(d.id),
-                    ),
-                  ],
-                ),
-              );
-            }),
+                      if (onRemove != null)
+                        IconButton(
+                          icon: const Icon(Icons.close_rounded, size: 16),
+                          tooltip: 'Remove this file',
+                          onPressed: () => onRemove!(d.id),
+                        ),
+                    ],
+                  ),
+                )),
           ],
         ),
       ),
+    );
+  }
+}
+
+class _SubmitBar extends StatelessWidget {
+  final String? applicationId;
+  final String institutionType;
+  final List<String> requestedDocTypes;
+  final bool submitting;
+  final VoidCallback onSubmit;
+
+  const _SubmitBar({
+    required this.applicationId,
+    required this.institutionType,
+    required this.requestedDocTypes,
+    required this.submitting,
+    required this.onSubmit,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final t = ConsoleTokens.of(context);
+    final (required, _) = _DocumentsCard.requirementsFor(institutionType);
+    final needed = requestedDocTypes.isNotEmpty ? requestedDocTypes : required;
+
+    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+      stream: applicationId == null
+          ? const Stream.empty()
+          : ApplicationService.documents(applicationId!),
+      builder: (context, snap) {
+        final present = (snap.data?.docs ?? const [])
+            .where((d) => d.data()['superseded'] != true)
+            .map((d) => (d.data()['type'] ?? '').toString())
+            .toSet();
+        final missing = needed.where((n) => !present.contains(n)).toList();
+        final ready = applicationId != null && missing.isEmpty;
+
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            if (missing.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(bottom: Insets.md),
+                child: _Notice(
+                  tone: t.neutral,
+                  icon: Icons.checklist_rounded,
+                  text: 'Still to attach: '
+                      '${missing.map(ApplicationDocType.label).join(', ')}.',
+                ),
+              ),
+            SizedBox(
+              height: 52,
+              child: ElevatedButton.icon(
+                onPressed: ready && !submitting ? onSubmit : null,
+                icon: submitting
+                    ? const SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(
+                            strokeWidth: 2, color: Colors.white),
+                      )
+                    : const Icon(Icons.send_rounded, size: 20),
+                label: const Text('Submit application'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: t.brand,
+                  foregroundColor: t.onBrand,
+                  disabledBackgroundColor: t.brand.withValues(alpha: 0.4),
+                  disabledForegroundColor: Colors.white70,
+                  elevation: 0,
+                  shape: const RoundedRectangleBorder(borderRadius: Radii.control),
+                  textStyle: const TextStyle(
+                    fontSize: FontSizes.bodyLg,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+            ),
+          ],
+        );
+      },
     );
   }
 }
@@ -1310,38 +1245,14 @@ class _SubmittedPanel extends StatelessWidget {
             style: TextStyle(fontSize: FontSizes.body, height: 1.65, color: t.textMuted),
           ),
           const SizedBox(height: Insets.lg),
-          Container(
-            padding: const EdgeInsets.all(Insets.md),
-            decoration: BoxDecoration(
-              color: emailSent ? t.success.bg : t.warning.bg,
-              border: Border.all(color: emailSent ? t.success.border : t.warning.border),
-              borderRadius: Radii.control,
-            ),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Icon(
-                  emailSent ? Icons.mark_email_read_outlined : Icons.report_outlined,
-                  size: 18,
-                  color: emailSent ? t.success.fg : t.warning.fg,
-                ),
-                const SizedBox(width: Insets.sm),
-                Expanded(
-                  child: Text(
-                    emailSent
-                        ? 'A confirmation email is on its way with your reference number.'
-                        : 'Your application is saved, but the confirmation email could not '
-                            'be sent right now. Your application is unaffected — keep this '
-                            'page open or sign in again to check its status.',
-                    style: TextStyle(
-                      fontSize: FontSizes.body,
-                      height: 1.55,
-                      color: emailSent ? t.success.fg : t.warning.fg,
-                    ),
-                  ),
-                ),
-              ],
-            ),
+          _Notice(
+            tone: emailSent ? t.success : t.warning,
+            icon: emailSent ? Icons.mark_email_read_outlined : Icons.report_outlined,
+            text: emailSent
+                ? 'A confirmation email is on its way with your reference number.'
+                : 'Your application is saved, but the confirmation email could not be '
+                    'sent right now. Your application is unaffected — we will still '
+                    'review it and email you the decision.',
           ),
         ],
       ),
@@ -1351,89 +1262,72 @@ class _SubmittedPanel extends StatelessWidget {
 
 /// What an applicant sees once their application is with the reviewer.
 class _StatusPanel extends StatelessWidget {
-  final String applicationId;
   final Map<String, dynamic> data;
-
-  const _StatusPanel({required this.applicationId, required this.data});
+  const _StatusPanel({required this.data});
 
   @override
   Widget build(BuildContext context) {
     final t = ConsoleTokens.of(context);
     final status = (data['status'] ?? '').toString();
 
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        ConsoleCard(
-          child: Column(
+    return ConsoleCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      (data['schoolName'] ?? 'Your application').toString(),
-                      style: TextStyle(
-                        fontSize: FontSizes.heading,
-                        fontWeight: FontWeight.w700,
-                        letterSpacing: -0.4,
-                        color: t.text,
-                      ),
-                    ),
-                  ),
-                  StatusBadge(
-                    label: ApplicationStatus.label(status),
-                    tone: ApplicationStatus.tone(t, status),
-                    icon: ApplicationStatus.icon(status),
-                  ),
-                ],
-              ),
-              const SizedBox(height: Insets.xs),
-              Text(
-                'Reference ${data['reference'] ?? '—'}',
-                style: TextStyle(fontSize: FontSizes.body, color: t.textMuted),
-              ),
-              const SizedBox(height: Insets.lg),
-              Text(
-                'Submitted ${formatTimestamp(data['submittedAt'], withTime: false)} · '
-                'Review target ${formatTimestamp(data['reviewTargetAt'], withTime: false)}',
-                style: TextStyle(fontSize: FontSizes.body, color: t.textMuted),
-              ),
-              const SizedBox(height: Insets.md),
-              Text(
-                'The review target is a commitment to look at your application, not a '
-                'payment deadline. Nothing is approved automatically when it passes.',
-                style: TextStyle(
-                  fontSize: FontSizes.caption,
-                  height: 1.55,
-                  color: t.textFaint,
-                ),
-              ),
-              if (status == ApplicationStatus.approved) ...[
-                const SizedBox(height: Insets.lg),
-                Container(
-                  padding: const EdgeInsets.all(Insets.md),
-                  decoration: BoxDecoration(
-                    color: t.success.bg,
-                    border: Border.all(color: t.success.border),
-                    borderRadius: Radii.control,
-                  ),
-                  child: Text(
-                    'Approved. Your administrator credentials were emailed to '
-                    '${data['email'] ?? 'your address'} — sign in and change the '
-                    'temporary password.',
-                    style: TextStyle(
-                      fontSize: FontSizes.body,
-                      height: 1.55,
-                      color: t.success.fg,
-                    ),
+              Expanded(
+                child: Text(
+                  (data['schoolName'] ?? 'Your application').toString(),
+                  style: TextStyle(
+                    fontSize: FontSizes.heading,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: -0.4,
+                    color: t.text,
                   ),
                 ),
-              ],
+              ),
+              StatusBadge(
+                label: ApplicationStatus.label(status),
+                tone: ApplicationStatus.tone(t, status),
+                icon: ApplicationStatus.icon(status),
+              ),
             ],
           ),
-        ),
-      ],
+          const SizedBox(height: Insets.xs),
+          Text(
+            'Reference ${data['reference'] ?? '—'}',
+            style: TextStyle(fontSize: FontSizes.body, color: t.textMuted),
+          ),
+          const SizedBox(height: Insets.lg),
+          Text(
+            'Submitted ${formatTimestamp(data['submittedAt'], withTime: false)} · '
+            'Review target ${formatTimestamp(data['reviewTargetAt'], withTime: false)}',
+            style: TextStyle(fontSize: FontSizes.body, color: t.textMuted),
+          ),
+          const SizedBox(height: Insets.md),
+          Text(
+            'The review target is a commitment to look at your application, not a '
+            'payment deadline. Nothing is approved automatically when it passes.',
+            style: TextStyle(
+              fontSize: FontSizes.caption,
+              height: 1.55,
+              color: t.textFaint,
+            ),
+          ),
+          if (status == ApplicationStatus.approved) ...[
+            const SizedBox(height: Insets.lg),
+            _Notice(
+              tone: t.success,
+              icon: Icons.verified_outlined,
+              text: 'Approved. Your administrator credentials and receipt were emailed '
+                  'to ${data['email'] ?? 'your address'} — sign in and change the '
+                  'temporary password.',
+            ),
+          ],
+        ],
+      ),
     );
   }
 }
