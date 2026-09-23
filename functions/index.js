@@ -4,64 +4,41 @@ const { defineString } = require("firebase-functions/params");
 const admin = require("firebase-admin");
 const axios = require("axios");
 const crypto = require("crypto");
-const nodemailer = require("nodemailer");
+
+const {
+  googleMapsKey,
+  geminiApiKey,
+  geminiModel,
+  semaphoreKey,
+  semaphoreSender,
+  sanitizeText,
+  normEmail,
+  normStudentNumber,
+  isValidEmail,
+  escapeHtml,
+  checkRateLimit,
+  createMailTransport,
+  sendMail,
+  generateTempPassword,
+  storageObjectAsBase64,
+} = require("./lib/common");
+
+const {
+  TIERS,
+  RATE_PER_STUDENT,
+  ANNUAL_DISCOUNT,
+  monthlyPriceFor,
+} = require("./lib/pricing");
 
 if (!admin.apps.length) {
   admin.initializeApp();
 }
 
-const googleMapsKey = defineString("GOOGLE_MAPS_KEY");
-const geminiApiKey = defineString("GEMINI_API_KEY");
-// gemini-2.x has no free-tier quota on this project (limit: 0), so the default
-// is a 3.x flash model. Verified end-to-end against signed / unsigned / prompt-
-// injected sample forms before shipping.
-const geminiModel = defineString("GEMINI_MODEL", { default: "gemini-3.6-flash" });
-
-// Outgoing mail. For Gmail, SMTP_PASS must be a 16-character App Password
-// (myaccount.google.com/apppasswords), never the account's own password.
-// Defaults are empty so deploys never block on an interactive prompt; when the
-// credentials are missing sendMail throws and the caller falls back gracefully.
-const smtpHost = defineString("SMTP_HOST", { default: "smtp.gmail.com" });
-const smtpUser = defineString("SMTP_USER", { default: "" });
-const smtpPass = defineString("SMTP_PASS", { default: "" });
-const smtpFrom = defineString("SMTP_FROM", { default: "" });
-
-// Outgoing SMS (Semaphore — semaphore.co). Optional: with no key configured the
-// SMS branch is simply skipped and email remains the only channel.
-const semaphoreKey = defineString("SEMAPHORE_API_KEY", { default: "" });
-const semaphoreSender = defineString("SEMAPHORE_SENDER_NAME", { default: "" });
-
 // ─── Input sanitization ───────────────────────────────────────────────────────
-
-function sanitizeText(text, maxLen = 2000) {
-  if (typeof text !== "string") return "";
-  return text
-    .replace(/\0/g, "")        // strip null bytes (prompt-injection vector)
-    .replace(/[<>]/g, "")      // strip angle brackets (XSS vector)
-    .trim()
-    .substring(0, maxLen);
-}
 
 // ─── Rate limiting ────────────────────────────────────────────────────────────
 // Tracks per-user request timestamps in _rateLimits/{uid}_{action}.
 // Allows up to `maxReqs` calls per 60-second sliding window.
-
-async function checkRateLimit(uid, action, maxReqs = 30) {
-  const db = admin.firestore();
-  const ref = db.collection("_rateLimits").doc(`${uid}_${action}`);
-  const now = Date.now();
-  const windowStart = now - 60_000;
-
-  await db.runTransaction(async (tx) => {
-    const doc = await tx.get(ref);
-    const prev = doc.exists ? (doc.data().timestamps || []) : [];
-    const inWindow = prev.filter((t) => t > windowStart);
-    if (inWindow.length >= maxReqs) {
-      throw new HttpsError("resource-exhausted", "Too many requests. Please wait a moment.");
-    }
-    tx.set(ref, { timestamps: [...inWindow, now] });
-  });
-}
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -377,6 +354,27 @@ exports.onGeofenceAlertCreated = onDocumentCreated(
       }
     }
     const studentName = sanitizeText(data.studentName || "A student", 100);
+
+    // A facilitator may pause one student's geofence warnings for this trip —
+    // a flat battery or a phone left on the bus otherwise alarms the whole
+    // group for the rest of the day. The exemption is checked here, at the
+    // source, so it silences the push, the parent copy and the in-app inbox
+    // together rather than only the screen the facilitator happens to be on.
+    if (data.studentId) {
+      const exemption = await db
+        .collection("trips")
+        .doc(tripId)
+        .collection("geofenceExemptions")
+        .doc(data.studentId)
+        .get();
+      if (exemption.exists && exemption.get("warningsEnabled") === false) {
+        await snap.ref.update({
+          status: "suppressed",
+          suppressedReason: exemption.get("reason") || "Geofence warnings paused",
+        });
+        return;
+      }
+    }
 
     // Push teachers.
     if (tokens.length) {
@@ -702,92 +700,12 @@ exports.rejectTeacher = onCall(async (request) => {
 });
 
 /**
- * Generate a short-lived (30 s) attendance QR token for the calling student.
- * Stores the token in users/{uid}/qrTokens/{tokenId} so the teacher's
- * redeemAttendanceToken function can verify it server-side.
+ * Attendance used to live here as generateAttendanceToken / redeemAttendanceToken.
+ * Both are gone: neither checked where the student was, and the teacher's app
+ * never called them — it wrote trips.buses directly instead. Attendance is now
+ * recorded only by lib/attendance.js, which verifies the token, the trip
+ * assignment, the active stop and the student's own position before writing.
  */
-exports.generateAttendanceToken = onCall(async (request) => {
-  if (!request.auth) throw new HttpsError("unauthenticated", "Sign in required.");
-  await checkRateLimit(request.auth.uid, "qr_gen", 10);
-
-  const uid = request.auth.uid;
-  const { tripId, stopIndex } = request.data || {};
-  if (!tripId || typeof stopIndex !== "number") {
-    throw new HttpsError("invalid-argument", "tripId and stopIndex are required.");
-  }
-
-  const db = admin.firestore();
-  const expMs = Date.now() + 30_000; // 30-second window
-  // Store in top-level qrTokens so redemption only needs the tokenId.
-  const ref = db.collection("qrTokens").doc();
-  await ref.set({ studentId: uid, tripId, stopIndex, exp: expMs });
-
-  return { tokenId: ref.id };
-});
-
-/**
- * Redeem a QR attendance token — called by the teacher's scanner.
- * The teacher only needs the tokenId; everything else is server-verified.
- */
-exports.redeemAttendanceToken = onCall(async (request) => {
-  if (!request.auth) throw new HttpsError("unauthenticated", "Sign in required.");
-  await checkRateLimit(request.auth.uid, "qr_redeem", 60);
-
-  const { tokenId } = request.data || {};
-  if (!tokenId) throw new HttpsError("invalid-argument", "tokenId is required.");
-
-  const db = admin.firestore();
-  const tokenRef = db.collection("qrTokens").doc(tokenId);
-
-  const tokenData = await db.runTransaction(async (tx) => {
-    const snap = await tx.get(tokenRef);
-    if (!snap.exists) throw new HttpsError("not-found", "Invalid QR code.");
-    const data = snap.data();
-    if (Date.now() > data.exp) throw new HttpsError("deadline-exceeded", "QR code expired.");
-    tx.delete(tokenRef);
-    return data;
-  });
-
-  const { studentId, tripId, stopIndex } = tokenData;
-
-  // Mark attendance on the trip document.
-  const tripRef = db.collection("trips").doc(tripId);
-  const tripSnap = await tripRef.get();
-  if (!tripSnap.exists) throw new HttpsError("not-found", "Trip not found.");
-
-  // Deep-copy buses so we can mutate safely.
-  const buses = JSON.parse(JSON.stringify(tripSnap.data().buses || []));
-  let studentName = null;
-  let alreadyScanned = false;
-
-  outer:
-  for (let bi = 0; bi < buses.length; bi++) {
-    const passengers = buses[bi].passengers || [];
-    for (let pi = 0; pi < passengers.length; pi++) {
-      if (passengers[pi].id === studentId) {
-        studentName = passengers[pi].name || "Student";
-        const attendance = passengers[pi].attendance || {};
-        if (attendance[`stop_${stopIndex}`] === true) {
-          alreadyScanned = true;
-        } else {
-          attendance[`stop_${stopIndex}`] = true;
-          passengers[pi].attendance = attendance;
-          buses[bi].passengers = passengers;
-          // Write back the full array — dot-notation on array indices converts
-          // arrays to maps in Firestore, which breaks all downstream reads.
-          await tripRef.update({
-            buses,
-            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-          });
-        }
-        break outer;
-      }
-    }
-  }
-
-  if (!studentName) throw new HttpsError("not-found", "Student not found in this trip.");
-  return { success: true, alreadyScanned, studentName };
-});
 
 /**
  * Approve a parent-student link request — called when the student taps
@@ -836,79 +754,15 @@ exports.approveLinkRequest = onCall(async (request) => {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * Capacity tiers — must stay in sync with the pricing section in web/index.html.
+ * Capacity tiers — must stay in sync with the pricing section in the landing
+ * page copies and with PlanTier in lib/views/shared/subscription_section.dart.
  * capacity 0 means "custom / negotiated" (Enterprise) and is treated as unlimited
  * until a real contract value is written by the platform owner.
+ *
+ * A tier may carry its own `rate`; otherwise RATE_PER_STUDENT applies. Campus
+ * is discounted because a whole senior-high department lands there, and at the
+ * flat rate it would cost more than the school can fold into a trip fee.
  */
-const TIERS = {
-  starter: { capacity: 100, label: "Starter" },
-  growth: { capacity: 200, label: "Growth" },
-  professional: { capacity: 300, label: "Professional" },
-  scale: { capacity: 500, label: "Scale" },
-  enterprise: { capacity: 0, label: "Enterprise" },
-};
-
-const RATE_PER_STUDENT = 1; // PHP per student per month
-const ANNUAL_DISCOUNT = 0.2;
-
-function normEmail(v) {
-  return typeof v === "string" ? v.trim().toLowerCase() : "";
-}
-
-function normStudentNumber(v) {
-  return typeof v === "string" ? v.trim().toUpperCase() : "";
-}
-
-function isValidEmail(v) {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(v);
-}
-
-/** Escapes text before it is interpolated into an HTML email body. */
-function escapeHtml(value) {
-  return String(value == null ? "" : value)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-}
-
-/**
- * Sends one email over SMTP. Throws when SMTP is unconfigured or the send fails,
- * so callers can decide what to tell the user — never swallow this silently.
- */
-/**
- * Builds an SMTP transport. Pooled, so a bulk send reuses connections instead
- * of completing a TLS handshake for every message.
- */
-function createMailTransport() {
-  const user = smtpUser.value();
-  const pass = smtpPass.value();
-  if (!user || !pass) {
-    throw new Error("SMTP is not configured (SMTP_USER / SMTP_PASS are unset).");
-  }
-  return nodemailer.createTransport({
-    host: smtpHost.value() || "smtp.gmail.com",
-    port: 465,
-    secure: true,
-    auth: { user, pass },
-    pool: true,
-    maxConnections: 3,
-    maxMessages: 100,
-  });
-}
-
-async function sendMail({ to, subject, text, html, transporter }) {
-  const transport = transporter || createMailTransport();
-  await transport.sendMail({
-    from: smtpFrom.value() || `FieldTrip360 <${smtpUser.value()}>`,
-    to,
-    subject,
-    text,
-    html,
-  });
-}
-
 /** Welcome email carrying the admin's first-time credentials. */
 function welcomeEmail({ schoolName, email, tempPassword, tierLabel, capacity }) {
   const safeSchool = escapeHtml(schoolName);
@@ -973,14 +827,6 @@ function welcomeEmail({ schoolName, email, tempPassword, tierLabel, capacity }) 
 }
 
 /** Cryptographically random temp password that satisfies Firebase's minimum rules. */
-function generateTempPassword() {
-  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
-  const bytes = crypto.randomBytes(14);
-  let out = "";
-  for (let i = 0; i < 12; i++) out += chars[bytes[i] % chars.length];
-  return `${out}!${bytes[12] % 10}`;
-}
-
 /** Resolve the caller's school, asserting they are an admin. Returns { uid, schoolId, schoolRef }. */
 async function requireSchoolAdmin(request) {
   if (!request.auth) throw new HttpsError("unauthenticated", "Sign in required.");
@@ -999,14 +845,16 @@ async function requireSchoolAdmin(request) {
 }
 
 /**
- * PUBLIC endpoint used by the marketing site's Subscribe form.
+ * RETIRED. Subscriptions are no longer created on request.
  *
- * Creates a school + its first admin account and returns a temporary password.
+ * This endpoint used to create a school and an approved administrator account
+ * the moment the form was posted, which meant anyone who found the URL could
+ * mint an administrator. Subscriptions now begin with an application that a
+ * super admin reviews: saveSchoolApplication → attachApplicationDocument →
+ * submitSchoolApplication → decideSchoolApplication.
  *
- * ⚠️ TEST MODE: this is intentionally unauthenticated so the flow can be tried
- * without a payment provider. Before going live it MUST be gated behind a
- * verified Stripe checkout session — otherwise anyone can mint admin accounts.
- * IP rate limiting below only blunts casual abuse.
+ * It is kept, and answers 410, so a cached copy of the old marketing page gets
+ * a clear message rather than a silent failure.
  */
 exports.createSchoolSubscription = onRequest(
   { cors: true, region: "us-central1" },
@@ -1017,157 +865,18 @@ exports.createSchoolSubscription = onRequest(
       res.status(204).send("");
       return;
     }
-    if (req.method !== "POST") {
-      res.status(405).json({ error: "Method not allowed." });
-      return;
-    }
-
-    try {
-      const body = req.body || {};
-      const schoolName = sanitizeText(body.schoolName, 120);
-      const email = normEmail(body.email);
-      const tierKey = sanitizeText(body.tier, 30).toLowerCase();
-      const billingCycle = body.billingCycle === "annual" ? "annual" : "monthly";
-
-      if (!schoolName || schoolName.length < 2) {
-        res.status(400).json({ error: "Please enter your school name." });
-        return;
-      }
-      if (!isValidEmail(email)) {
-        res.status(400).json({ error: "Please enter a valid email address." });
-        return;
-      }
-      if (!TIERS[tierKey]) {
-        res.status(400).json({ error: "Please choose a valid plan." });
-        return;
-      }
-
-      const db = admin.firestore();
-
-      // Crude IP rate limit: 5 subscription attempts per hour per address.
-      const ip = String(
-        req.headers["x-forwarded-for"] || req.ip || "unknown"
-      ).split(",")[0].trim();
-      const ipKey = crypto.createHash("sha256").update(ip).digest("hex").slice(0, 40);
-      const ipRef = db.collection("_rateLimits").doc(`subscribe_${ipKey}`);
-      const nowMs = Date.now();
-      const allowed = await db.runTransaction(async (tx) => {
-        const doc = await tx.get(ipRef);
-        const prev = doc.exists ? doc.data().timestamps || [] : [];
-        const inWindow = prev.filter((t) => t > nowMs - 3_600_000);
-        if (inWindow.length >= 5) return false;
-        tx.set(ipRef, { timestamps: [...inWindow, nowMs] });
-        return true;
-      });
-      if (!allowed) {
-        res.status(429).json({ error: "Too many attempts. Please try again later." });
-        return;
-      }
-
-      // Reject an email that already has an account.
-      try {
-        await admin.auth().getUserByEmail(email);
-        res.status(409).json({
-          error: "An account with this email already exists. Please sign in instead.",
-        });
-        return;
-      } catch (e) {
-        if (e.code !== "auth/user-not-found") throw e;
-      }
-
-      const tier = TIERS[tierKey];
-      const monthly =
-        tier.capacity === 0
-          ? 0
-          : Math.round(
-              tier.capacity *
-                RATE_PER_STUDENT *
-                (billingCycle === "annual" ? 1 - ANNUAL_DISCOUNT : 1)
-            );
-
-      const tempPassword = generateTempPassword();
-      const userRecord = await admin.auth().createUser({
-        email,
-        password: tempPassword,
-        displayName: `${schoolName} Admin`,
-        emailVerified: true, // admin sign-in path does not require verification
-      });
-
-      const schoolRef = db.collection("schools").doc();
-      const batch = db.batch();
-      batch.set(schoolRef, {
-        name: schoolName,
-        adminEmail: email,
-        tier: tierKey,
-        tierLabel: tier.label,
-        capacity: tier.capacity,
-        billingCycle,
-        priceMonthly: monthly,
-        studentCount: 0,
-        status: "active",
-        paymentStatus: "test_mode", // flip to "paid" once Stripe is wired
-        // Anchors the billing period that plan-change proration is measured from.
-        currentPeriodStart: admin.firestore.FieldValue.serverTimestamp(),
-        createdAt: admin.firestore.FieldValue.serverTimestamp(),
-      });
-      batch.set(db.collection("users").doc(userRecord.uid), {
-        uid: userRecord.uid,
-        name: `${schoolName} Admin`,
-        email,
-        role: "admin",
-        status: "approved",
-        schoolId: schoolRef.id,
-        mustChangePassword: true,
-        createdAt: admin.firestore.FieldValue.serverTimestamp(),
-      });
-      await batch.commit();
-
-      // Deliver the credentials by email. The password is deliberately NOT
-      // returned to the browser — if the send fails the account still exists and
-      // the admin recovers it with "Forgot password" on the sign-in screen, so a
-      // mail outage can never lock them out or leak the password on screen.
-      let emailSent = false;
-      try {
-        const mail = welcomeEmail({
-          schoolName,
-          email,
-          tempPassword,
-          tierLabel: tier.label,
-          capacity: tier.capacity,
-        });
-        await sendMail({
-          to: email,
-          subject: `Your FieldTrip360 admin account for ${schoolName}`,
-          text: mail.text,
-          html: mail.html,
-        });
-        emailSent = true;
-      } catch (mailErr) {
-        console.error("subscription welcome email failed", mailErr?.message || mailErr);
-      }
-
-      res.status(200).json({
-        success: true,
-        schoolId: schoolRef.id,
-        email,
-        capacity: tier.capacity,
-        tierLabel: tier.label,
-        emailSent,
-      });
-    } catch (err) {
-      console.error("createSchoolSubscription failed", err);
-      res.status(500).json({ error: "Could not create the subscription. Please try again." });
-    }
+    res.status(410).json({
+      error:
+        "Subscriptions now start with an application we review by hand. " +
+        "Please apply from the FieldTrip360 website — you will receive an " +
+        "acknowledgement by email, and a decision after our team has checked " +
+        "your school's verification documents.",
+      applyPath: "/#/apply",
+    });
   }
 );
 
 /** Monthly price for a tier, after the annual discount. 0 = custom (Enterprise). */
-function monthlyPriceFor(tier, billingCycle) {
-  if (tier.capacity === 0) return 0;
-  const base = tier.capacity * RATE_PER_STUDENT;
-  return Math.round(base * (billingCycle === "annual" ? 1 - ANNUAL_DISCOUNT : 1));
-}
-
 const BILLING_PERIOD_DAYS = 30;
 
 /**
@@ -2722,21 +2431,6 @@ function verificationPrompt(docLabel, identity) {
   ].join("\n");
 }
 
-/** Fetch an object from the default bucket as base64, with a hard size ceiling. */
-async function storageObjectAsBase64(storagePath, maxBytes = 15 * 1024 * 1024) {
-  const file = admin.storage().bucket().file(storagePath);
-  const [metadata] = await file.getMetadata();
-  const size = Number(metadata.size || 0);
-  if (size > maxBytes) {
-    throw new Error(`File too large for automatic review (${Math.round(size / 1048576)} MB).`);
-  }
-  const [buffer] = await file.download();
-  return {
-    data: buffer.toString("base64"),
-    mimeType: metadata.contentType || "application/octet-stream",
-  };
-}
-
 /**
  * Verifies a student's uploaded form against the school's blank template using
  * Gemini, then approves or rejects it automatically.
@@ -3064,3 +2758,53 @@ exports.removeRosterEntry = onCall(async (request) => {
 
   return { success: true };
 });
+
+// ─── Platform administration (super admin) ───────────────────────────────────
+// Implemented under lib/ so this file stays about school operations.
+
+const platform = require("./lib/platform");
+const applications = require("./lib/applications");
+const ocr = require("./lib/ocr");
+const announcements = require("./lib/announcements");
+const support = require("./lib/support");
+
+// Roles, accounts and audit.
+exports.bootstrapSuperAdmin = platform.bootstrapSuperAdmin;
+exports.grantSuperAdmin = platform.grantSuperAdmin;
+exports.setSchoolAdminAccountStatus = platform.setSchoolAdminAccountStatus;
+exports.changeMyPassword = platform.changeMyPassword;
+
+// Subscription applications.
+exports.saveSchoolApplication = applications.saveSchoolApplication;
+exports.attachApplicationDocument = applications.attachApplicationDocument;
+exports.removeApplicationDocument = applications.removeApplicationDocument;
+exports.submitSchoolApplication = applications.submitSchoolApplication;
+exports.claimApplicationForReview = applications.claimApplicationForReview;
+exports.decideSchoolApplication = applications.decideSchoolApplication;
+exports.retryApplicationEmail = applications.retryApplicationEmail;
+exports.resendAdminCredentials = applications.resendAdminCredentials;
+exports.updateBankingCalendar = applications.updateBankingCalendar;
+
+// Document text extraction (never a decision — see lib/ocr.js).
+exports.onApplicationDocumentCreated = ocr.onApplicationDocumentCreated;
+exports.reRunApplicationOcr = ocr.reRunApplicationOcr;
+
+// Announcements.
+exports.publishAnnouncement = announcements.publishAnnouncement;
+exports.unpublishAnnouncement = announcements.unpublishAnnouncement;
+
+// Customer support.
+exports.createSupportTicket = support.createSupportTicket;
+exports.replyToSupportTicket = support.replyToSupportTicket;
+exports.setSupportTicketStatus = support.setSupportTicketStatus;
+exports.markTicketRead = support.markTicketRead;
+
+// Attendance. The only writers of trips.buses — security rules keep clients out
+// of that array entirely, so a scan cannot skip the checks in lib/attendance.js.
+const attendance = require("./lib/attendance");
+
+exports.issueAttendanceToken = attendance.issueAttendanceToken;
+exports.recordAttendanceScan = attendance.recordAttendanceScan;
+exports.recordManualAttendance = attendance.recordManualAttendance;
+exports.setPassengerSeat = attendance.setPassengerSeat;
+exports.setGeofenceExemption = attendance.setGeofenceExemption;
