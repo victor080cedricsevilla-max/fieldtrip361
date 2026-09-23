@@ -332,8 +332,24 @@ class _ApplicationStepsState extends State<_ApplicationSteps> {
   final _repPhone = TextEditingController();
 
   String _institutionType = InstitutionType.privateIncorporated;
-  String _tier = 'starter';
-  String _billingCycle = 'monthly';
+
+  // Preselected from the plan they clicked on the website, so they are not
+  // asked to choose the same thing twice. The server prices the plan itself, so
+  // a tampered parameter buys nothing.
+  String _tier = _tierFromUrl();
+  String _billingCycle = _cycleFromUrl();
+
+  static const _knownTiers = {
+    'starter', 'growth', 'professional', 'scale', 'campus', 'enterprise',
+  };
+
+  static String _tierFromUrl() {
+    final t = Uri.base.queryParameters['tier'];
+    return _knownTiers.contains(t) ? t! : 'starter';
+  }
+
+  static String _cycleFromUrl() =>
+      Uri.base.queryParameters['cycle'] == 'annual' ? 'annual' : 'monthly';
 
   bool _verified = false;
   bool _checkingVerification = false;

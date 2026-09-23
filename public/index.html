@@ -312,6 +312,9 @@
     .sub-submit:disabled { opacity:.6; cursor:not-allowed; transform:none; }
     .sub-error { display:none; background:#FEF2F2; border:1px solid #FECACA; color:#B91C1C; font-size:.8rem; border-radius:10px; padding:10px 12px; margin-bottom:16px; line-height:1.5; }
     .sub-error.show { display:block; }
+    .sub-steps { margin:18px 0 22px; padding-left:20px; color:var(--muted); font-size:.78rem; line-height:1.7; }
+    .sub-steps li { margin-bottom:10px; }
+    .sub-steps li strong { color:var(--ink, #1F2937); }
     .sub-note { font-size:.7rem; color:var(--muted); text-align:center; margin-top:14px; line-height:1.5; }
     /* Success state */
     .sub-success { text-align:center; }
@@ -707,10 +710,9 @@
     <div class="sub-modal">
       <button class="sub-close" onclick="closeSubscribe()" aria-label="Close">&times;</button>
 
-      <!-- Step 1: form -->
       <div id="subFormStep">
-        <div class="sub-title" id="subTitle">Start your subscription</div>
-        <p class="sub-lead">We'll create your school's admin account right away so you can set up your roster.</p>
+        <div class="sub-title" id="subTitle">Apply for a subscription</div>
+        <p class="sub-lead">Every school is checked by a person before its account exists. Here is what that takes.</p>
 
         <div class="sub-plan">
           <div>
@@ -720,44 +722,15 @@
           <div class="sub-plan-price" id="subPlanPrice">₱1,000/mo</div>
         </div>
 
-        <div class="sub-error" id="subError"></div>
+        <ol class="sub-steps">
+          <li><strong>Tell us about your school</strong> — its name, address, and the person authorised to represent it.</li>
+          <li><strong>Attach your verification documents.</strong> Which ones depends on the kind of institution: a private school shows its SEC registration and DepEd permit, a public school shows the issuance that established it. We never ask for anything about a student.</li>
+          <li><strong>We review it.</strong> Complete applications are reviewed within 7 banking days. Processing may take up to 14 calendar days.</li>
+          <li><strong>On approval</strong>, your administrator account is created and the sign-in details are emailed to you.</li>
+        </ol>
 
-        <form id="subForm" novalidate>
-          <div class="sub-field">
-            <label for="subSchool">School name</label>
-            <input type="text" id="subSchool" placeholder="e.g. NU Baliwag" autocomplete="organization" required />
-          </div>
-          <div class="sub-field">
-            <label for="subEmail">Admin email</label>
-            <input type="email" id="subEmail" placeholder="admin@yourschool.edu.ph" autocomplete="email" required />
-            <div class="sub-hint">This becomes your administrator login. We'll send the temporary password here.</div>
-          </div>
-          <button type="submit" class="sub-submit" id="subSubmit">Create my school account</button>
-        </form>
-
-        <p class="sub-note">No payment is collected yet — this is a trial setup while billing is being finalised.</p>
-      </div>
-
-      <!-- Step 2: success -->
-      <div id="subSuccessStep" style="display:none;">
-        <div class="sub-success">
-          <div class="sub-check">
-            <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#00C4B4" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
-          </div>
-          <div class="sub-title" id="subSuccessTitle">Check your email</div>
-          <p class="sub-lead" id="subSuccessLead">Your school account is ready.</p>
-
-          <div class="sub-creds">
-            <div class="sub-cred-row">
-              <span class="sub-cred-label">Sent to</span>
-              <span class="sub-cred-val" id="subOutEmail"></span>
-            </div>
-          </div>
-
-          <div class="sub-warn" id="subMailNote"></div>
-
-          <button class="sub-submit" style="margin-top:18px;" onclick="closeSubscribe(); showApp();">Go to sign in</button>
-        </div>
+        <button type="button" class="sub-submit" id="subStart">Start your application</button>
+        <p class="sub-note">No payment is collected. You will hear from us by email either way — including if we need another document.</p>
       </div>
 
     </div>
@@ -795,8 +768,6 @@
   (function () {
     const RATE = 10;          // ₱ per student per month, unless the tier sets its own
     const ANNUAL_OFF = 0.20;  // 20% off when billed annually
-    const SUBSCRIBE_ENDPOINT =
-      'https://us-central1-pildtrip360.cloudfunctions.net/createSchoolSubscription';
 
     // Order matters — the capacity slider is an index into this list, so it can
     // only ever land on a real tier. Keep in sync with TIERS in functions/index.js.
@@ -892,18 +863,7 @@
 
     // ── Subscribe modal ──
     const overlay   = document.getElementById('subOverlay');
-    const formStep  = document.getElementById('subFormStep');
-    const okStep    = document.getElementById('subSuccessStep');
-    const form      = document.getElementById('subForm');
-    const errBox    = document.getElementById('subError');
-    const submitBtn = document.getElementById('subSubmit');
     let activeTierKey = 'starter';
-
-    function showErr(msg) {
-      if (!errBox) return;
-      errBox.textContent = msg;
-      errBox.classList.add('show');
-    }
 
     window.openSubscribe = function (tierKey) {
       if (!overlay) return;
@@ -915,16 +875,28 @@
           ? '1,000+ students'
           : 'Up to ' + tier.capacity.toLocaleString('en-US') + ' students';
       document.getElementById('subPlanPrice').textContent = tierPrice(tier);
-      if (errBox) errBox.classList.remove('show');
-      if (form) form.reset();
-      formStep.style.display = '';
-      okStep.style.display = 'none';
       overlay.classList.add('open');
       setTimeout(() => {
-        const f = document.getElementById('subSchool');
-        if (f) f.focus();
+        const b = document.getElementById('subStart');
+        if (b) b.focus();
       }, 60);
     };
+
+    // The chosen plan travels as a query parameter so the application form
+    // opens on the tier they clicked, rather than making them pick twice.
+    const startBtn = document.getElementById('subStart');
+    if (startBtn) {
+      startBtn.addEventListener('click', () => {
+        const cycle = annual ? 'annual' : 'monthly';
+        window.closeSubscribe();
+        showApp();
+        window.location.href =
+          window.location.pathname +
+          '?tier=' + encodeURIComponent(activeTierKey) +
+          '&cycle=' + cycle +
+          '#/apply';
+      });
+    }
 
     window.closeSubscribe = function () {
       if (overlay) overlay.classList.remove('open');
@@ -939,69 +911,6 @@
       });
     }
 
-    if (form) {
-      form.addEventListener('submit', async e => {
-        e.preventDefault();
-        const schoolName = document.getElementById('subSchool').value.trim();
-        const email = document.getElementById('subEmail').value.trim();
-        if (errBox) errBox.classList.remove('show');
-
-        if (schoolName.length < 2) { showErr('Please enter your school name.'); return; }
-        if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) {
-          showErr('Please enter a valid email address.'); return;
-        }
-
-        submitBtn.disabled = true;
-        submitBtn.textContent = 'Creating your account…';
-        try {
-          const res = await fetch(SUBSCRIBE_ENDPOINT, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              schoolName,
-              email,
-              tier: activeTierKey,
-              billingCycle: annual ? 'annual' : 'monthly',
-            }),
-          });
-          const data = await res.json().catch(() => ({}));
-          if (!res.ok || !data.success) {
-            throw new Error(data.error || 'Something went wrong. Please try again.');
-          }
-          document.getElementById('subOutEmail').textContent = data.email;
-          document.getElementById('subSuccessLead').textContent =
-            data.tierLabel + ' plan is active for ' + schoolName + '.';
-
-          // The password is never sent to the browser. If the welcome email did
-          // not go out, point them at the standard password-reset flow instead.
-          const note = document.getElementById('subMailNote');
-          const okTitle = document.getElementById('subSuccessTitle');
-          if (data.emailSent) {
-            okTitle.textContent = 'Check your email';
-            note.className = 'sub-warn';
-            note.innerHTML =
-              '<strong>Your temporary password is on its way.</strong> ' +
-              "If it isn't in your inbox within a minute, check the spam folder. " +
-              'Change the password after your first sign-in.';
-          } else {
-            okTitle.textContent = 'Account created';
-            note.className = 'sub-warn error';
-            note.innerHTML =
-              "<strong>We couldn't send the welcome email.</strong> " +
-              'Your account exists — tap “Forgot password” on the sign-in screen ' +
-              'to set your password for this address.';
-          }
-
-          formStep.style.display = 'none';
-          okStep.style.display = '';
-        } catch (err) {
-          showErr(err.message || 'Could not reach the server. Please try again.');
-        } finally {
-          submitBtn.disabled = false;
-          submitBtn.textContent = 'Create my school account';
-        }
-      });
-    }
   })();
 </script>
 
