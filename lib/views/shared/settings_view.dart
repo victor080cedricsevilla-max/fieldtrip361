@@ -9,6 +9,7 @@ import 'package:image_picker/image_picker.dart';
 import 'package:file_picker/file_picker.dart';
 import '../../config/theme.dart';
 import 'subscription_section.dart';
+import 'support_view.dart';
 
 /// Shared Settings screen used by teacher / student / parent.
 /// Set [allowEmergencySoundUpload] to false to hide that section (parent / student).
@@ -460,6 +461,25 @@ class _SettingsViewState extends State<SettingsView> {
                 subtitle: "Plan, capacity and upgrades",
                 child: const SubscriptionSection(),
               ),
+            // Reachable from every app, because a support request is the same
+            // act for an admin, a teacher, a student and a parent.
+            _collapsible(
+              icon: Icons.support_agent_outlined,
+              label: "Help & Support",
+              subtitle: "Ask the FieldTrip360 team",
+              child: Column(
+                children: [
+                  _tile(
+                    icon: Icons.chat_bubble_outline_rounded,
+                    label: "Support requests",
+                    value: "Send one, or read a reply",
+                    onTap: () => Navigator.of(context).push(
+                      MaterialPageRoute(builder: (_) => const SupportView()),
+                    ),
+                  ),
+                ],
+              ),
+            ),
             _collapsible(
               icon: Icons.palette_outlined,
               label: "App Theme Color",

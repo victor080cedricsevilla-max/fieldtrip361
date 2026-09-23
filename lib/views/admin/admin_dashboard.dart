@@ -9,6 +9,7 @@ import 'logs_view.dart';
 import 'create_trip_view.dart';
 import 'manage_trips_view.dart';
 import 'admin_overview.dart';
+import 'announcement_bell.dart';
 import 'reports_view.dart';
 import 'students_view.dart';
 import 'documents_view.dart';
@@ -209,9 +210,16 @@ class _AdminDashboardState extends State<AdminDashboard> {
               color: Color(0xFF1F2937),
             ),
           ),
-          _AdminProfileChip(
-            onSettings: () => setState(() => _selectedIndex = 4),
-            onLogout: _handleLogout,
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const AnnouncementBell(),
+              const SizedBox(width: 8),
+              _AdminProfileChip(
+                onSettings: () => setState(() => _selectedIndex = 4),
+                onLogout: _handleLogout,
+              ),
+            ],
           ),
         ],
       ),
