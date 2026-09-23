@@ -799,6 +799,17 @@ class _CreateTripViewState extends State<CreateTripView> {
       if (_isEditing) {
         payload['updatedAt'] = FieldValue.serverTimestamp();
         if (routePoints.isNotEmpty) payload['route'] = routePoints;
+
+        // Setting a trip up ends when it starts. Attendance is kept inside the
+        // `buses` array, so once the trip is running the security rules refuse
+        // an administrator's write to it — the facilitators on each bus own it
+        // from that point. Everything else about the trip stays editable, so
+        // the array is simply left out rather than the whole save failing.
+        final startedStatus = (widget.initialData?['status'] ?? 'pending').toString();
+        if (startedStatus != 'pending') {
+          payload.remove('buses');
+        }
+
         await tripRef.update(payload);
       } else {
         payload['route'] = routePoints;

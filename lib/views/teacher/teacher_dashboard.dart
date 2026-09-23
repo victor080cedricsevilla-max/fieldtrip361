@@ -25,6 +25,8 @@ import '../../utils/trip_queries.dart';
 import '../auth/mobile_login_view.dart';
 import '../shared/settings_view.dart';
 import '../shared/chat_view.dart';
+import '../../utils/attendance_service.dart';
+import 'manual_attendance_sheet.dart';
 import 'teacher_documents_tab.dart';
 
 /// Shared emergency-sound playback so any teacher screen can stop the alarm
@@ -110,6 +112,10 @@ class _TeacherDashboardState extends State<TeacherDashboard> {
   StreamSubscription<QuerySnapshot>? _geofenceAlertSub;
   String? _watchedTripId;
   final Set<String> _activeGeofenceStudents = {};
+
+  /// How to close the alert dialog currently showing for a given student, so a
+  /// paused warning can dismiss it from outside.
+  final Map<String, VoidCallback> _geofenceDialogClosers = {};
 
   @override
   void initState() {
@@ -287,6 +293,15 @@ class _TeacherDashboardState extends State<TeacherDashboard> {
           .snapshots()
           .listen((alertSnap) {
         for (final change in alertSnap.docChanges) {
+          // An alert that leaves the pending query has been dismissed,
+          // acknowledged — or suppressed because this student's warnings were
+          // paused. In every case the alarm should stop here too, even though
+          // the change was made somewhere else.
+          if (change.type == DocumentChangeType.removed) {
+            final id = change.doc.data()?['studentId'] as String?;
+            if (id != null) _silenceGeofenceFor(id);
+            continue;
+          }
           if (change.type != DocumentChangeType.added) continue;
           if (seenIds.contains(change.doc.id)) continue;
           seenIds.add(change.doc.id);
@@ -319,7 +334,15 @@ class _TeacherDashboardState extends State<TeacherDashboard> {
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (ctx) => AlertDialog(
+      builder: (ctx) {
+        // Remembered so the alarm can be silenced from outside this dialog —
+        // when a facilitator pauses this student's warnings, the ringing has to
+        // stop on every device that is already listening, not just the one that
+        // made the change.
+        _geofenceDialogClosers[studentId] = () {
+          if (Navigator.of(ctx).canPop()) Navigator.pop(ctx);
+        };
+        return AlertDialog(
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         backgroundColor: Colors.orange.shade50,
         title: const Row(
@@ -354,8 +377,22 @@ class _TeacherDashboardState extends State<TeacherDashboard> {
             child: const Text('Acknowledge', style: TextStyle(color: Colors.white)),
           ),
         ],
-      ),
-    ).then((_) => _activeGeofenceStudents.remove(studentId));
+        );
+      },
+    ).then((_) {
+      _activeGeofenceStudents.remove(studentId);
+      _geofenceDialogClosers.remove(studentId);
+    });
+  }
+
+  /// Silences a student's alarm because their warnings were paused, rather than
+  /// because anyone acknowledged it. The alert document keeps its own record of
+  /// having been suppressed.
+  void _silenceGeofenceFor(String studentId) {
+    if (!_activeGeofenceStudents.contains(studentId)) return;
+    _activeGeofenceStudents.remove(studentId);
+    _stopEmergencySound();
+    _geofenceDialogClosers.remove(studentId)?.call();
   }
 
   Future<void> _requestLocationPermission() async {
@@ -821,74 +858,184 @@ class _TeacherTripDetailsState extends State<TeacherTripDetails> {
     ).then((_) => _scannerController?.dispose());
   }
 
+  /// Hands a scanned code to the server and shows what it says.
+  ///
+  /// The app no longer writes attendance itself. It cannot check whether the
+  /// code has already been used, whether it belongs to this stop, or where the
+  /// student actually is — only the server can, so only the server decides.
   Future<void> _processScannedQR(BuildContext ctx, String rawData, int stopIndex, int myBusIndex) async {
+    String? tokenId;
+    String? jti;
     try {
-      final qrMap = jsonDecode(rawData.trim()) as Map<String, dynamic>;
-      final String? studentId = qrMap['studentId'] as String?;
-      if (studentId == null || studentId.isEmpty) {
-        if (!ctx.mounted) return;
-        await _showResultDialog(ctx, "Invalid QR", "This is not a valid student QR code.", Colors.red, Icons.qr_code_scanner);
-        return;
-      }
-
-      final tripRef = FirebaseFirestore.instance.collection('trips').doc(widget.tripId);
-      final tripSnap = await tripRef.get();
-      if (!tripSnap.exists) {
-        if (!ctx.mounted) return;
-        await _showResultDialog(ctx, "Error", "Trip not found.", Colors.red, Icons.error_outline);
-        return;
-      }
-
-      final tripData = tripSnap.data() as Map<String, dynamic>;
-      final List rawBuses = asList(tripData['buses']);
-      final List<Map<String, dynamic>> buses =
-          rawBuses.map((b) => Map<String, dynamic>.from(b as Map)).toList();
-
-      bool found = false;
-      bool alreadyScanned = false;
-      String studentName = '';
-
-      outer:
-      for (int bi = 0; bi < buses.length; bi++) {
-        final passengers = asList(buses[bi]['passengers']);
-        final updatedPassengers = passengers
-            .map((p) => Map<String, dynamic>.from(p as Map))
-            .toList();
-        for (int pi = 0; pi < updatedPassengers.length; pi++) {
-          if (updatedPassengers[pi]['id'] == studentId) {
-            found = true;
-            studentName = (updatedPassengers[pi]['name'] ?? 'Student').toString();
-            final att = Map<String, dynamic>.from(
-                (updatedPassengers[pi]['attendance'] as Map?) ?? {});
-            if (att['stop_$stopIndex'] == true) {
-              alreadyScanned = true;
-            } else {
-              att['stop_$stopIndex'] = true;
-              updatedPassengers[pi]['attendance'] = att;
-              buses[bi]['passengers'] = updatedPassengers;
-              await tripRef.update({
-                'buses': buses,
-                'updatedAt': FieldValue.serverTimestamp(),
-              });
-            }
-            break outer;
-          }
+      final decoded = jsonDecode(rawData.trim());
+      if (decoded is Map<String, dynamic>) {
+        tokenId = decoded['t'] as String?;
+        jti = decoded['j'] as String?;
+        // An identity USQIC scanned by mistake: say so plainly rather than
+        // failing with something cryptic.
+        if (tokenId == null && decoded['studentId'] != null) {
+          if (!ctx.mounted) return;
+          await _showResultDialog(
+            ctx,
+            "That is an identity code",
+            "Ask the student to open My QR during the trip — the attendance code "
+                "is the one that counts down.",
+            Colors.orange,
+            Icons.qr_code_2_rounded,
+          );
+          return;
         }
       }
-
-      if (!ctx.mounted) return;
-      if (!found) {
-        await _showResultDialog(ctx, "Not Found", "Student is not assigned to this trip.", Colors.red, Icons.person_off_outlined);
-        return;
-      }
-      if (alreadyScanned) {
-        await _showResultDialog(ctx, "Already Scanned", "$studentName already scanned for this stop.", Colors.orange, Icons.info_outline);
-      } else {
-        await _showResultDialog(ctx, "Success", "Attendance recorded for $studentName!", Colors.green, Icons.check_circle);
-      }
     } catch (_) {
+      // Fall through to the invalid-code message below.
+    }
+
+    if (tokenId == null || tokenId.isEmpty) {
       if (!ctx.mounted) return;
-      await _showResultDialog(ctx, "Invalid QR", "Could not read QR code. Make sure to scan a valid student QR.", Colors.red, Icons.qr_code_scanner);
+      await _showResultDialog(
+        ctx,
+        "Invalid QR",
+        "This is not a FieldTrip360 attendance code.",
+        Colors.red,
+        Icons.qr_code_scanner,
+      );
+      return;
+    }
+
+    // The facilitator's own position is sent for the record. It is not what the
+    // decision rests on — that is the student's device.
+    final myPosition = await AttendanceService.publishFreshFix(
+      timeLimit: const Duration(seconds: 6),
+    );
+
+    try {
+      final res = await AttendanceService.recordScan(
+        tripId: widget.tripId,
+        tokenId: tokenId,
+        jti: jti,
+        facilitatorPosition: myPosition,
+      );
+      if (!ctx.mounted) return;
+      final name = (res['studentName'] ?? 'Student').toString();
+      if (res['already'] == true) {
+        await _showResultDialog(
+          ctx,
+          "Already scanned",
+          "$name was already marked present for this stop.",
+          Colors.orange,
+          Icons.info_outline,
+        );
+      } else {
+        final distance = res['distanceToStopM'];
+        await _showResultDialog(
+          ctx,
+          "Success",
+          distance is num
+              ? "Attendance recorded for $name — ${distance.round()} m from the destination."
+              : "Attendance recorded for $name.",
+          Colors.green,
+          Icons.check_circle,
+        );
+      }
+    } catch (e) {
+      if (!ctx.mounted) return;
+      final failure = AttendanceService.describeError(e);
+      await _showScanFailureDialog(ctx, failure, stopIndex);
+    }
+  }
+
+  /// A refused scan, with the manual path offered where it makes sense.
+  Future<void> _showScanFailureDialog(
+    BuildContext ctx,
+    AttendanceFailure failure,
+    int stopIndex,
+  ) async {
+    final colour = failure.kind == AttendanceFailureKind.outsideGeofence
+        ? Colors.red
+        : Colors.orange;
+    final icon = switch (failure.kind) {
+      AttendanceFailureKind.outsideGeofence => Icons.wrong_location_rounded,
+      AttendanceFailureKind.unverifiable => Icons.location_disabled_rounded,
+      AttendanceFailureKind.rejected => Icons.block_rounded,
+    };
+
+    final takeManual = await showDialog<bool>(
+      context: ctx,
+      barrierDismissible: false,
+      builder: (dialogCtx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: Row(
+          children: [
+            Icon(icon, color: colour, size: 26),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                failure.title,
+                style: TextStyle(color: colour, fontWeight: FontWeight.bold, fontSize: 18),
+              ),
+            ),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(failure.message, style: const TextStyle(height: 1.5)),
+            if (failure.detail != null) ...[
+              const SizedBox(height: 10),
+              Container(
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: Colors.grey.shade100,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Text(
+                  failure.detail!,
+                  style: TextStyle(
+                    fontSize: 12,
+                    height: 1.45,
+                    color: Colors.grey.shade700,
+                  ),
+                ),
+              ),
+            ],
+            if (failure.kind == AttendanceFailureKind.unverifiable) ...[
+              const SizedBox(height: 10),
+              Text(
+                "This does not mean the student is absent — only that their "
+                "phone cannot say where they are.",
+                style: TextStyle(
+                  fontSize: 12,
+                  height: 1.45,
+                  fontStyle: FontStyle.italic,
+                  color: Colors.grey.shade600,
+                ),
+              ),
+            ],
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogCtx, false),
+            child: const Text("Close"),
+          ),
+          // Always offered: whatever refused the scan, the facilitator is still
+          // standing in front of a student who needs recording.
+          ElevatedButton.icon(
+            onPressed: () => Navigator.pop(dialogCtx, true),
+            icon: const Icon(Icons.how_to_reg_rounded, size: 18),
+            label: const Text("Mark manually"),
+          ),
+        ],
+      ),
+    );
+
+    if (takeManual == true && ctx.mounted) {
+      await showManualAttendanceSheet(
+        ctx,
+        tripId: widget.tripId,
+        stopIndex: stopIndex,
+      );
     }
   }
 
@@ -1252,10 +1399,31 @@ class _TeacherTripDetailsState extends State<TeacherTripDetails> {
                                       ),
                                     ),
                                     const SizedBox(width: 10),
+                                    // Reachable without a failed scan first: a
+                                    // student whose phone is dead has no code
+                                    // to present at all.
+                                    Expanded(
+                                      child: OutlinedButton.icon(
+                                        icon: const Icon(Icons.how_to_reg_rounded, size: 18),
+                                        label: const Text("Manual"),
+                                        style: OutlinedButton.styleFrom(
+                                          foregroundColor: Colors.orange.shade800,
+                                          side: BorderSide(color: Colors.orange.shade200),
+                                          padding: const EdgeInsets.symmetric(vertical: 12),
+                                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                                        ),
+                                        onPressed: () => showManualAttendanceSheet(
+                                          context,
+                                          tripId: widget.tripId,
+                                          stopIndex: i,
+                                        ),
+                                      ),
+                                    ),
+                                    const SizedBox(width: 10),
                                     Expanded(
                                       child: OutlinedButton.icon(
                                         icon: Icon(Icons.map_outlined, size: 18),
-                                        label: Text("View Map"),
+                                        label: Text("Map"),
                                         style: OutlinedButton.styleFrom(
                                           foregroundColor: AppTheme.effectivePrimary,
                                           side: BorderSide(color: AppTheme.effectivePrimary.withValues(alpha: 0.4)),
@@ -1298,44 +1466,140 @@ class _TeacherTripDetailsState extends State<TeacherTripDetails> {
                                 ),
                                 const SizedBox(height: 10),
 
-                                ...assignedStudents.map((student) {
-                                  final bool isPresent = student['attendance']?['stop_$i'] == true;
-                                  return Padding(
-                                    padding: const EdgeInsets.only(bottom: 8),
-                                    child: Row(
-                                      children: [
-                                        Icon(
-                                          isPresent ? Icons.check_circle_rounded : Icons.radio_button_unchecked_rounded,
-                                          color: isPresent ? AppTheme.effectivePrimary : Colors.grey.shade300,
-                                          size: 18,
-                                        ),
-                                        const SizedBox(width: 10),
-                                        Expanded(
-                                          child: Text(student['name'],
-                                              style: TextStyle(
-                                                  fontSize: 13,
-                                                  fontWeight: isPresent ? FontWeight.w500 : FontWeight.normal,
-                                                  color: isPresent ? AppTheme.secondaryColor : Colors.grey.shade500)),
-                                        ),
-                                        Container(
-                                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                                          decoration: BoxDecoration(
-                                            color: isPresent ? Colors.green.shade50 : Colors.grey.shade100,
-                                            borderRadius: BorderRadius.circular(10),
+                                // Exemptions are streamed alongside the roster so
+                                // a paused student is obvious at a glance, and
+                                // switching their warnings back on is one tap
+                                // from the same row.
+                                StreamBuilder<Map<String, Map<String, dynamic>>>(
+                                  stream: AttendanceService.exemptions(widget.tripId),
+                                  builder: (context, exSnap) {
+                                    final exemptions = exSnap.data ?? const {};
+                                    return Column(
+                                      children: assignedStudents.map((student) {
+                                        final String studentId =
+                                            (student['id'] ?? '').toString();
+                                        final bool isPresent =
+                                            student['attendance']?['stop_$i'] == true;
+                                        final meta = (student['attendanceMeta']
+                                                ?? const {})['stop_$i'];
+                                        final bool wasManual =
+                                            meta is Map && meta['source'] == 'manual';
+                                        final exemption = exemptions[studentId];
+                                        final bool paused =
+                                            exemption?['warningsEnabled'] == false;
+
+                                        return InkWell(
+                                          onTap: () => showManualAttendanceSheet(
+                                            context,
+                                            tripId: widget.tripId,
+                                            stopIndex: i,
+                                            preselectStudentId: studentId,
                                           ),
-                                          child: Text(
-                                            isPresent ? "Present" : "Pending",
-                                            style: TextStyle(
-                                              fontSize: 10,
-                                              fontWeight: FontWeight.w600,
-                                              color: isPresent ? Colors.green.shade700 : Colors.grey.shade500,
+                                          borderRadius: BorderRadius.circular(8),
+                                          child: Padding(
+                                            padding: const EdgeInsets.symmetric(vertical: 6),
+                                            child: Column(
+                                              crossAxisAlignment: CrossAxisAlignment.start,
+                                              children: [
+                                                Row(
+                                                  children: [
+                                                    Icon(
+                                                      isPresent
+                                                          ? Icons.check_circle_rounded
+                                                          : Icons.radio_button_unchecked_rounded,
+                                                      color: isPresent
+                                                          ? AppTheme.effectivePrimary
+                                                          : Colors.grey.shade300,
+                                                      size: 18,
+                                                    ),
+                                                    const SizedBox(width: 10),
+                                                    Expanded(
+                                                      child: Text(student['name'],
+                                                          style: TextStyle(
+                                                              fontSize: 13,
+                                                              fontWeight: isPresent
+                                                                  ? FontWeight.w500
+                                                                  : FontWeight.normal,
+                                                              color: isPresent
+                                                                  ? AppTheme.secondaryColor
+                                                                  : Colors.grey.shade500)),
+                                                    ),
+                                                    if (wasManual) ...[
+                                                      _RosterTag(
+                                                        label: "Manual",
+                                                        colour: Colors.orange.shade700,
+                                                      ),
+                                                      const SizedBox(width: 6),
+                                                    ],
+                                                    Container(
+                                                      padding: const EdgeInsets.symmetric(
+                                                          horizontal: 8, vertical: 2),
+                                                      decoration: BoxDecoration(
+                                                        color: isPresent
+                                                            ? Colors.green.shade50
+                                                            : Colors.grey.shade100,
+                                                        borderRadius:
+                                                            BorderRadius.circular(10),
+                                                      ),
+                                                      child: Text(
+                                                        isPresent ? "Present" : "Pending",
+                                                        style: TextStyle(
+                                                          fontSize: 10,
+                                                          fontWeight: FontWeight.w600,
+                                                          color: isPresent
+                                                              ? Colors.green.shade700
+                                                              : Colors.grey.shade500,
+                                                        ),
+                                                      ),
+                                                    ),
+                                                  ],
+                                                ),
+                                                if (paused)
+                                                  Padding(
+                                                    padding: const EdgeInsets.only(
+                                                        left: 28, top: 4),
+                                                    child: Row(
+                                                      children: [
+                                                        Icon(Icons.notifications_off_rounded,
+                                                            size: 13,
+                                                            color: Colors.orange.shade800),
+                                                        const SizedBox(width: 5),
+                                                        Expanded(
+                                                          child: Text(
+                                                            "Geofence warnings paused"
+                                                            "${(exemption?['reason'] ?? '').toString().isEmpty ? '' : ' — ${exemption!['reason']}'}",
+                                                            style: TextStyle(
+                                                              fontSize: 11,
+                                                              color: Colors.orange.shade800,
+                                                            ),
+                                                          ),
+                                                        ),
+                                                        TextButton(
+                                                          style: TextButton.styleFrom(
+                                                            minimumSize: const Size(44, 32),
+                                                            padding: const EdgeInsets
+                                                                .symmetric(horizontal: 8),
+                                                          ),
+                                                          onPressed: () => AttendanceService
+                                                              .setGeofenceExemption(
+                                                            tripId: widget.tripId,
+                                                            studentId: studentId,
+                                                            warningsEnabled: true,
+                                                          ),
+                                                          child: const Text("Turn on",
+                                                              style: TextStyle(fontSize: 11)),
+                                                        ),
+                                                      ],
+                                                    ),
+                                                  ),
+                                              ],
                                             ),
                                           ),
-                                        ),
-                                      ],
-                                    ),
-                                  );
-                                }),
+                                        );
+                                      }).toList(),
+                                    );
+                                  },
+                                ),
                               ],
                             ),
                           ),
@@ -1537,7 +1801,18 @@ class _TeacherSeatMapDialogState extends State<TeacherSeatMapDialog> {
     _passengers = asList(widget.bus['passengers'])
         .map((p) => Map<String, dynamic>.from(p as Map))
         .toList();
+    // Remembered so saving sends only the seats that actually moved, rather
+    // than one server call per student on the bus.
+    _originalSeats = {
+      for (final p in _passengers)
+        (p['id'] ?? '').toString(): _seatOf(p['seatNumber']),
+    };
   }
+
+  late Map<String, int?> _originalSeats;
+
+  static int? _seatOf(dynamic seat) =>
+      seat is int ? seat : (seat is String ? int.tryParse(seat) : null);
 
   Map<int, Map<String, dynamic>> get _seatToStudent {
     final Map<int, Map<String, dynamic>> map = {};
@@ -1583,20 +1858,22 @@ class _TeacherSeatMapDialogState extends State<TeacherSeatMapDialog> {
   Future<void> _save() async {
     setState(() => _saving = true);
     try {
-      final ref = FirebaseFirestore.instance.collection('trips').doc(widget.tripId);
-      final snap = await ref.get();
-      final List buses = List.from(snap.data()?['buses'] ?? []);
-      final Map<String, dynamic> myBus = Map<String, dynamic>.from(buses[widget.busIndex]);
-      myBus['passengers'] = _passengers;
-      buses[widget.busIndex] = myBus;
-      await ref.update({'buses': buses});
-
-      // Keep the chat membership in sync (no-op if Cloud Function already ran).
-      await ChatSync.syncTripChats(
-        tripId: widget.tripId,
-        tripTitle: snap.data()?['title']?.toString() ?? 'Field Trip',
-        buses: buses,
-      );
+      // Seats are written one at a time by the server rather than by pushing
+      // the whole `buses` array from here. Attendance lives in that same array,
+      // so a client that could rewrite it could also mark students present
+      // without any of the checks — the security rules now refuse such a write
+      // outright, which is why this goes through setPassengerSeat.
+      for (final p in _passengers) {
+        final id = (p['id'] ?? '').toString();
+        if (id.isEmpty) continue;
+        final seatNumber = _seatOf(p['seatNumber']);
+        if (_originalSeats[id] == seatNumber) continue; // unchanged
+        await AttendanceService.setSeat(
+          tripId: widget.tripId,
+          studentId: id,
+          seatNumber: seatNumber,
+        );
+      }
       if (!mounted) return;
       Navigator.pop(context);
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
@@ -3880,3 +4157,28 @@ class _GuardianContacts extends StatelessWidget {
   }
 }
 
+
+/// A small tag on a roster row — "Manual", and anything else that needs to be
+/// distinguishable from an ordinary scan at a glance.
+class _RosterTag extends StatelessWidget {
+  final String label;
+  final Color colour;
+
+  const _RosterTag({required this.label, required this.colour});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+      decoration: BoxDecoration(
+        color: colour.withValues(alpha: 0.10),
+        border: Border.all(color: colour.withValues(alpha: 0.30)),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Text(
+        label,
+        style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: colour),
+      ),
+    );
+  }
+}

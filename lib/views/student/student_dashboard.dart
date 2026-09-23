@@ -20,6 +20,7 @@ import '../../utils/live_tracker.dart';
 import '../../utils/firestore_utils.dart';
 import '../../utils/trip_queries.dart';
 import '../auth/mobile_login_view.dart';
+import 'attendance_qr_card.dart';
 import '../shared/settings_view.dart';
 import '../shared/chat_view.dart';
 import '../shared/notification_panel.dart';
@@ -1276,6 +1277,10 @@ class StudentQRTab extends StatelessWidget {
                     style: TextStyle(fontSize: 13, color: Colors.grey.shade500),
                   ),
                   const SizedBox(height: 28),
+
+                  // Attendance is a separate, expiring code. It appears only
+                  // while a trip is running and the bus has reached a stop.
+                  AttendanceQrCard(myUid: myUid),
                   Container(
                     padding: const EdgeInsets.all(24),
                     decoration: BoxDecoration(
@@ -1322,27 +1327,14 @@ class StudentQRTab extends StatelessWidget {
                     ),
                   ),
                   const SizedBox(height: 20),
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-                    decoration: BoxDecoration(
-                      color: Colors.orange.withValues(alpha: 0.08),
-                      borderRadius: BorderRadius.circular(20),
-                      border: Border.all(color: Colors.orange.withValues(alpha: 0.2)),
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(Icons.info_outline_rounded, size: 14, color: Colors.orange.shade700),
-                        const SizedBox(width: 8),
-                        Flexible(
-                          child: Text(
-                            "Show this code to your parent if camera is unavailable",
-                            textAlign: TextAlign.center,
-                            style: TextStyle(fontSize: 12, color: Colors.orange.shade700, fontWeight: FontWeight.w500),
-                          ),
-                        ),
-                      ],
-                    ),
+                  // This code identifies the student. It is not what records
+                  // attendance — that is the expiring code above — and it is no
+                  // longer how a parent links, which happens with a code the
+                  // school issues.
+                  Text(
+                    "This is your student identity code. It does not record attendance.",
+                    textAlign: TextAlign.center,
+                    style: TextStyle(fontSize: 12, height: 1.5, color: Colors.grey.shade600),
                   ),
                 ],
               ),

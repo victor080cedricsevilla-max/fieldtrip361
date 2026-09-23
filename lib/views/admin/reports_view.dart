@@ -234,9 +234,21 @@ class _ReportsViewState extends State<ReportsView> {
         final bus = buses[bi];
         final passengers = asList(bus['passengers']);
         int present = 0;
+        int manual = 0;
         for (final p in passengers) {
           final att = (p['attendance'] as Map?) ?? {};
-          if (att.values.any((v) => v == true)) present++;
+          if (!att.values.any((v) => v == true)) continue;
+          present++;
+          // A facilitator's judgement call is not the same evidence as a
+          // verified scan, so the report says which it was rather than
+          // presenting one total that hides the difference.
+          final meta = (p['attendanceMeta'] as Map?) ?? {};
+          final markedByHand = att.entries.any((e) {
+            if (e.value != true) return false;
+            final m = meta[e.key];
+            return m is Map && m['source'] == 'manual';
+          });
+          if (markedByHand) manual++;
         }
         final pct = passengers.isEmpty ? '--' : '${(present / passengers.length * 100).round()}%';
         rows.add([
@@ -245,13 +257,15 @@ class _ReportsViewState extends State<ReportsView> {
           'Bus ${bus['busLabel'] ?? bus['busNo'] ?? (bi + 1)}',
           '${passengers.length}',
           '$present',
+          '${present - manual}',
+          '$manual',
           pct,
         ]);
       }
     }
     return [
       pw.TableHelper.fromTextArray(
-        headers: ['Trip Name', 'Date', 'Bus', 'Total', 'Present', 'Rate'],
+        headers: ['Trip Name', 'Date', 'Bus', 'Total', 'Present', 'Scanned', 'Manual', 'Rate'],
         data: rows,
         headerStyle: pw.TextStyle(fontWeight: pw.FontWeight.bold, color: PdfColors.white),
         headerDecoration: const pw.BoxDecoration(color: PdfColors.blueGrey700),
@@ -263,7 +277,16 @@ class _ReportsViewState extends State<ReportsView> {
           3: const pw.FlexColumnWidth(1),
           4: const pw.FlexColumnWidth(1),
           5: const pw.FlexColumnWidth(1),
+          6: const pw.FlexColumnWidth(1),
+          7: const pw.FlexColumnWidth(1),
         },
+      ),
+      pw.SizedBox(height: 10),
+      pw.Text(
+        'Scanned: verified by QR against the destination geofence. '
+        'Manual: recorded by a facilitator who confirmed the student was present, '
+        'with the reason kept in the activity log.',
+        style: const pw.TextStyle(fontSize: 8, color: PdfColors.grey700),
       ),
     ];
   }
@@ -612,9 +635,18 @@ class _AttendanceReport extends StatelessWidget {
         final bus = buses[bi];
         final passengers = asList(bus['passengers']);
         int present = 0;
+        int manual = 0;
         for (final p in passengers) {
           final att = (p['attendance'] as Map?) ?? {};
-          if (att.values.any((v) => v == true)) present++;
+          if (!att.values.any((v) => v == true)) continue;
+          present++;
+          final meta = (p['attendanceMeta'] as Map?) ?? {};
+          final markedByHand = att.entries.any((e) {
+            if (e.value != true) return false;
+            final m = meta[e.key];
+            return m is Map && m['source'] == 'manual';
+          });
+          if (markedByHand) manual++;
         }
         rows.add(_AttendanceRow(
           tripName: d['title'] ?? 'Untitled',
@@ -622,6 +654,7 @@ class _AttendanceReport extends StatelessWidget {
           bus: 'Bus ${bus['busLabel'] ?? bus['busNo'] ?? (bi + 1)}',
           total: passengers.length,
           present: present,
+          manual: manual,
         ));
       }
     }
@@ -666,6 +699,8 @@ class _AttendanceReport extends StatelessWidget {
                         SizedBox(width: 8),
                         SizedBox(width: 48, child: Text('Present', textAlign: TextAlign.center, style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: AppTheme.secondaryColor))),
                         SizedBox(width: 4),
+                        SizedBox(width: 52, child: Text('Manual', textAlign: TextAlign.center, style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: AppTheme.secondaryColor))),
+                        SizedBox(width: 4),
                         SizedBox(width: 48, child: Text('Rate', textAlign: TextAlign.center, style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: AppTheme.secondaryColor))),
                       ],
                     ),
@@ -693,6 +728,20 @@ class _AttendanceReport extends StatelessWidget {
                           ),
                           const SizedBox(width: 4),
                           SizedBox(
+                            width: 52,
+                            child: row.manual == 0
+                                ? Text('--',
+                                    textAlign: TextAlign.center,
+                                    style: TextStyle(fontSize: 12, color: Colors.grey.shade400))
+                                : Text('${row.manual}',
+                                    textAlign: TextAlign.center,
+                                    style: TextStyle(
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.w600,
+                                        color: Colors.orange.shade700)),
+                          ),
+                          const SizedBox(width: 4),
+                          SizedBox(
                             width: 48,
                             child: Text(
                               row.total == 0 ? '--' : '${(pct * 100).round()}%',
@@ -707,6 +756,12 @@ class _AttendanceReport extends StatelessWidget {
                 ],
               ),
             ),
+            const SizedBox(height: 10),
+            Text(
+              'Manual counts students a facilitator confirmed in person when their '
+              'code could not be verified. The reason for each is in Activity Logs.',
+              style: TextStyle(fontSize: 11, height: 1.45, color: Colors.grey.shade600),
+            ),
           ],
         ],
       ),
@@ -717,7 +772,19 @@ class _AttendanceReport extends StatelessWidget {
 class _AttendanceRow {
   final String tripName, date, bus;
   final int total, present;
-  const _AttendanceRow({required this.tripName, required this.date, required this.bus, required this.total, required this.present});
+
+  /// How many of [present] were recorded by a facilitator rather than verified
+  /// by a scan. Kept separate because they are different kinds of evidence.
+  final int manual;
+
+  const _AttendanceRow({
+    required this.tripName,
+    required this.date,
+    required this.bus,
+    required this.total,
+    required this.present,
+    this.manual = 0,
+  });
 }
 
 class _MonthlyActivityReport extends StatelessWidget {

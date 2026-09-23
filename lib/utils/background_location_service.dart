@@ -376,6 +376,14 @@ Future<void> _onStart(ServiceInstance service) async {
       await FirebaseFirestore.instance.collection('locations').doc(uid).set({
         'lat': pos.latitude,
         'lng': pos.longitude,
+        // Accuracy and the moment the device took the fix travel with the
+        // position. Attendance is judged on `observedAt`, not on the write
+        // time, so re-uploading an old fix cannot make it look current — and a
+        // fix too vague to compare against a geofence is refused rather than
+        // guessed at.
+        'accuracy': pos.accuracy,
+        'observedAt': Timestamp.fromDate(pos.timestamp),
+        'isMocked': pos.isMocked,
         'lastUpdate': FieldValue.serverTimestamp(),
       }, SetOptions(merge: true));
       lastWriteTime = DateTime.now();
@@ -410,6 +418,27 @@ Future<void> _onStart(ServiceInstance service) async {
 
     if (distance > radius && !wasOutOfBounds) {
       wasOutOfBounds = true;
+
+      // A facilitator may have paused this student's warnings for the trip —
+      // a phone left on the bus otherwise alarms everyone for the rest of the
+      // day. Checked here as well as on the server so the student's own device
+      // stays quiet too, not just the notifications sent to other people.
+      try {
+        final exemption = await FirebaseFirestore.instance
+            .collection('trips')
+            .doc(activeTripId)
+            .collection('geofenceExemptions')
+            .doc(uid)
+            .get();
+        if (exemption.exists && exemption.data()?['warningsEnabled'] == false) {
+          return;
+        }
+      } catch (e) {
+        // If the check itself fails, warn rather than stay silent: a missed
+        // alert is worse than one the facilitator has to dismiss.
+        debugPrint('[bg] exemption check failed: $e');
+      }
+
       try {
         // Dedup: if the service was killed and restarted while the student was
         // already outside, there may be a pending alert doc from the previous
