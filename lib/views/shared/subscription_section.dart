@@ -17,13 +17,19 @@ class PlanTier {
   final String key;
   final String label;
   final int capacity; // 0 = custom / Enterprise
-  const PlanTier(this.key, this.label, this.capacity);
+
+  /// Pesos per student per month. Campus carries a volume rate; the rest use
+  /// the flat [_ratePerStudent].
+  final int rate;
+
+  const PlanTier(this.key, this.label, this.capacity, {this.rate = _ratePerStudent});
 
   static const all = <PlanTier>[
     PlanTier('starter', 'Starter', 100),
     PlanTier('growth', 'Growth', 200),
     PlanTier('professional', 'Professional', 300),
     PlanTier('scale', 'Scale', 500),
+    PlanTier('campus', 'Campus', 1000, rate: 8),
     PlanTier('enterprise', 'Enterprise', 0),
   ];
 
@@ -31,16 +37,29 @@ class PlanTier {
       all.firstWhere((t) => t.key == k, orElse: () => all.first);
 
   String get capacityLabel =>
-      capacity == 0 ? '1,000+ students' : 'Up to $capacity students';
+      capacity == 0 ? '1,000+ students' : 'Up to ${_thousands(capacity)} students';
 }
 
-const _ratePerStudent = 1;
+/// 1000 → "1,000", so the plan list reads like the landing page.
+String _thousands(int n) => n.toString().replaceAllMapped(
+      RegExp(r'(\d)(?=(\d{3})+$)'),
+      (m) => '${m[1]},',
+    );
+
+/// "₱8,000". Every amount on this screen goes through here so the symbol and
+/// the separator never drift between the plan list, the notes and the dialog.
+String _peso(Object? n) {
+  final v = n is num ? n.round() : int.tryParse('$n') ?? 0;
+  return '$_currency${_thousands(v)}';
+}
+
+const _ratePerStudent = 10;
 const _annualDiscount = 0.20;
 const _billingPeriodDays = 30;
 
 int monthlyPriceFor(PlanTier tier, String billingCycle) {
   if (tier.capacity == 0) return 0;
-  final base = tier.capacity * _ratePerStudent;
+  final base = tier.capacity * tier.rate;
   return (base * (billingCycle == 'annual' ? 1 - _annualDiscount : 1)).round();
 }
 
@@ -105,14 +124,14 @@ class _SubscriptionSectionState extends State<SubscriptionSection> {
             'Your capacity is now ${d['capacity']} students, effective immediately.',
           '',
           if (due > 0)
-            'Prorated amount due: $_currency$due — this covers the upgrade for the '
+            'Prorated amount due: ${_peso(due)} — this covers the upgrade for the '
                 '${d['daysRemaining']} days left in your current period. Your next '
-                'renewal is $_currency${d['newMonthly']}.'
+                'renewal is ${_peso(d['newMonthly'])}.'
           else if (credit > 0)
-            'You have $_currency$credit of unused time credited to your next invoice. '
-                'Your next renewal is $_currency${d['newMonthly']}.'
+            'You have ${_peso(credit)} of unused time credited to your next invoice. '
+                'Your next renewal is ${_peso(d['newMonthly'])}.'
           else
-            'Your next renewal is $_currency${d['newMonthly']}.',
+            'Your next renewal is ${_peso(d['newMonthly'])}.',
           '',
           'Nothing has been charged — billing is not switched on yet.',
         ].join('\n'),
@@ -269,11 +288,11 @@ class _SubscriptionSectionState extends State<SubscriptionSection> {
     } else if (tier.capacity == 0) {
       note = 'Custom pricing — we will contact you';
     } else if (difference > 0) {
-      note = '$_currency$difference now, then $_currency$newMonthly/mo';
+      note = '${_peso(difference)} now, then ${_peso(newMonthly)}/mo';
     } else if (difference < 0) {
-      note = '$_currency${-difference} credited, then $_currency$newMonthly/mo';
+      note = '${_peso(-difference)} credited, then ${_peso(newMonthly)}/mo';
     } else {
-      note = '$_currency$newMonthly/mo';
+      note = '${_peso(newMonthly)}/mo';
     }
 
     final disabled = isCurrent || tooSmall;
@@ -387,7 +406,7 @@ class _SubscriptionSectionState extends State<SubscriptionSection> {
               ]),
             ),
             Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
-              Text(unlimited ? 'Custom' : '$_currency$price',
+              Text(unlimited ? 'Custom' : _peso(price),
                   style: TextStyle(
                       fontSize: 20, fontWeight: FontWeight.bold,
                       color: AppTheme.effectivePrimary)),
@@ -454,7 +473,7 @@ class _SubscriptionSectionState extends State<SubscriptionSection> {
                   const SizedBox(width: 8),
                   Expanded(
                     child: Text(
-                      'Prorated $_currency$pending recorded from your last plan change '
+                      'Prorated ${_peso(pending)} recorded from your last plan change '
                       '(not charged — billing is not live yet).',
                       style: TextStyle(
                           fontSize: 11.5, color: Colors.orange.shade900, height: 1.4),

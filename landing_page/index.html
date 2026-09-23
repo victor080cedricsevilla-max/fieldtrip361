@@ -1160,24 +1160,24 @@
           <div class="calc-count"><span id="calcCount">100</span> <small>students</small></div>
         </div>
         <div class="calc-price">
-          <div class="calc-amount" id="calcPrice">₱100</div>
+          <div class="calc-amount" id="calcPrice">₱1,000</div>
           <div class="calc-period" id="calcPeriod">per month</div>
         </div>
       </div>
-      <input type="range" min="100" max="1000" step="100" value="100" class="calc-slider" id="calcSlider" aria-label="Number of students" />
-      <div class="calc-ticks"><span>100 min</span><span>1,000+</span></div>
-      <p class="calc-note" id="calcNote"><strong>Minimum 100 students.</strong> Round up to the next hundred above your actual count — e.g. 90 students → choose 100.</p>
-      <a href="#" class="btn-hero-primary calc-cta" id="calcCta">Subscribe — ₱100/mo</a>
+      <input type="range" min="0" max="5" step="1" value="0" class="calc-slider" id="calcSlider" aria-label="Student capacity tier" />
+      <div class="calc-ticks"><span>100</span><span>200</span><span>300</span><span>500</span><span>1,000</span><span>1,000+</span></div>
+      <p class="calc-note" id="calcNote"><strong>Minimum 100 students.</strong> Pick the tier just above your actual count — e.g. 90 students → choose 100.</p>
+      <a href="#" class="btn-hero-primary calc-cta" id="calcCta">Subscribe — ₱1,000/mo</a>
     </div>
 
     <!-- Tier cards -->
     <div class="pricing-grid">
 
       <!-- Starter -->
-      <div class="pricing-card reveal" data-students="100">
+      <div class="pricing-card reveal" data-students="100" data-tier="starter">
         <div class="pc-name">Starter</div>
         <div class="pc-cap">Up to 100 students</div>
-        <div class="pc-price"><span class="pc-amount">₱100</span><span class="pc-per">/mo</span></div>
+        <div class="pc-price"><span class="pc-amount">₱1,000</span><span class="pc-per">/mo</span></div>
         <div class="pc-sub"></div>
         <ul class="pc-features">
           <li><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#00C4B4" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>Live GPS trip tracking</li>
@@ -1190,10 +1190,10 @@
       </div>
 
       <!-- Growth -->
-      <div class="pricing-card reveal" data-students="200" style="transition-delay:.05s">
+      <div class="pricing-card reveal" data-students="200" data-tier="growth" style="transition-delay:.05s">
         <div class="pc-name">Growth</div>
         <div class="pc-cap">Up to 200 students</div>
-        <div class="pc-price"><span class="pc-amount">₱200</span><span class="pc-per">/mo</span></div>
+        <div class="pc-price"><span class="pc-amount">₱2,000</span><span class="pc-per">/mo</span></div>
         <div class="pc-sub"></div>
         <ul class="pc-features">
           <li><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#00C4B4" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>Everything in Starter</li>
@@ -1206,11 +1206,11 @@
       </div>
 
       <!-- Professional (Popular) -->
-      <div class="pricing-card popular reveal" data-students="300" style="transition-delay:.1s">
+      <div class="pricing-card popular reveal" data-students="300" data-tier="professional" style="transition-delay:.1s">
         <div class="pc-badge">Most Popular</div>
         <div class="pc-name">Professional</div>
         <div class="pc-cap">Up to 300 students</div>
-        <div class="pc-price"><span class="pc-amount">₱300</span><span class="pc-per">/mo</span></div>
+        <div class="pc-price"><span class="pc-amount">₱3,000</span><span class="pc-per">/mo</span></div>
         <div class="pc-sub"></div>
         <ul class="pc-features">
           <li><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#00C4B4" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>Everything in Growth</li>
@@ -1223,10 +1223,10 @@
       </div>
 
       <!-- Scale -->
-      <div class="pricing-card reveal" data-students="500" style="transition-delay:.15s">
+      <div class="pricing-card reveal" data-students="500" data-tier="scale" style="transition-delay:.15s">
         <div class="pc-name">Scale</div>
         <div class="pc-cap">Up to 500 students</div>
-        <div class="pc-price"><span class="pc-amount">₱500</span><span class="pc-per">/mo</span></div>
+        <div class="pc-price"><span class="pc-amount">₱5,000</span><span class="pc-per">/mo</span></div>
         <div class="pc-sub"></div>
         <ul class="pc-features">
           <li><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#00C4B4" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>Everything in Professional</li>
@@ -1238,14 +1238,30 @@
         <a href="#" class="pc-cta">Choose Scale</a>
       </div>
 
+      <!-- Campus (volume rate) -->
+      <div class="pricing-card reveal" data-students="1000" data-tier="campus" style="transition-delay:.2s">
+        <div class="pc-name">Campus</div>
+        <div class="pc-cap">Up to 1,000 students</div>
+        <div class="pc-price"><span class="pc-amount">₱8,000</span><span class="pc-per">/mo</span></div>
+        <div class="pc-sub"></div>
+        <ul class="pc-features">
+          <li><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#00C4B4" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>Everything in Scale</li>
+          <li><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#00C4B4" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>Volume rate — ₱8 per student</li>
+          <li><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#00C4B4" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>Whole-department roster on one plan</li>
+          <li><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#00C4B4" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>Bulk import by grade &amp; section</li>
+          <li><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#00C4B4" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>Priority phone support</li>
+        </ul>
+        <a href="#" class="pc-cta">Choose Campus</a>
+      </div>
+
       <!-- Enterprise -->
-      <div class="pricing-card reveal" data-students="1000" data-custom="true" style="transition-delay:.2s">
+      <div class="pricing-card reveal" data-students="1000" data-tier="enterprise" data-custom="true" style="transition-delay:.25s">
         <div class="pc-name">Enterprise</div>
         <div class="pc-cap">1,000+ students</div>
         <div class="pc-price"><span class="pc-amount">Custom</span></div>
         <div class="pc-sub">Volume pricing</div>
         <ul class="pc-features">
-          <li><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#00C4B4" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>Everything in Scale</li>
+          <li><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#00C4B4" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>Everything in Campus</li>
           <li><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#00C4B4" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>Custom volume discounts</li>
           <li><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#00C4B4" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>SLA &amp; dedicated manager</li>
           <li><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#00C4B4" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>Multi-campus support</li>
@@ -1362,9 +1378,21 @@
 
   // ── Pricing calculator + billing toggle ──
   (function () {
-    const RATE = 1;           // ₱ per student per month
+    const RATE = 10;          // ₱ per student per month, unless the tier sets its own
     const ANNUAL_OFF = 0.20;  // 20% off when billed annually
     let annual = false;
+
+    // Order matters — the capacity slider is an index into this list, so it can
+    // only ever land on a real tier. Keep in sync with TIERS in functions/index.js.
+    const TIERS = [
+      { key: 'starter',      label: 'Starter',      capacity: 100 },
+      { key: 'growth',       label: 'Growth',       capacity: 200 },
+      { key: 'professional', label: 'Professional', capacity: 300 },
+      { key: 'scale',        label: 'Scale',        capacity: 500 },
+      { key: 'campus',       label: 'Campus',       capacity: 1000, rate: 8 }, // volume rate
+      { key: 'enterprise',   label: 'Enterprise',   capacity: 0   }, // 1,000+ / custom
+    ];
+    const byKey = k => TIERS.find(t => t.key === k) || TIERS[0];
 
     const slider    = document.getElementById('calcSlider');
     const calcCount = document.getElementById('calcCount');
@@ -1377,8 +1405,8 @@
     if (!slider) return;
 
     const money = n => '₱' + n.toLocaleString('en-US');
-    const perMonth = students => {
-      const base = students * RATE;
+    const perMonth = tier => {
+      const base = tier.capacity * (tier.rate || RATE);
       return annual ? Math.round(base * (1 - ANNUAL_OFF)) : base;
     };
 
@@ -1389,16 +1417,16 @@
     }
 
     function updateCalc() {
-      const v = +slider.value;
+      const tier = TIERS[+slider.value] || TIERS[0];
       paintSlider();
-      if (v >= 1000) {
+      if (tier.capacity === 0) {
         calcCount.textContent  = '1,000+';
         calcPrice.textContent  = 'Custom';
         calcPeriod.textContent = 'volume pricing';
         calcCta.textContent    = 'Contact Sales';
       } else {
-        const pm = perMonth(v);
-        calcCount.textContent  = v.toLocaleString('en-US');
+        const pm = perMonth(tier);
+        calcCount.textContent  = tier.capacity.toLocaleString('en-US');
         calcPrice.textContent  = money(pm);
         calcPeriod.textContent = annual ? 'per month, billed annually' : 'per month';
         calcCta.textContent    = 'Subscribe — ' + money(pm) + '/mo';
@@ -1406,10 +1434,9 @@
     }
 
     function updateCards() {
-      document.querySelectorAll('.pricing-card[data-students]').forEach(card => {
+      document.querySelectorAll('.pricing-card[data-tier]').forEach(card => {
         if (card.dataset.custom === 'true') return;
-        const s   = +card.dataset.students;
-        const pm  = perMonth(s);
+        const pm  = perMonth(byKey(card.dataset.tier));
         const amt = card.querySelector('.pc-amount');
         const sub = card.querySelector('.pc-sub');
         if (amt) amt.textContent = money(pm);
