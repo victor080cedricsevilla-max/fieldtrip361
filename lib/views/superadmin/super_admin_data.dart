@@ -562,6 +562,22 @@ class PlatformActions {
         'documentId': documentId,
       });
 
+  /// A short-lived link to one uploaded document.
+  ///
+  /// Minted on demand rather than stored: a Firebase download URL is a bearer
+  /// link, so keeping one in the record would make every verification document
+  /// readable by anyone who ever saw it.
+  static Future<String> applicationDocumentUrl({
+    required String applicationId,
+    required String documentId,
+  }) async {
+    final res = await _call('getApplicationDocumentUrl', {
+      'applicationId': applicationId,
+      'documentId': documentId,
+    });
+    return (res['url'] ?? '').toString();
+  }
+
   static Future<Map<String, dynamic>> changeMyPassword(String newPassword) =>
       _call('changeMyPassword', {'newPassword': newPassword});
 

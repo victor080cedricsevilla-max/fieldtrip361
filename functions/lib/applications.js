@@ -528,6 +528,74 @@ exports.submitSchoolApplication = onCall(async (request) => {
 });
 
 /**
+ * A short-lived link to one uploaded document.
+ *
+ * The URL is minted on demand and never stored: a Firebase download URL is a
+ * bearer link, so writing one into Firestore would make every verification
+ * document readable by anyone who ever saw the record. This hands one out only
+ * to the reviewer or the applicant who uploaded it, and only for as long as it
+ * takes to read the page.
+ */
+exports.getApplicationDocumentUrl = onCall(async (request) => {
+  if (!request.auth) throw new HttpsError("unauthenticated", "Sign in required.");
+  const db = admin.firestore();
+  const uid = request.auth.uid;
+  await checkRateLimit(uid, "application_doc_url", 120);
+
+  const applicationId = sanitizeText(request.data?.applicationId, 64);
+  const documentId = sanitizeText(request.data?.documentId, 64);
+  if (!applicationId || !documentId) {
+    throw new HttpsError("invalid-argument", "applicationId and documentId are required.");
+  }
+
+  const appRef = db.collection("schoolApplications").doc(applicationId);
+  const appSnap = await appRef.get();
+  if (!appSnap.exists) throw new HttpsError("not-found", "Application not found.");
+
+  const isSuperAdmin = request.auth.token.superAdmin === true;
+  if (!isSuperAdmin && appSnap.get("applicantUid") !== uid) {
+    throw new HttpsError("permission-denied", "That application belongs to someone else.");
+  }
+
+  const docSnap = await appRef.collection("documents").doc(documentId).get();
+  if (!docSnap.exists) throw new HttpsError("not-found", "That document is not attached.");
+  const storagePath = docSnap.get("storagePath");
+  if (!storagePath) throw new HttpsError("not-found", "That document has no file.");
+
+  const file = admin.storage().bucket().file(storagePath);
+  const expires = Date.now() + 15 * 60 * 1000;
+
+  try {
+    const [url] = await file.getSignedUrl({ action: "read", expires, version: "v4" });
+    return { url, expiresAt: expires, contentType: docSnap.get("contentType") || null };
+  } catch (e) {
+    // Signing needs the runtime service account to be able to sign for itself,
+    // which is not granted on every project. Fall back to the bucket's own
+    // download token: still only handed to an authorized caller, but it does
+    // not expire, so it is the second choice rather than the first.
+    console.warn("signed URL unavailable, using download token:", e?.message || e);
+    try {
+      const [meta] = await file.getMetadata();
+      let token = meta?.metadata?.firebaseStorageDownloadTokens;
+      if (!token) {
+        token = require("crypto").randomUUID();
+        await file.setMetadata({ metadata: { firebaseStorageDownloadTokens: token } });
+      }
+      const bucket = admin.storage().bucket().name;
+      const url =
+        `https://firebasestorage.googleapis.com/v0/b/${bucket}/o/` +
+        `${encodeURIComponent(storagePath)}?alt=media&token=${token}`;
+      return { url, expiresAt: null, contentType: docSnap.get("contentType") || null };
+    } catch (inner) {
+      throw new HttpsError(
+        "internal",
+        `The file could not be opened (${String(inner?.message || inner).slice(0, 160)}).`
+      );
+    }
+  }
+});
+
+/**
  * Reopens an application from the link in our email.
  *
  * An anonymous session lives in one browser, so a registrar who opens the

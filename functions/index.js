@@ -2780,6 +2780,7 @@ exports.attachApplicationDocument = applications.attachApplicationDocument;
 exports.removeApplicationDocument = applications.removeApplicationDocument;
 exports.submitSchoolApplication = applications.submitSchoolApplication;
 exports.openApplicationWithKey = applications.openApplicationWithKey;
+exports.getApplicationDocumentUrl = applications.getApplicationDocumentUrl;
 exports.claimApplicationForReview = applications.claimApplicationForReview;
 exports.decideSchoolApplication = applications.decideSchoolApplication;
 exports.retryApplicationEmail = applications.retryApplicationEmail;

@@ -191,11 +191,27 @@ async function extractDocument(db, { applicationId, documentId }) {
   const application = appSnap.data();
   const document = docSnap.data();
 
-  const finish = (status, patch) =>
-    docRef.update({
+  /**
+   * Records a failure without throwing away a reading that already worked.
+   *
+   * A re-run that hits a transient upstream error used to replace the whole
+   * `ocr` object, so a good extraction plus its hints would be swapped for
+   * "extraction failed" — leaving the reviewer looking at hints with no text
+   * behind them. The error is merged alongside instead, and only a first
+   * attempt with nothing to lose sets the failed status.
+   */
+  const finish = (status, patch) => {
+    const hadText = typeof document.ocr?.rawText === "string" && document.ocr.rawText.trim();
+    if (hadText) {
+      return docRef.update({
+        "ocr.lastError": patch?.error || "Extraction did not complete.",
+        "ocr.lastErrorAt": admin.firestore.FieldValue.serverTimestamp(),
+      });
+    }
+    return docRef.update({
       ocr: { status, checkedAt: admin.firestore.FieldValue.serverTimestamp(), ...patch },
-      ...(patch?.reviewHints ? {} : {}),
     });
+  };
 
   const apiKey = geminiApiKey.value();
   if (!apiKey) {
@@ -223,9 +239,29 @@ async function extractDocument(db, { applicationId, documentId }) {
     return { status: OCR_STATUS.failed };
   }
 
+  /**
+   * One attempt, retried on the errors that mean "try again shortly".
+   *
+   * A 503 from the model is the service being busy, not the document being
+   * unreadable, and giving up on the first one leaves the reviewer with a
+   * failure notice for a file that would have read perfectly a second later.
+   */
+  const withRetry = async (attempt) => {
+    const transient = new Set([429, 500, 502, 503, 504]);
+    for (let i = 0; ; i++) {
+      try {
+        return await attempt();
+      } catch (e) {
+        const code = e?.response?.status;
+        if (i >= 2 || !transient.has(code)) throw e;
+        await new Promise((r) => setTimeout(r, 1500 * (i + 1)));
+      }
+    }
+  };
+
   let parsed;
   try {
-    const response = await axios.post(
+    const response = await withRetry(() => axios.post(
       `https://generativelanguage.googleapis.com/v1beta/models/${geminiModel.value() || "gemini-3.6-flash"}:generateContent`,
       {
         contents: [
@@ -250,7 +286,7 @@ async function extractDocument(db, { applicationId, documentId }) {
         maxBodyLength: Infinity,
         maxContentLength: Infinity,
       }
-    );
+    ));
     const raw = response.data?.candidates?.[0]?.content?.parts?.[0]?.text;
     if (!raw) throw new Error("no content returned");
     parsed = JSON.parse(raw);

@@ -1,6 +1,7 @@
 import 'dart:math';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:cloud_functions/cloud_functions.dart';
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 
@@ -1047,6 +1048,43 @@ class _DocumentCardState extends State<_DocumentCard> {
   bool _expanded = true;
   bool _rerunning = false;
 
+  String? _url;
+  bool _loadingUrl = false;
+  String? _urlError;
+
+  @override
+  void initState() {
+    super.initState();
+    // The card opens expanded, so the original is fetched straight away — the
+    // document is the thing being reviewed, not a detail behind a click.
+    _loadUrl();
+  }
+
+  /// Asks the server for a link to the file. Nothing usable is stored on the
+  /// record, so this runs once per card rather than reading a saved URL.
+  Future<void> _loadUrl() async {
+    if (_loadingUrl || _url != null) return;
+    setState(() {
+      _loadingUrl = true;
+      _urlError = null;
+    });
+    try {
+      final url = await PlatformActions.applicationDocumentUrl(
+        applicationId: widget.applicationId,
+        documentId: widget.documentId,
+      );
+      if (mounted) setState(() => _url = url.isEmpty ? null : url);
+    } catch (e) {
+      if (mounted) {
+        setState(() => _urlError = e is FirebaseFunctionsException
+            ? (e.message ?? 'The file could not be opened.')
+            : 'The file could not be opened. Check your connection and retry.');
+      }
+    } finally {
+      if (mounted) setState(() => _loadingUrl = false);
+    }
+  }
+
   Future<void> _rerunOcr() async {
     setState(() => _rerunning = true);
     try {
@@ -1071,7 +1109,8 @@ class _DocumentCardState extends State<_DocumentCard> {
     final type = (d['type'] ?? '').toString();
     final ocr = (d['ocr'] ?? const {}) as Map;
     final ocrStatus = (ocr['status'] ?? OcrStatus.pending).toString();
-    final url = (d['downloadUrl'] ?? '').toString();
+    // Minted on demand by the server; nothing usable is stored on the record.
+    final url = _url ?? '';
     final contentType = (d['contentType'] ?? '').toString();
     final isImage = contentType.startsWith('image/');
     final hints = ((d['reviewHints'] as List?) ?? const [])
@@ -1151,6 +1190,12 @@ class _DocumentCardState extends State<_DocumentCard> {
                     url: url,
                     isImage: isImage,
                     fileName: (d['fileName'] ?? 'document').toString(),
+                    loading: _loadingUrl,
+                    error: _urlError,
+                    onRetry: () {
+                      setState(() => _url = null);
+                      _loadUrl();
+                    },
                   );
                   final extracted = _ExtractedPanel(
                     ocr: ocr,
@@ -1185,11 +1230,17 @@ class _OriginalPreview extends StatelessWidget {
   final String url;
   final bool isImage;
   final String fileName;
+  final bool loading;
+  final String? error;
+  final VoidCallback onRetry;
 
   const _OriginalPreview({
     required this.url,
     required this.isImage,
     required this.fileName,
+    required this.loading,
+    required this.error,
+    required this.onRetry,
   });
 
   @override
@@ -1215,7 +1266,34 @@ class _OriginalPreview extends StatelessWidget {
             borderRadius: Radii.control,
           ),
           clipBehavior: Clip.antiAlias,
-          child: url.isEmpty
+          child: loading
+              ? const Center(child: CircularProgressIndicator())
+              : error != null
+                  ? Center(
+                      child: Padding(
+                        padding: const EdgeInsets.all(Insets.lg),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.error_outline_rounded, size: 26, color: t.danger.fg),
+                            const SizedBox(height: Insets.sm),
+                            Text(
+                              error!,
+                              textAlign: TextAlign.center,
+                              style: TextStyle(fontSize: FontSizes.body, color: t.textMuted),
+                            ),
+                            const SizedBox(height: Insets.md),
+                            ConsoleButton(
+                              label: 'Retry',
+                              icon: Icons.refresh_rounded,
+                              kind: ConsoleButtonKind.secondary,
+                              onPressed: onRetry,
+                            ),
+                          ],
+                        ),
+                      ),
+                    )
+                  : url.isEmpty
               ? Center(
                   child: Text(
                     'No file attached',
