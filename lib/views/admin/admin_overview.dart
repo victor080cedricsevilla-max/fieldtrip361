@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import '../../config/theme.dart';
 import '../../utils/firestore_utils.dart';
+import '../../utils/school_context.dart';
 import '../../utils/trip_queries.dart';
 
 /// Admin dashboard landing page.
@@ -131,10 +132,10 @@ class _KpiRow extends StatelessWidget {
       stream: TripQueries.ofMySchool(),
       builder: (ctx, tripSnap) {
         return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-          stream: FirebaseFirestore.instance.collection('users').snapshots(),
+          stream: SchoolContext.studentsOfMySchool(),
           builder: (ctx2, userSnap) {
             final trips = tripSnap.data?.docs ?? const [];
-            final users = userSnap.data?.docs ?? const [];
+            final students = userSnap.data?.docs ?? const [];
 
             int totalTrips = trips.length;
             int activeTrips = 0;
@@ -171,9 +172,9 @@ class _KpiRow extends StatelessWidget {
                     tone: AppTheme.secondaryColor,
                   ),
                   _KpiTile(
-                    icon: Icons.people_outline_rounded,
-                    label: "Total Users",
-                    value: users.length.toString(),
+                    icon: Icons.school_outlined,
+                    label: "Total Students",
+                    value: students.length.toString(),
                     sub: "$pendingTrips pending trips",
                     tone: AppTheme.accentColor,
                   ),
@@ -595,10 +596,10 @@ class _UsersLineChartCard extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _CardHeader(title: "New users", subtitle: "Last 7 days"),
+          _CardHeader(title: "New students", subtitle: "Last 7 days"),
           const SizedBox(height: 16),
           StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-            stream: FirebaseFirestore.instance.collection('users').snapshots(),
+            stream: SchoolContext.studentsOfMySchool(),
             builder: (ctx, snap) {
               final List<int> counts = List<int>.filled(7, 0);
               if (snap.hasData) {
