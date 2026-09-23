@@ -571,16 +571,17 @@ exports.getApplicationDocumentUrl = onCall(async (request) => {
   } catch (e) {
     // Signing needs the runtime service account to be able to sign for itself,
     // which is not granted on every project. Fall back to the bucket's own
-    // download token: still only handed to an authorized caller, but it does
-    // not expire, so it is the second choice rather than the first.
+    // download token, which carries no expiry of its own and so is the second
+    // choice rather than the first.
     console.warn("signed URL unavailable, using download token:", e?.message || e);
     try {
-      const [meta] = await file.getMetadata();
-      let token = meta?.metadata?.firebaseStorageDownloadTokens;
-      if (!token) {
-        token = require("crypto").randomUUID();
-        await file.setMetadata({ metadata: { firebaseStorageDownloadTokens: token } });
-      }
+      // A download token never expires on its own, so issuing one and leaving
+      // it in place would create exactly the durable public link this feature
+      // is supposed to avoid. Rotating it on every request keeps at most one
+      // live link per document: the moment the reviewer asks again, every URL
+      // handed out earlier stops working.
+      const token = require("crypto").randomUUID();
+      await file.setMetadata({ metadata: { firebaseStorageDownloadTokens: token } });
       const bucket = admin.storage().bucket().name;
       const url =
         `https://firebasestorage.googleapis.com/v0/b/${bucket}/o/` +
