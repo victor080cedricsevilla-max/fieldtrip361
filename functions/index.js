@@ -2779,6 +2779,7 @@ exports.saveSchoolApplication = applications.saveSchoolApplication;
 exports.attachApplicationDocument = applications.attachApplicationDocument;
 exports.removeApplicationDocument = applications.removeApplicationDocument;
 exports.submitSchoolApplication = applications.submitSchoolApplication;
+exports.openApplicationWithKey = applications.openApplicationWithKey;
 exports.claimApplicationForReview = applications.claimApplicationForReview;
 exports.decideSchoolApplication = applications.decideSchoolApplication;
 exports.retryApplicationEmail = applications.retryApplicationEmail;
