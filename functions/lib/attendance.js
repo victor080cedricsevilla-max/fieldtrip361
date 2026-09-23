@@ -17,6 +17,7 @@ const admin = require("firebase-admin");
 
 const { sanitizeText, checkRateLimit } = require("./common");
 const { requireActiveUser, getPlatformConfig } = require("./platform");
+const { notifyGuardiansOfStudent } = require("./notify");
 
 const SOURCE = { qr: "qr", manual: "manual" };
 
@@ -573,6 +574,30 @@ exports.recordManualAttendance = onCall(async (request) => {
     timestamp: admin.firestore.FieldValue.serverTimestamp(),
   });
 
+  // Tell the guardian, and tell them why.
+  //
+  // A manual override is precisely the case where the parent's map goes quiet:
+  // the phone is flat, or lost, or has no signal, so no position arrives and
+  // the child appears frozen at the last stop. Without this the parent is left
+  // to guess, and the natural guess is the frightening one. The facilitator's
+  // reason is already required and already printed in the report, so it is
+  // what gets sent — the parent learns the same thing the school knows.
+  //
+  // Only this student's guardians: a single-element lookup, never the bus.
+  if (!result.already) {
+    const stopName = (trip.stops || [])[stopIndex]?.name || `stop ${stopIndex + 1}`;
+    await notifyGuardiansOfStudent(studentId, {
+      title: `${trip.title || "Field Trip"}: ${result.studentName} marked present`,
+      body:
+        `${result.studentName} was marked present at ${stopName} by their teacher ` +
+        `instead of by scan. Reason given: ${reason}. ` +
+        `Their location may stop updating on your map.`,
+      type: "attendance_manual",
+      tripId,
+      data: { kind: "attendance_manual", stopIndex: String(stopIndex) },
+    });
+  }
+
   return { ok: true, already: result.already, studentName: result.studentName };
 });
 
@@ -712,6 +737,30 @@ exports.setGeofenceExemption = onCall(async (request) => {
     tripId,
     studentId,
     timestamp: now,
+  });
+
+  // The guardian is told in both directions.
+  //
+  // Pausing is the more important of the two: it silences the geofence alert
+  // this parent would otherwise have received, so without a notice the effect
+  // is a parent who is watching a still map and hearing nothing, with no way
+  // to tell a paused alarm from a working one. Re-enabling is sent too, so the
+  // record the parent holds matches the record the school holds.
+  const studentName = passenger.passenger.name || "Your child";
+  const tripTitle = trip.title || "Field Trip";
+  await notifyGuardiansOfStudent(studentId, {
+    title: warningsEnabled
+      ? `${tripTitle}: Location alerts resumed for ${studentName}`
+      : `${tripTitle}: Location alerts paused for ${studentName}`,
+    body: warningsEnabled
+      ? `${studentName}'s teacher has turned location alerts back on. You will be ` +
+        `notified again if they leave the designated area.`
+      : `${studentName}'s teacher has paused location alerts for the rest of this trip. ` +
+        `Reason given: ${reason}. Their position may stop updating on your map, and ` +
+        `you will not receive geofence alerts until the trip ends.`,
+    type: warningsEnabled ? "geofence_resumed" : "geofence_paused",
+    tripId,
+    data: { kind: warningsEnabled ? "geofence_resumed" : "geofence_paused" },
   });
 
   return { ok: true, warningsEnabled };

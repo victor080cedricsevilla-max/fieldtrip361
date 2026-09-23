@@ -52,96 +52,14 @@ function collectStudentIds(tripData) {
   return Array.from(ids);
 }
 
-/**
- * Returns { parentIds: string[], tokens: string[] } for the parents of
- * the given student IDs. Tries both parentOf array on parent doc and
- * parentId field on student doc.
- */
-async function parentsForStudents(studentIds) {
-  if (!studentIds.length) return { parentIds: [], tokens: [] };
-  const db = admin.firestore();
-  const parentIdSet = new Set();
-  const tokenSet = new Set();
-
-  for (let i = 0; i < studentIds.length; i += 30) {
-    const chunk = studentIds.slice(i, i + 30);
-    const snap = await db
-      .collection("users")
-      .where("role", "==", "parent")
-      .where("children", "array-contains-any", chunk)
-      .get();
-    snap.forEach((d) => {
-      parentIdSet.add(d.id);
-      (d.get("fcmTokens") || []).forEach((t) => tokenSet.add(t));
-    });
-  }
-
-  for (const sid of studentIds) {
-    const sdoc = await db.collection("users").doc(sid).get();
-    const parentId = sdoc.exists && sdoc.get("parentId");
-    if (parentId) {
-      parentIdSet.add(parentId);
-      const pdoc = await db.collection("users").doc(parentId).get();
-      (pdoc.get("fcmTokens") || []).forEach((t) => tokenSet.add(t));
-    }
-  }
-
-  return { parentIds: Array.from(parentIdSet), tokens: Array.from(tokenSet) };
-}
-
-async function sendMulticast(tokens, title, body, extra) {
-  if (!tokens.length) return;
-  for (let i = 0; i < tokens.length; i += 450) {
-    const chunk = tokens.slice(i, i + 450);
-    await admin.messaging().sendEachForMulticast({
-      tokens: chunk,
-      notification: { title, body },
-      data: Object.fromEntries(
-        Object.entries(extra || {}).map(([k, v]) => [k, String(v)])
-      ),
-      android: {
-        priority: "high",
-        notification: { channelId: "fieldtrip_high_importance", sound: "default" },
-      },
-      apns: { payload: { aps: { sound: "default" } } },
-    });
-  }
-}
-
-/** Write a notification document to any list of user IDs' notifications subcollection. */
-async function writeUserNotifications(userIds, title, body, type, tripId) {
-  if (!userIds.length) return;
-  const db = admin.firestore();
-  // Firestore batch limit is 500; chunk if needed.
-  for (let i = 0; i < userIds.length; i += 400) {
-    const batch = db.batch();
-    for (const uid of userIds.slice(i, i + 400)) {
-      const ref = db.collection("users").doc(uid).collection("notifications").doc();
-      batch.set(ref, {
-        title,
-        body,
-        type,
-        tripId: tripId || null,
-        read: false,
-        createdAt: admin.firestore.FieldValue.serverTimestamp(),
-      });
-    }
-    await batch.commit();
-  }
-}
-
-/** Collect FCM tokens for a list of student UIDs. */
-async function tokensForStudents(studentIds) {
-  if (!studentIds.length) return [];
-  const db = admin.firestore();
-  const tokenSet = new Set();
-  for (let i = 0; i < studentIds.length; i += 30) {
-    const chunk = studentIds.slice(i, i + 30);
-    const snaps = await db.collection("users").where(admin.firestore.FieldPath.documentId(), "in", chunk).get();
-    snaps.forEach((d) => (d.get("fcmTokens") || []).forEach((t) => tokenSet.add(t)));
-  }
-  return Array.from(tokenSet);
-}
+// Notification delivery moved to lib/notify.js so lib/attendance.js can reach
+// it too — a facilitator overriding attendance now tells the parent why.
+const {
+  parentsForStudents,
+  tokensForStudents,
+  sendMulticast,
+  writeUserNotifications,
+} = require("./lib/notify");
 
 // ─── Cloud Functions ──────────────────────────────────────────────────────────
 
