@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../config/roles.dart';
 import '../utils/messaging_service.dart';
 import '../utils/background_location_service.dart';
 import '../utils/school_context.dart';
@@ -13,6 +14,7 @@ import '../views/admin/admin_dashboard.dart';
 import '../views/teacher/teacher_dashboard.dart';
 import '../views/parent/parent_dashboard.dart';
 import '../views/student/student_dashboard.dart';
+import '../views/superadmin/super_admin_dashboard.dart';
 
 class AuthController {
   final FirebaseAuth _auth = FirebaseAuth.instance;
@@ -186,7 +188,21 @@ class AuthController {
       if (userDoc.exists) {
         final Map<String, dynamic> data = userDoc.data() as Map<String, dynamic>;
         final String role = (data['role'] ?? '').toString();
-        if (!emailVerified && role != 'admin') {
+
+        // A suspended administrator is blocked in Firebase Auth and by the
+        // security rules as well; this only turns that into a sentence they can
+        // act on instead of a permission error deeper in the app.
+        if ((data['accountStatus'] ?? AccountStatus.active) == AccountStatus.disabled) {
+          await _auth.signOut();
+          final reason = (data['disabledReason'] ?? '').toString().trim();
+          return reason.isEmpty
+              ? "This account has been disabled. Please contact FieldTrip360 support."
+              : "This account has been disabled: $reason";
+        }
+
+        // Admin and super-admin accounts are provisioned with a verified
+        // address, so the verification gate applies to self-service roles.
+        if (!emailVerified && role != AppRoles.admin && role != AppRoles.superAdmin) {
           await _auth.signOut();
           return "Please verify your email before logging in. Check your inbox for the confirmation link.";
         }
@@ -242,6 +258,12 @@ class AuthController {
     Widget targetScreen;
 
     switch (role) {
+      // The destination follows the role stored on the server. Nothing the
+      // client sends can change it, which is why there is no role picker on the
+      // sign-in screen.
+      case AppRoles.superAdmin:
+        targetScreen = const SuperAdminDashboard();
+        break;
       case 'admin':
         targetScreen = const AdminDashboard();
         break;

@@ -11,12 +11,15 @@ import 'firebase_options.dart';
 import 'config/theme.dart';
 import 'utils/background_location_service.dart';
 
+import 'config/roles.dart';
 import 'views/auth/login_view.dart';
 import 'views/auth/mobile_login_view.dart';
 import 'views/admin/admin_dashboard.dart';
 import 'views/teacher/teacher_dashboard.dart';
 import 'views/student/student_dashboard.dart';
 import 'views/parent/parent_dashboard.dart';
+import 'views/superadmin/super_admin_dashboard.dart';
+import 'views/apply/apply_view.dart';
 
 /// Top-level handler required by firebase_messaging -- runs in its own isolate
 /// when a push arrives while the app is killed or backgrounded.
@@ -179,7 +182,7 @@ class _FieldTrip360AppState extends State<FieldTrip360App> {
           await prefs.remove('activeSession');
           await FirebaseAuth.instance.signOut();
           _navigatorKey.currentState
-              ?.pushNamedAndRemoveUntil('/mobile-login', (_) => false);
+              ?.pushNamedAndRemoveUntil(AppRoutes.mobileLogin, (_) => false);
         });
       }
     });
@@ -208,12 +211,14 @@ class _FieldTrip360AppState extends State<FieldTrip360App> {
         themeMode: mode,
         home: kIsWeb ? const LoginView() : const MobileLoginView(),
         routes: {
-          '/admin-login': (context) => const LoginView(),
-          '/mobile-login': (context) => const MobileLoginView(),
-          '/admin/dashboard': (context) => const AdminDashboard(),
-          '/teacher/dashboard': (context) => const TeacherDashboard(),
-          '/student/dashboard': (context) => const StudentDashboard(),
-          '/parent/dashboard': (context) => const ParentDashboard(),
+          AppRoutes.adminLogin: (context) => const LoginView(),
+          AppRoutes.mobileLogin: (context) => const MobileLoginView(),
+          AppRoutes.adminDashboard: (context) => const AdminDashboard(),
+          AppRoutes.superAdminDashboard: (context) => const SuperAdminDashboard(),
+          AppRoutes.teacherDashboard: (context) => const TeacherDashboard(),
+          AppRoutes.studentDashboard: (context) => const StudentDashboard(),
+          AppRoutes.parentDashboard: (context) => const ParentDashboard(),
+          AppRoutes.apply: (context) => const ApplyView(),
         },
         ),
       ),
