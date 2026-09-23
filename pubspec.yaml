@@ -48,6 +48,8 @@ dependencies:
   pdf: ^3.11.0
   printing: ^5.13.1
   url_launcher: ^6.3.2
+  # Direct because lib/utils/*_web.dart reach for the browser DOM themselves.
+  web: ^1.1.1
 
 dev_dependencies:
   flutter_test:

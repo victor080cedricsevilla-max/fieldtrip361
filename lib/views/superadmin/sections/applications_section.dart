@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../../config/console_theme.dart';
+import '../../../utils/inline_web_view.dart';
 import '../super_admin_data.dart';
 import '../widgets/console_scaffold.dart';
 import '../widgets/console_ui.dart';
@@ -1259,7 +1260,9 @@ class _OriginalPreview extends StatelessWidget {
         ),
         const SizedBox(height: Insets.sm),
         Container(
-          height: 320,
+          // A PDF page is portrait, so the box that shows one needs the height
+          // to be readable rather than merely present.
+          height: isImage ? 320 : 520,
           decoration: BoxDecoration(
             color: t.surface,
             border: Border.all(color: t.border),
@@ -1324,21 +1327,28 @@ class _OriginalPreview extends StatelessWidget {
                         ),
                       ),
                     )
-                  : Center(
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(Icons.picture_as_pdf_outlined,
-                              size: 34, color: t.textFaint),
-                          const SizedBox(height: Insets.sm),
-                          Text(
-                            fileName,
-                            style: TextStyle(
-                                fontSize: FontSizes.body, color: t.textMuted),
-                          ),
-                        ],
-                      ),
-                    ),
+                  : (buildInlineWebView(url) ??
+                      Center(
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.picture_as_pdf_outlined,
+                                size: 34, color: t.textFaint),
+                            const SizedBox(height: Insets.sm),
+                            Text(
+                              fileName,
+                              style: TextStyle(
+                                  fontSize: FontSizes.body, color: t.textMuted),
+                            ),
+                            const SizedBox(height: Insets.xs),
+                            Text(
+                              'Open it to read the document.',
+                              style: TextStyle(
+                                  fontSize: FontSizes.caption, color: t.textFaint),
+                            ),
+                          ],
+                        ),
+                      )),
         ),
         const SizedBox(height: Insets.sm),
         ConsoleButton(
