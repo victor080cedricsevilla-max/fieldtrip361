@@ -804,7 +804,7 @@ class _TeacherTripDetailsState extends State<TeacherTripDetails> {
                   child: Row(
                     children: [
                       const Expanded(
-                        child: Text("Scan Student QR", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: AppTheme.secondaryColor)),
+                        child: Text("Scan Attendance Code", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: AppTheme.secondaryColor)),
                       ),
                       GestureDetector(
                         onTap: () => Navigator.pop(ctx),

@@ -1,12 +1,10 @@
 import 'dart:ui' as ui;
 import 'dart:typed_data';
-import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:geolocator/geolocator.dart';
-import 'package:mobile_scanner/mobile_scanner.dart';
 import '../../config/theme.dart';
 import '../../widgets/glass_nav_bar.dart';
 import '../../widgets/glass_nav_scaffold.dart';
@@ -837,59 +835,6 @@ class _ParentProfileTabState extends State<ParentProfileTab> {
     }
   }
 
-  Future<void> _linkStudentFromQR(String jsonData) async {
-    try {
-      final map = jsonDecode(jsonData) as Map<String, dynamic>;
-      final studentId = map['studentId'] as String?;
-      if (studentId == null || studentId.isEmpty) return;
-
-      final parentUser = FirebaseAuth.instance.currentUser!;
-
-      final studentDoc = await FirebaseFirestore.instance.collection('users').doc(studentId).get();
-      if (!studentDoc.exists) {
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Student not found."), backgroundColor: Colors.red));
-        return;
-      }
-
-      final existingParentIds = asList(studentDoc.data()?['parentIds']);
-      if (existingParentIds.contains(parentUser.uid)) {
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Already linked to this student."), backgroundColor: Colors.orange));
-        return;
-      }
-      if (existingParentIds.length >= 2) {
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("This student already has 2 linked parents."), backgroundColor: Colors.red));
-        return;
-      }
-
-      final batch = FirebaseFirestore.instance.batch();
-      batch.update(FirebaseFirestore.instance.collection('users').doc(studentId), {
-        'parentIds': FieldValue.arrayUnion([parentUser.uid]),
-      });
-      batch.update(FirebaseFirestore.instance.collection('users').doc(parentUser.uid), {
-        'children': FieldValue.arrayUnion([studentId]),
-      });
-      await batch.commit();
-
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Child linked successfully!"), backgroundColor: Colors.green));
-    } catch (_) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Invalid QR code."), backgroundColor: Colors.red));
-    }
-  }
-
-  void _openQRScanner() {
-    Navigator.push(context, MaterialPageRoute(
-      builder: (_) => _ParentQRScannerPage(onScanned: (data) async {
-        if (mounted) Navigator.pop(context);
-        await _linkStudentFromQR(data);
-      }),
-    ));
-  }
-
   void _showAddChildModal() {
     showDialog(
       context: context,
@@ -898,36 +843,24 @@ class _ParentProfileTabState extends State<ParentProfileTab> {
         title: const Text("Link a Child"),
         content: Column(
           mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            OutlinedButton.icon(
-              onPressed: () {
-                Navigator.pop(dlgCtx);
-                _openQRScanner();
-              },
-              icon: const Icon(Icons.qr_code_scanner_rounded),
-              label: const Text("Scan Student QR"),
-              style: OutlinedButton.styleFrom(
-                minimumSize: const Size(double.infinity, 48),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-              ),
+            const Text(
+              "Your child's school sends you an activation code by email. Enter it here to "
+              "follow their trips and see their live location.",
+              style: TextStyle(fontSize: 13, height: 1.4, color: Colors.grey),
             ),
-            const Padding(
-              padding: EdgeInsets.symmetric(vertical: 12),
-              child: Row(children: [
-                Expanded(child: Divider()),
-                Padding(padding: EdgeInsets.symmetric(horizontal: 8), child: Text("or", style: TextStyle(color: Colors.grey))),
-                Expanded(child: Divider()),
-              ]),
-            ),
+            const SizedBox(height: 16),
             TextField(
               controller: _codeController,
               keyboardType: TextInputType.text,
               textCapitalization: TextCapitalization.characters,
+              autofocus: true,
               decoration: InputDecoration(
-                labelText: "Enter Student Code",
-                hintText: "e.g. JDC-123456",
+                labelText: "Activation code",
+                hintText: "From the school's email",
                 border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                prefixIcon: const Icon(Icons.qr_code_outlined),
+                prefixIcon: const Icon(Icons.vpn_key_outlined),
               ),
             ),
           ],
@@ -1146,34 +1079,3 @@ class _ParentProfileTabState extends State<ParentProfileTab> {
   }
 }
 
-class _ParentQRScannerPage extends StatefulWidget {
-  final Future<void> Function(String data) onScanned;
-  const _ParentQRScannerPage({required this.onScanned});
-
-  @override
-  State<_ParentQRScannerPage> createState() => _ParentQRScannerPageState();
-}
-
-class _ParentQRScannerPageState extends State<_ParentQRScannerPage> {
-  bool _processed = false;
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: Text("Scan Student QR"),
-        backgroundColor: AppTheme.effectivePrimary,
-        foregroundColor: Colors.white,
-      ),
-      body: MobileScanner(
-        onDetect: (capture) async {
-          if (_processed) return;
-          final barcode = capture.barcodes.firstOrNull;
-          if (barcode?.rawValue == null) return;
-          setState(() => _processed = true);
-          await widget.onScanned(barcode!.rawValue!);
-        },
-      ),
-    );
-  }
-}
