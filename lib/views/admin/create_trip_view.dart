@@ -1169,20 +1169,20 @@ class _CreateTripViewState extends State<CreateTripView> {
                 ),
                 SizedBox(height: 12),
                 Expanded(
-                  child: StreamBuilder<QuerySnapshot>(
-                    stream: FirebaseFirestore.instance.collection('users').snapshots(),
+                  child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+                    stream: SchoolContext.teachersOfMySchool(),
                     builder: (context, snapshot) {
                       if (!snapshot.hasData) {
                         return Center(child: CircularProgressIndicator(color: AppTheme.effectivePrimary));
                       }
-                      // Teachers are deliberately NOT scoped to a school: every
-                      // school searches the full teacher list and assigns them
-                      // manually. Students are school-scoped; staff are not.
+                      // Scoped to this school. The query carries the same filter
+                      // the rule enforces, so the list cannot reach another
+                      // school's staff even if the search box is emptied.
                       final list = snapshot.data!.docs.where((d) {
-                        final data = d.data() as Map<String, dynamic>;
-                        final r = (data['role'] ?? '').toString().toLowerCase().trim();
-                        final nameMatch = data['name'].toString().toLowerCase().contains(searchCtrl.text.toLowerCase());
-                        return r == 'teacher' && nameMatch;
+                        final data = d.data();
+                        final nameMatch = (data['name'] ?? '').toString().toLowerCase()
+                            .contains(searchCtrl.text.toLowerCase());
+                        return nameMatch;
                       }).toList();
 
                       if (list.isEmpty) {
@@ -1201,7 +1201,7 @@ class _CreateTripViewState extends State<CreateTripView> {
                         itemCount: list.length,
                         separatorBuilder: (_, __) => Divider(color: Colors.grey.shade100, height: 1),
                         itemBuilder: (c, i) {
-                          final d = list[i].data() as Map<String, dynamic>;
+                          final d = list[i].data();
                           return InkWell(
                             borderRadius: BorderRadius.circular(10),
                             onTap: () {

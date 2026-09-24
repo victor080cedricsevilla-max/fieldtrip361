@@ -41,6 +41,11 @@ const semaphoreSender = defineString("SEMAPHORE_SENDER_NAME", { default: "" });
 const appBaseUrl = defineString("APP_BASE_URL", { default: "https://fieldtrip360.vercel.app" });
 const supportEmail = defineString("SUPPORT_EMAIL", { default: "" });
 
+// Pepper for hashing guardian and staff invitation codes. Without it a leaked
+// database of hashes could be attacked offline; with it, the attacker also
+// needs this value, which never leaves the function environment.
+const activationPepper = defineString("ACTIVATION_PEPPER", { default: "" });
+
 // One-time shared secret for the very first super-admin bootstrap. Empty by
 // default, which disables the endpoint entirely.
 const superAdminSetupToken = defineString("SUPERADMIN_SETUP_TOKEN", { default: "" });
@@ -200,6 +205,7 @@ module.exports = {
   appBaseUrl,
   supportEmail,
   superAdminSetupToken,
+  activationPepper,
   // helpers
   sanitizeText,
   normEmail,

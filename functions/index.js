@@ -21,6 +21,7 @@ const {
   sendMail,
   generateTempPassword,
   storageObjectAsBase64,
+  activationPepper,
 } = require("./lib/common");
 
 const {
@@ -579,43 +580,11 @@ exports.onChatMessageCreated = onDocumentCreated(
   }
 );
 
-/**
- * Approve a teacher account — callable by admins only.
- * Sets users/{uid}.status = 'approved' so the teacher can log in.
- */
-exports.approveTeacher = onCall(async (request) => {
-  if (!request.auth) throw new HttpsError("unauthenticated", "Sign in required.");
-  const db = admin.firestore();
-  const callerDoc = await db.collection("users").doc(request.auth.uid).get();
-  if (!callerDoc.exists || callerDoc.get("role") !== "admin") {
-    throw new HttpsError("permission-denied", "Admins only.");
-  }
-  const uid = request.data.uid;
-  if (!uid || typeof uid !== "string") {
-    throw new HttpsError("invalid-argument", "uid is required.");
-  }
-  await db.collection("users").doc(uid).update({ status: "approved" });
-  return { success: true };
-});
-
-/**
- * Reject (delete) a pending teacher account — callable by admins only.
- */
-exports.rejectTeacher = onCall(async (request) => {
-  if (!request.auth) throw new HttpsError("unauthenticated", "Sign in required.");
-  const db = admin.firestore();
-  const callerDoc = await db.collection("users").doc(request.auth.uid).get();
-  if (!callerDoc.exists || callerDoc.get("role") !== "admin") {
-    throw new HttpsError("permission-denied", "Admins only.");
-  }
-  const uid = request.data.uid;
-  if (!uid || typeof uid !== "string") {
-    throw new HttpsError("invalid-argument", "uid is required.");
-  }
-  await admin.auth().deleteUser(uid);
-  await db.collection("users").doc(uid).delete();
-  return { success: true };
-});
+// approveTeacher / rejectTeacher were removed with the self-registration they
+// served. A teacher no longer signs up and waits: a school administrator
+// invites them by email and the account arrives with its school attached, so
+// there is no pending queue and nothing for an administrator to guess about.
+// See lib/staff.js.
 
 /**
  * Attendance used to live here as generateAttendanceToken / redeemAttendanceToken.
@@ -1390,7 +1359,7 @@ exports.claimRosterRecord = onCall(async (request) => {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /** Optional secret mixed into the code hash. Set ACTIVATION_PEPPER to harden. */
-const activationPepper = defineString("ACTIVATION_PEPPER", { default: "" });
+// activationPepper now lives in lib/common.js so lib/staff.js can hash with it.
 
 const ACTIVATION_CODE_TTL_DAYS = 30;
 const MAX_PARENTS_PER_STUDENT = 2;
@@ -2682,6 +2651,7 @@ exports.removeRosterEntry = onCall(async (request) => {
 
 const platform = require("./lib/platform");
 const applications = require("./lib/applications");
+const staff = require("./lib/staff");
 const ocr = require("./lib/ocr");
 const announcements = require("./lib/announcements");
 const support = require("./lib/support");
@@ -2691,6 +2661,12 @@ exports.bootstrapSuperAdmin = platform.bootstrapSuperAdmin;
 exports.grantSuperAdmin = platform.grantSuperAdmin;
 exports.setSchoolAdminAccountStatus = platform.setSchoolAdminAccountStatus;
 exports.changeMyPassword = platform.changeMyPassword;
+
+// Teaching staff: invited by a school administrator, never self-registered.
+exports.inviteTeacher = staff.inviteTeacher;
+exports.revokeTeacherInvite = staff.revokeTeacherInvite;
+exports.redeemTeacherInvite = staff.redeemTeacherInvite;
+exports.removeTeacherFromSchool = staff.removeTeacherFromSchool;
 
 // Subscription applications.
 exports.saveSchoolApplication = applications.saveSchoolApplication;

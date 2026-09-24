@@ -5,6 +5,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../../controllers/auth_controller.dart';
 import '../../config/theme.dart';
 import 'register_view.dart';
+import 'redeem_invite_view.dart';
 import 'forgot_password_dialog.dart';
 
 class MobileLoginView extends StatefulWidget {
@@ -234,6 +235,20 @@ class _MobileLoginViewState extends State<MobileLoginView> {
                     child: Text("Sign Up", style: TextStyle(color: AppTheme.effectivePrimary, fontWeight: FontWeight.bold)),
                   ),
                 ],
+              ),
+
+              // Teachers do not sign up — their school invites them, and this is
+              // where that invitation becomes an account.
+              TextButton.icon(
+                onPressed: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (context) => const RedeemInviteView()),
+                  );
+                },
+                icon: const Icon(Icons.vpn_key_outlined, size: 17),
+                label: const Text("I have an invitation code"),
+                style: TextButton.styleFrom(foregroundColor: Colors.grey.shade600),
               ),
             ],
           ),

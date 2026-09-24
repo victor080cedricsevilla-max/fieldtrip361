@@ -81,7 +81,11 @@ class _RegisterViewState extends State<RegisterView> {
   final _authController = AuthController();
 
   String _selectedRole = 'student';
-  final List<String> _roles = ['student', 'parent', 'teacher'];
+  // Teachers are not here on purpose. A facilitator sees children's live
+  // locations, so the school decides who becomes one: an administrator invites
+  // them by email and the account arrives with its school already attached.
+  // See lib/views/auth/redeem_invite_view.dart.
+  final List<String> _roles = ['student', 'parent'];
 
   bool _isLoading = false;
   String? _errorMessage;

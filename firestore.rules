@@ -305,6 +305,16 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    // ── Staff invitations ────────────────────────────────────────────────────
+    // An administrator needs to see which invitations are outstanding for their
+    // own school. The code itself is never here — only its hash — so a read
+    // cannot yield anything usable. Redemption happens in a Cloud Function,
+    // called by someone who has no account yet, so no client ever writes.
+    match /staffInvites/{inviteId} {
+      allow read: if isAdmin() && resource.data.schoolId == mySchoolId();
+      allow write: if false;
+    }
+
     // ── Document submissions — filled forms students upload ─────────────────
     // Blank templates live on the trip document itself (trips/{id}.documents),
     // so there is no separate template collection. Students create their own

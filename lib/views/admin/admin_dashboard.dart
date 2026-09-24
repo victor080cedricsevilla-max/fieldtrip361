@@ -13,6 +13,7 @@ import 'announcement_bell.dart';
 import 'reports_view.dart';
 import 'students_view.dart';
 import 'documents_view.dart';
+import 'teachers_view.dart';
 
 class AdminDashboard extends StatefulWidget {
   const AdminDashboard({super.key});
@@ -23,7 +24,7 @@ class AdminDashboard extends StatefulWidget {
 
 class _AdminDashboardState extends State<AdminDashboard> {
   // 0=Dashboard, 1=Create, 2=Manage, 3=Logs, 4=Settings, 5=Reports,
-  // 6=Students, 7=Documents
+  // 6=Students, 7=Documents, 8=Teachers
   int _selectedIndex = 0;
 
   late final List<Widget> _pages = [
@@ -35,6 +36,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
     const ReportsView(),
     const StudentsView(),
     const DocumentsView(),
+    const TeachersView(),
   ];
 
   Future<void> _handleLogout() async {
@@ -124,6 +126,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
           _buildMenuItem(0, "Dashboard", Icons.dashboard_outlined),
           _buildMenuItem(6, "Students", Icons.groups_outlined),
           _buildMenuItem(7, "Documents", Icons.assignment_outlined),
+          _buildMenuItem(8, "Teachers", Icons.co_present_outlined),
           _buildMenuItem(1, "Create Trip", Icons.add_circle_outline),
           _buildMenuItem(2, "Manage Trips", Icons.map_outlined),
           _buildMenuItem(3, "Activity Logs", Icons.history),
@@ -244,6 +247,8 @@ class _AdminDashboardState extends State<AdminDashboard> {
         return "Students";
       case 7:
         return "Documents";
+      case 8:
+        return "Teachers";
       default:
         return "Admin";
     }

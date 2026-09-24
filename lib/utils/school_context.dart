@@ -57,6 +57,24 @@ class SchoolContext {
     });
   }
 
+  /// Teachers on the signed-in user's staff list.
+  ///
+  /// Before this was scoped, the trip planner read the whole users collection
+  /// and filtered for role in the client — so every school saw every teacher
+  /// in the database, and every student and parent document travelled to the
+  /// browser to be thrown away. Teachers now carry a schoolId from the moment
+  /// they accept their invitation, which is what makes the filter possible.
+  static Stream<QuerySnapshot<Map<String, dynamic>>> teachersOfMySchool() {
+    final byRole = FirebaseFirestore.instance
+        .collection('users')
+        .where('role', isEqualTo: 'teacher');
+    return Stream.fromFuture(schoolId()).asyncExpand((id) {
+      // No school means no staff list — not the whole database.
+      if (id == null) return const Stream<QuerySnapshot<Map<String, dynamic>>>.empty();
+      return byRole.where('schoolId', isEqualTo: id).snapshots();
+    });
+  }
+
   /// Clears the cache — call on logout so the next user doesn't inherit it.
   static void clear() {
     _cachedUid = null;
