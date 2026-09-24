@@ -89,6 +89,20 @@
       "queryScope": "COLLECTION",
       "fields": [
         {
+          "fieldPath": "role",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "children",
+          "arrayConfig": "CONTAINS"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "users",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
           "fieldPath": "schoolId",
           "order": "ASCENDING"
         },

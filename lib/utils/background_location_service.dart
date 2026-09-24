@@ -483,11 +483,17 @@ Future<void> _onStart(ServiceInstance service) async {
             channelDescription: BackgroundLocationService._channelDesc,
             importance: Importance.max,
             priority: Priority.max,
-            playSound: true,
+            // Silent on purpose. The student dashboard is already playing a
+            // looping alarm on the alarm stream, and a notification sound
+            // arriving a second later takes audio focus and cuts it off — the
+            // warning stayed on screen while the alarm died, which is the
+            // opposite of what either is for. Vibration still fires, and the
+            // alarm remains the audible part.
+            playSound: false,
             enableVibration: true,
             ongoing: false,
           ),
-          iOS: DarwinNotificationDetails(presentAlert: true, presentSound: true),
+          iOS: DarwinNotificationDetails(presentAlert: true, presentSound: false),
         ),
       );
     } else if (distance <= radius && wasOutOfBounds) {

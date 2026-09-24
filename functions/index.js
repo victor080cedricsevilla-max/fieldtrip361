@@ -339,11 +339,33 @@ exports.onGeofenceAlertCreated = onDocumentCreated(
     // for this trip. Trips created before the setting existed default to on.
     // Departure/arrival/completion updates are unaffected by this switch.
     const notifyParents = tripData.notifyParentsOnGeofence !== false;
+    if (!notifyParents) {
+      console.log("geofence: parent notice off for this trip", { tripId });
+    }
     if (notifyParents && studentId) {
       const { parentIds, tokens: parentTokens } = await parentsForStudents([studentId]);
       const parentTitle = `${tripTitle}: Geofence Alert`;
       const parentBody =
         `${studentName} has left the designated area. The teacher has been alerted.`;
+
+      // Say what was found, every time. This block used to fail in silence: a
+      // student with no linked guardian and a guardian with no device token
+      // both produced exactly nothing in the log, which is indistinguishable
+      // from the notice having been sent.
+      console.log("geofence: notifying guardians", {
+        tripId,
+        studentId,
+        parents: parentIds.length,
+        tokens: parentTokens.length,
+      });
+      if (!parentIds.length) {
+        console.warn("geofence: no guardian is linked to this student", { studentId });
+      } else if (!parentTokens.length) {
+        console.warn("geofence: guardians linked but no device tokens — inbox only", {
+          studentId,
+          parents: parentIds.length,
+        });
+      }
 
       if (parentTokens.length) {
         await admin.messaging().sendEachForMulticast({
