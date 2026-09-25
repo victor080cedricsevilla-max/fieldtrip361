@@ -7,7 +7,7 @@ import '../../config/theme.dart';
 import '../../utils/firestore_utils.dart';
 import '../../utils/trip_queries.dart';
 
-enum _ReportType { tripSummary, attendance, monthlyActivity }
+enum _ReportType { tripSummary, tripDetail, attendance, monthlyActivity }
 
 class ReportsView extends StatefulWidget {
   const ReportsView({super.key});
@@ -21,6 +21,26 @@ class _ReportsViewState extends State<ReportsView> {
   DateTime? _fromDate;
   DateTime? _toDate;
   bool _exporting = false;
+
+  /// Free-text search over the trip title. Filters the list the same way the
+  /// date range does, so a search and a range narrow together.
+  final _searchCtrl = TextEditingController();
+  String _search = '';
+
+  /// The one trip a detail report is about. A detail report of forty trips is
+  /// not a detail report, so this mode asks for a single choice.
+  String? _selectedTripId;
+
+  /// Geofence alerts for the selected trip, fetched just before the PDF is
+  /// built. They live in a sub-collection, so they cannot be read from the
+  /// trip snapshot the rest of this screen already has.
+  List<Map<String, dynamic>> _detailAlerts = const [];
+
+  @override
+  void dispose() {
+    _searchCtrl.dispose();
+    super.dispose();
+  }
 
   static const _monthNames = [
     'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
@@ -39,9 +59,14 @@ class _ReportsViewState extends State<ReportsView> {
   List<QueryDocumentSnapshot<Map<String, dynamic>>> _filterTrips(
     List<QueryDocumentSnapshot<Map<String, dynamic>>> trips,
   ) {
-    if (_fromDate == null && _toDate == null) return trips;
+    final q = _search.trim().toLowerCase();
+    if (_fromDate == null && _toDate == null && q.isEmpty) return trips;
     return trips.where((doc) {
       final data = doc.data();
+      if (q.isNotEmpty) {
+        final title = (data['title'] ?? '').toString().toLowerCase();
+        if (!title.contains(q)) return false;
+      }
       DateTime? tripDate;
       final dateStr = data['date'] as String?;
       if (dateStr != null && dateStr.isNotEmpty) {
@@ -97,8 +122,34 @@ class _ReportsViewState extends State<ReportsView> {
   Future<void> _exportPdf(List<QueryDocumentSnapshot<Map<String, dynamic>>> trips) async {
     setState(() => _exporting = true);
     try {
+      if (_reportType == _ReportType.tripDetail) {
+        final id = _selectedTripId ?? (trips.isNotEmpty ? trips.first.id : null);
+        if (id == null) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+              content: Text('Choose a trip to report on first.'),
+            ));
+          }
+          return;
+        }
+        final alerts = await FirebaseFirestore.instance
+            .collection('trips')
+            .doc(id)
+            .collection('alerts')
+            .get();
+        final list = alerts.docs.map((a) => a.data()).toList()
+          ..sort((a, b) {
+            final at = a['createdAt'] as Timestamp?;
+            final bt = b['createdAt'] as Timestamp?;
+            return (at?.millisecondsSinceEpoch ?? 0)
+                .compareTo(bt?.millisecondsSinceEpoch ?? 0);
+          });
+        _detailAlerts = list;
+      }
       final doc = pw.Document();
-      final title = _reportType == _ReportType.tripSummary
+      final title = _reportType == _ReportType.tripDetail
+          ? 'Trip Detail Report'
+          : _reportType == _ReportType.tripSummary
           ? 'Trip Summary Report'
           : _reportType == _ReportType.attendance
               ? 'Attendance Report'
@@ -157,6 +208,8 @@ class _ReportsViewState extends State<ReportsView> {
     switch (_reportType) {
       case _ReportType.tripSummary:
         return _buildSummaryPdf(trips);
+      case _ReportType.tripDetail:
+        return _buildTripDetailPdf(trips);
       case _ReportType.attendance:
         return _buildAttendancePdf(trips);
       case _ReportType.monthlyActivity:
@@ -222,6 +275,223 @@ class _ReportsViewState extends State<ReportsView> {
         oddRowDecoration: const pw.BoxDecoration(color: PdfColors.grey100),
       ),
     ];
+  }
+
+  /// Everything that happened on one trip.
+  ///
+  /// The other reports answer "how did the term go"; this one answers "what
+  /// happened on the 25th". That means naming people rather than counting
+  /// them: who was present at each stop, whether a scan or a facilitator put
+  /// them there and why, and who left the zone.
+  List<pw.Widget> _buildTripDetailPdf(
+      List<QueryDocumentSnapshot<Map<String, dynamic>>> trips) {
+    final doc = trips.firstWhere(
+      (t) => t.id == _selectedTripId,
+      orElse: () => trips.first,
+    );
+    final d = doc.data();
+    final stops = asList(d['stops']);
+    final buses = asList(d['buses']);
+
+    final out = <pw.Widget>[];
+
+    // Heading.
+    out.add(pw.Text((d['title'] ?? 'Untitled trip').toString(),
+        style: pw.TextStyle(fontSize: 16, fontWeight: pw.FontWeight.bold)));
+    out.add(pw.SizedBox(height: 2));
+    out.add(pw.Text(
+      '${d['date'] ?? 'no date'}  -  ${(d['status'] ?? 'pending').toString().replaceAll('_', ' ')}'
+      '  -  ${buses.length} bus(es)  -  ${stops.length} stop(s)',
+      style: const pw.TextStyle(fontSize: 10, color: PdfColors.grey700),
+    ));
+    out.add(pw.SizedBox(height: 14));
+
+    // Itinerary.
+    if (stops.isNotEmpty) {
+      out.add(pw.Text('Itinerary',
+          style: pw.TextStyle(fontSize: 12, fontWeight: pw.FontWeight.bold)));
+      out.add(pw.SizedBox(height: 6));
+      out.add(pw.TableHelper.fromTextArray(
+        headers: const ['#', 'Destination', 'Time', 'Geofence'],
+        data: [
+          for (int i = 0; i < stops.length; i++)
+            [
+              '${i + 1}',
+              (stops[i]['name'] ?? '--').toString(),
+              (stops[i]['time'] ?? '--').toString(),
+              stops[i]['geofenceRadius'] == null
+                  ? '--'
+                  : '${stops[i]['geofenceRadius']} m',
+            ],
+        ],
+        cellStyle: const pw.TextStyle(fontSize: 9),
+        headerStyle: pw.TextStyle(
+            fontWeight: pw.FontWeight.bold, color: PdfColors.white, fontSize: 9),
+        headerDecoration: const pw.BoxDecoration(color: PdfColors.blueGrey700),
+        oddRowDecoration: const pw.BoxDecoration(color: PdfColors.grey100),
+        columnWidths: {
+          0: const pw.FlexColumnWidth(0.6),
+          1: const pw.FlexColumnWidth(4),
+          2: const pw.FlexColumnWidth(1.4),
+          3: const pw.FlexColumnWidth(1.4),
+        },
+      ));
+      out.add(pw.SizedBox(height: 16));
+    }
+
+    // Attendance, one row per student.
+    out.add(pw.Text('Attendance',
+        style: pw.TextStyle(fontSize: 12, fontWeight: pw.FontWeight.bold)));
+    out.add(pw.SizedBox(height: 2));
+    out.add(pw.Text(
+      'One row per student. A stop shows S when a verified scan recorded it and '
+      'M when a facilitator did; a blank means no record was taken at that stop.',
+      style: const pw.TextStyle(fontSize: 8.5, color: PdfColors.grey700),
+    ));
+    out.add(pw.SizedBox(height: 6));
+
+    final stopHeaders = [for (int i = 0; i < stops.length; i++) '${i + 1}'];
+    final attRows = <List<String>>[];
+    final overrides = <List<String>>[];
+
+    for (int bi = 0; bi < buses.length; bi++) {
+      final bus = buses[bi];
+      final busLabel = 'Bus ${bus['busLabel'] ?? bus['busNo'] ?? (bi + 1)}';
+      for (final p in asList(bus['passengers'])) {
+        final att = (p['attendance'] as Map?) ?? {};
+        final meta = (p['attendanceMeta'] as Map?) ?? {};
+        final marks = <String>[];
+        for (int i = 0; i < stops.length; i++) {
+          final key = 'stop_$i';
+          if (att[key] != true) {
+            marks.add('');
+            continue;
+          }
+          final m = meta[key];
+          final manual = m is Map && m['source'] == 'manual';
+          marks.add(manual ? 'M' : 'S');
+          if (manual) {
+            overrides.add([
+              (p['lrn'] ?? '--').toString(),
+              (p['name'] ?? 'Student').toString(),
+              busLabel,
+              (stops[i]['name'] ?? 'Stop ${i + 1}').toString(),
+              (m['reason'] ?? '--').toString(),
+            ]);
+          }
+        }
+        final recorded = marks.where((m) => m.isNotEmpty).length;
+        attRows.add([
+          (p['lrn'] ?? '--').toString(),
+          (p['name'] ?? 'Student').toString(),
+          busLabel,
+          ...marks,
+          '$recorded/${stops.length}',
+        ]);
+      }
+    }
+
+    out.add(pw.TableHelper.fromTextArray(
+      headers: ['Student ID', 'Name', 'Bus', ...stopHeaders, 'Total'],
+      data: attRows.isEmpty
+          ? [
+              ['--', 'No students assigned', '', ...stopHeaders.map((_) => ''), '']
+            ]
+          : attRows,
+      cellStyle: const pw.TextStyle(fontSize: 8.5),
+      cellAlignment: pw.Alignment.centerLeft,
+      headerStyle: pw.TextStyle(
+          fontWeight: pw.FontWeight.bold, color: PdfColors.white, fontSize: 8.5),
+      headerDecoration: const pw.BoxDecoration(color: PdfColors.blueGrey700),
+      oddRowDecoration: const pw.BoxDecoration(color: PdfColors.grey100),
+      columnWidths: {
+        0: const pw.FlexColumnWidth(1.8),
+        1: const pw.FlexColumnWidth(3.4),
+        2: const pw.FlexColumnWidth(1.4),
+      },
+    ));
+    out.add(pw.SizedBox(height: 16));
+
+    // What a facilitator vouched for, and why.
+    out.add(pw.Text('Recorded by a facilitator',
+        style: pw.TextStyle(fontSize: 12, fontWeight: pw.FontWeight.bold)));
+    out.add(pw.SizedBox(height: 2));
+    out.add(pw.Text(
+      'A facilitator may vouch for a student whose device could not be verified - '
+      'a flat battery, no signal, a phone left on the bus. Each one carries the '
+      'reason they gave at the time.',
+      style: const pw.TextStyle(fontSize: 8.5, color: PdfColors.grey700),
+    ));
+    out.add(pw.SizedBox(height: 6));
+    out.add(pw.TableHelper.fromTextArray(
+      headers: const ['Student ID', 'Name', 'Bus', 'Stop', 'Reason given'],
+      data: overrides.isEmpty
+          ? [
+              ['--', 'No manual entries on this trip', '', '', '']
+            ]
+          : overrides,
+      cellStyle: const pw.TextStyle(fontSize: 8.5),
+      headerStyle: pw.TextStyle(
+          fontWeight: pw.FontWeight.bold, color: PdfColors.white, fontSize: 8.5),
+      headerDecoration: const pw.BoxDecoration(color: PdfColors.orange700),
+      oddRowDecoration: const pw.BoxDecoration(color: PdfColors.grey100),
+      columnWidths: {
+        0: const pw.FlexColumnWidth(1.6),
+        1: const pw.FlexColumnWidth(2.6),
+        2: const pw.FlexColumnWidth(1.2),
+        3: const pw.FlexColumnWidth(2),
+        4: const pw.FlexColumnWidth(4),
+      },
+    ));
+    out.add(pw.SizedBox(height: 16));
+
+    // Who left the zone.
+    out.add(pw.Text('Left the designated area',
+        style: pw.TextStyle(fontSize: 12, fontWeight: pw.FontWeight.bold)));
+    out.add(pw.SizedBox(height: 6));
+    out.add(pw.TableHelper.fromTextArray(
+      headers: const ['Student', 'Stop', 'Distance', 'When', 'Outcome'],
+      data: _detailAlerts.isEmpty
+          ? [
+              ['No geofence alerts were raised on this trip', '', '', '', '']
+            ]
+          : [
+              for (final a in _detailAlerts)
+                [
+                  (a['studentName'] ?? a['studentId'] ?? '--').toString(),
+                  (a['stopIndex'] is int && (a['stopIndex'] as int) < stops.length)
+                      ? (stops[a['stopIndex'] as int]['name'] ??
+                              'Stop ${(a['stopIndex'] as int) + 1}')
+                          .toString()
+                      : '--',
+                  a['distance'] is num ? '${(a['distance'] as num).round()} m' : '--',
+                  _alertWhen(a['createdAt']),
+                  (a['status'] ?? 'pending').toString().replaceAll('_', ' '),
+                ],
+            ],
+      cellStyle: const pw.TextStyle(fontSize: 8.5),
+      headerStyle: pw.TextStyle(
+          fontWeight: pw.FontWeight.bold, color: PdfColors.white, fontSize: 8.5),
+      headerDecoration: const pw.BoxDecoration(color: PdfColors.red700),
+      oddRowDecoration: const pw.BoxDecoration(color: PdfColors.grey100),
+      columnWidths: {
+        0: const pw.FlexColumnWidth(3),
+        1: const pw.FlexColumnWidth(2.6),
+        2: const pw.FlexColumnWidth(1.3),
+        3: const pw.FlexColumnWidth(2),
+        4: const pw.FlexColumnWidth(1.8),
+      },
+    ));
+
+    return out;
+  }
+
+  String _alertWhen(dynamic ts) {
+    if (ts is! Timestamp) return '--';
+    final t = ts.toDate();
+    final hh = t.hour.toString().padLeft(2, '0');
+    final mm = t.minute.toString().padLeft(2, '0');
+    return '${_monthNames[t.month - 1]} ${t.day}, $hh:$mm';
   }
 
   List<pw.Widget> _buildAttendancePdf(
@@ -352,16 +622,18 @@ class _ReportsViewState extends State<ReportsView> {
                       child: Row(
                         children: _ReportType.values.map((type) {
                           final selected = _reportType == type;
-                          final label = type == _ReportType.tripSummary
-                              ? 'Trip Summary'
-                              : type == _ReportType.attendance
-                                  ? 'Attendance'
-                                  : 'Monthly Activity';
-                          final icon = type == _ReportType.tripSummary
-                              ? Icons.summarize_rounded
-                              : type == _ReportType.attendance
-                                  ? Icons.how_to_reg_rounded
-                                  : Icons.bar_chart_rounded;
+                          final label = switch (type) {
+                            _ReportType.tripSummary => 'Trip Summary',
+                            _ReportType.tripDetail => 'Trip Detail',
+                            _ReportType.attendance => 'Attendance',
+                            _ReportType.monthlyActivity => 'Monthly Activity',
+                          };
+                          final icon = switch (type) {
+                            _ReportType.tripSummary => Icons.summarize_rounded,
+                            _ReportType.tripDetail => Icons.fact_check_outlined,
+                            _ReportType.attendance => Icons.how_to_reg_rounded,
+                            _ReportType.monthlyActivity => Icons.bar_chart_rounded,
+                          };
                           return Padding(
                             padding: const EdgeInsets.only(right: 8),
                             child: FilterChip(
@@ -386,6 +658,32 @@ class _ReportsViewState extends State<ReportsView> {
                       ),
                     ),
                     const SizedBox(height: 14),
+                    // Search by trip title. Narrows the same list the date
+                    // range does, so the two combine rather than compete.
+                    TextField(
+                      controller: _searchCtrl,
+                      onChanged: (v) => setState(() => _search = v),
+                      decoration: InputDecoration(
+                        isDense: true,
+                        hintText: 'Search trip title',
+                        prefixIcon: const Icon(Icons.search_rounded, size: 19),
+                        suffixIcon: _search.isEmpty
+                            ? null
+                            : IconButton(
+                                icon: const Icon(Icons.close_rounded, size: 17),
+                                tooltip: 'Clear search',
+                                onPressed: () {
+                                  _searchCtrl.clear();
+                                  setState(() => _search = '');
+                                },
+                              ),
+                        contentPadding:
+                            const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                        border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(10)),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
                     // Date range row
                     Row(
                       children: [
@@ -491,6 +789,12 @@ class _ReportsViewState extends State<ReportsView> {
     switch (_reportType) {
       case _ReportType.tripSummary:
         return _TripSummaryReport(trips: trips);
+      case _ReportType.tripDetail:
+        return _TripDetailReport(
+          trips: trips,
+          selectedId: _selectedTripId,
+          onSelect: (id) => setState(() => _selectedTripId = id),
+        );
       case _ReportType.attendance:
         return _AttendanceReport(trips: trips);
       case _ReportType.monthlyActivity:
@@ -1006,6 +1310,375 @@ class _StatusBar extends StatelessWidget {
               style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: color)),
         ),
       ],
+    );
+  }
+}
+
+/// Picks one trip, then shows what happened on it.
+///
+/// A detail report is about a single day, so this screen asks which one before
+/// it shows anything. Once a trip is chosen it previews the same three things
+/// the PDF carries — attendance by name, the facilitator's manual entries, and
+/// who left the zone — so an administrator can check the report is the one
+/// they meant before exporting it.
+class _TripDetailReport extends StatelessWidget {
+  final List<QueryDocumentSnapshot<Map<String, dynamic>>> trips;
+  final String? selectedId;
+  final ValueChanged<String?> onSelect;
+
+  const _TripDetailReport({
+    required this.trips,
+    required this.selectedId,
+    required this.onSelect,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    if (trips.isEmpty) {
+      return _emptyCard(
+        Icons.search_off_rounded,
+        'No trips match',
+        'Widen the date range, or clear the search.',
+      );
+    }
+
+    final selected = selectedId == null
+        ? null
+        : trips.where((t) => t.id == selectedId).firstOrNull;
+
+    if (selected == null) {
+      return Container(
+        padding: const EdgeInsets.all(18),
+        decoration: _cardBox,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('Choose a trip',
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+            const SizedBox(height: 2),
+            Text('${trips.length} trip${trips.length == 1 ? '' : 's'} to choose from',
+                style: TextStyle(fontSize: 12.5, color: Colors.grey.shade500)),
+            const Divider(height: 22),
+            for (final t in trips.take(40)) _tripRow(t),
+          ],
+        ),
+      );
+    }
+
+    return _TripDetailBody(doc: selected, onChange: () => onSelect(null));
+  }
+
+  Widget _tripRow(QueryDocumentSnapshot<Map<String, dynamic>> t) {
+    final d = t.data();
+    final buses = asList(d['buses']);
+    int students = 0;
+    for (final b in buses) {
+      students += asList(b['passengers']).length;
+    }
+    return InkWell(
+      onTap: () => onSelect(t.id),
+      borderRadius: BorderRadius.circular(10),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 4),
+        child: Row(
+          children: [
+            Container(
+              width: 38,
+              height: 38,
+              decoration: BoxDecoration(
+                color: AppTheme.effectivePrimary.withValues(alpha: 0.1),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Icon(Icons.route_rounded,
+                  size: 18, color: AppTheme.effectivePrimary),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text((d['title'] ?? 'Untitled').toString(),
+                      style: const TextStyle(
+                          fontWeight: FontWeight.w600, fontSize: 14)),
+                  Text(
+                    '${d['date'] ?? 'no date'} · $students student${students == 1 ? '' : 's'} · '
+                    '${(d['status'] ?? 'pending').toString().replaceAll('_', ' ')}',
+                    style: TextStyle(fontSize: 12.5, color: Colors.grey.shade500),
+                  ),
+                ],
+              ),
+            ),
+            Icon(Icons.chevron_right_rounded, color: Colors.grey.shade400),
+          ],
+        ),
+      ),
+    );
+  }
+
+  static final _cardBox = BoxDecoration(
+    color: Colors.white,
+    borderRadius: BorderRadius.circular(16),
+    boxShadow: [
+      BoxShadow(
+          color: Colors.black.withValues(alpha: 0.04),
+          blurRadius: 12,
+          offset: const Offset(0, 4))
+    ],
+  );
+
+  Widget _emptyCard(IconData icon, String title, String detail) {
+    return Container(
+      padding: const EdgeInsets.symmetric(vertical: 46, horizontal: 20),
+      decoration: _cardBox,
+      child: Column(
+        children: [
+          Icon(icon, size: 42, color: Colors.grey.shade300),
+          const SizedBox(height: 12),
+          Text(title,
+              style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
+          const SizedBox(height: 4),
+          Text(detail,
+              textAlign: TextAlign.center,
+              style: TextStyle(fontSize: 13, color: Colors.grey.shade500)),
+        ],
+      ),
+    );
+  }
+}
+
+/// The chosen trip, on screen.
+class _TripDetailBody extends StatelessWidget {
+  final QueryDocumentSnapshot<Map<String, dynamic>> doc;
+  final VoidCallback onChange;
+
+  const _TripDetailBody({required this.doc, required this.onChange});
+
+  @override
+  Widget build(BuildContext context) {
+    final d = doc.data();
+    final stops = asList(d['stops']);
+    final buses = asList(d['buses']);
+
+    int total = 0;
+    int scanned = 0;
+    int manual = 0;
+    final overrides = <List<String>>[];
+
+    for (int bi = 0; bi < buses.length; bi++) {
+      final bus = buses[bi];
+      for (final p in asList(bus['passengers'])) {
+        total++;
+        final att = (p['attendance'] as Map?) ?? {};
+        final meta = (p['attendanceMeta'] as Map?) ?? {};
+        for (int i = 0; i < stops.length; i++) {
+          final key = 'stop_$i';
+          if (att[key] != true) continue;
+          final m = meta[key];
+          if (m is Map && m['source'] == 'manual') {
+            manual++;
+            overrides.add([
+              (p['name'] ?? 'Student').toString(),
+              (stops[i]['name'] ?? 'Stop ${i + 1}').toString(),
+              (m['reason'] ?? '--').toString(),
+            ]);
+          } else {
+            scanned++;
+          }
+        }
+      }
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Container(
+          padding: const EdgeInsets.all(18),
+          decoration: _TripDetailReport._cardBox,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text((d['title'] ?? 'Untitled').toString(),
+                            style: const TextStyle(
+                                fontSize: 18, fontWeight: FontWeight.bold)),
+                        Text(
+                          '${d['date'] ?? 'no date'} · '
+                          '${(d['status'] ?? 'pending').toString().replaceAll('_', ' ')} · '
+                          '${buses.length} bus${buses.length == 1 ? '' : 'es'} · '
+                          '${stops.length} stop${stops.length == 1 ? '' : 's'}',
+                          style: TextStyle(
+                              fontSize: 12.5, color: Colors.grey.shade500),
+                        ),
+                      ],
+                    ),
+                  ),
+                  TextButton.icon(
+                    onPressed: onChange,
+                    icon: const Icon(Icons.swap_horiz_rounded, size: 17),
+                    label: const Text('Change trip'),
+                  ),
+                ],
+              ),
+              const Divider(height: 24),
+              Wrap(
+                spacing: 28,
+                runSpacing: 14,
+                children: [
+                  _stat('Students', '$total'),
+                  _stat('Verified scans', '$scanned'),
+                  _stat('Manual entries', '$manual',
+                      tone: manual > 0 ? const Color(0xFFB26A00) : null),
+                ],
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 16),
+        if (overrides.isNotEmpty)
+          Container(
+            padding: const EdgeInsets.all(18),
+            decoration: _TripDetailReport._cardBox,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('Recorded by a facilitator',
+                    style:
+                        TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
+                const SizedBox(height: 2),
+                Text(
+                  'Each of these was vouched for because the device could not be verified.',
+                  style: TextStyle(fontSize: 12.5, color: Colors.grey.shade500),
+                ),
+                const Divider(height: 20),
+                for (final o in overrides)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 10),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Icon(Icons.edit_note_rounded,
+                            size: 17, color: Color(0xFFB26A00)),
+                        const SizedBox(width: 9),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text('${o[0]} · ${o[1]}',
+                                  style: const TextStyle(
+                                      fontSize: 13.5,
+                                      fontWeight: FontWeight.w600)),
+                              Text(o[2],
+                                  style: TextStyle(
+                                      fontSize: 12.5,
+                                      color: Colors.grey.shade600)),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        const SizedBox(height: 16),
+        _GeofenceBreaches(tripId: doc.id, stops: stops),
+      ],
+    );
+  }
+
+  Widget _stat(String label, String value, {Color? tone}) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(value,
+            style: TextStyle(
+                fontSize: 22,
+                fontWeight: FontWeight.bold,
+                color: tone ?? AppTheme.darkText)),
+        Text(label,
+            style: TextStyle(fontSize: 12, color: Colors.grey.shade500)),
+      ],
+    );
+  }
+}
+
+/// Geofence alerts live in a sub-collection, so they are read on their own.
+class _GeofenceBreaches extends StatelessWidget {
+  final String tripId;
+  final List<dynamic> stops;
+
+  const _GeofenceBreaches({required this.tripId, required this.stops});
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+      stream: FirebaseFirestore.instance
+          .collection('trips')
+          .doc(tripId)
+          .collection('alerts')
+          .snapshots(),
+      builder: (context, snap) {
+        final docs = snap.data?.docs ?? const [];
+        return Container(
+          padding: const EdgeInsets.all(18),
+          decoration: _TripDetailReport._cardBox,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('Left the designated area',
+                  style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
+              const Divider(height: 20),
+              if (docs.isEmpty)
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 8),
+                  child: Text('Nobody left the zone on this trip.',
+                      style:
+                          TextStyle(fontSize: 13, color: Colors.grey.shade500)),
+                )
+              else
+                for (final a in docs) _row(a.data()),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _row(Map<String, dynamic> a) {
+    final idx = a['stopIndex'];
+    final stopName = (idx is int && idx < stops.length)
+        ? (stops[idx]['name'] ?? 'Stop ${idx + 1}').toString()
+        : '--';
+    final dist = a['distance'] is num ? '${(a['distance'] as num).round()} m' : '--';
+    final status = (a['status'] ?? 'pending').toString();
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(Icons.location_off_rounded,
+              size: 17, color: Colors.red.shade400),
+          const SizedBox(width: 9),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text((a['studentName'] ?? a['studentId'] ?? 'Student').toString(),
+                    style: const TextStyle(
+                        fontSize: 13.5, fontWeight: FontWeight.w600)),
+                Text('$stopName · $dist away · ${status.replaceAll('_', ' ')}',
+                    style:
+                        TextStyle(fontSize: 12.5, color: Colors.grey.shade600)),
+              ],
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

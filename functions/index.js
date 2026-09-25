@@ -2398,7 +2398,24 @@ exports.onDocumentSubmissionCreated = onDocumentCreated(
       }
       const model = geminiModel.value() || "gemini-3.6-flash";
 
-      const response = await axios.post(
+      // Gemini answers 503 when it is busy, and this request is the heaviest
+      // the system makes — two files plus the prompt. One 503 used to mean the
+      // student was told their form could not be checked, so it is retried the
+      // same way the application extractor is.
+      const transient = new Set([429, 500, 502, 503, 504]);
+      const withRetry = async (attempt) => {
+        for (let i = 0; ; i++) {
+          try {
+            return await attempt();
+          } catch (e) {
+            const code = e?.response?.status;
+            if (i >= 2 || !transient.has(code)) throw e;
+            await new Promise((r) => setTimeout(r, 2000 * (i + 1)));
+          }
+        }
+      };
+
+      const response = await withRetry(() => axios.post(
         `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
         {
           contents: [
@@ -2425,7 +2442,7 @@ exports.onDocumentSubmissionCreated = onDocumentCreated(
           maxBodyLength: Infinity,
           maxContentLength: Infinity,
         }
-      );
+      ));
 
       const raw = response.data?.candidates?.[0]?.content?.parts?.[0]?.text;
       if (!raw) {
@@ -2546,9 +2563,25 @@ exports.onDocumentSubmissionCreated = onDocumentCreated(
       // An approval may unlock the bus chat for this student.
       if (sub.tripId) await rebuildTripChats(sub.tripId);
     } catch (err) {
-      console.error("onDocumentSubmissionCreated failed", err?.message || err);
+      // Log what the service actually said. "Request failed with status code
+      // 503" on its own cannot be acted on; Google's body names the cause.
+      const status = err?.response?.status;
+      console.error("onDocumentSubmissionCreated failed", {
+        status: status || null,
+        message: err?.message || String(err),
+        body: JSON.stringify(err?.response?.data || {}).slice(0, 600),
+      });
+
+      // Say which kind of failure it was. An administrator seeing this decides
+      // whether to wait and retry or to approve by hand, and "could not be
+      // completed" does not tell them which.
+      const busy = status === 503 || status === 429;
       await markNeedsReview(
-        "Automatic review could not be completed — needs manual approval."
+        busy
+          ? "The review service was busy and did not answer after three tries. " +
+              "Try again shortly, or approve manually."
+          : `Automatic review could not be completed${status ? ` (error ${status})` : ""} — ` +
+              "needs manual approval."
       ).catch(() => {});
     }
   }

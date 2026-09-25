@@ -11,8 +11,6 @@ import 'package:geolocator/geolocator.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:battery_plus/battery_plus.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
-import 'package:flutter_ringtone_player/flutter_ringtone_player.dart';
-import 'package:audioplayers/audioplayers.dart';
 import '../../config/theme.dart';
 import '../../widgets/glass_nav_bar.dart';
 import '../../widgets/glass_nav_scaffold.dart';
@@ -28,43 +26,20 @@ import '../shared/chat_view.dart';
 import '../../utils/attendance_service.dart';
 import 'manual_attendance_sheet.dart';
 import 'teacher_documents_tab.dart';
+import '../../utils/alarm_player.dart';
 
-/// Shared emergency-sound playback so any teacher screen can stop the alarm
-/// regardless of who started it.
-AudioPlayer? _sharedAlarmPlayer;
-
+/// The geofence and emergency alarm. Both run through AlarmPlayer so the
+/// sound loops until somebody acts on it, and so any teacher screen can stop
+/// it regardless of which one started it.
 Future<void> _playEmergencyAlarm() async {
   HapticFeedback.heavyImpact();
-  String? customUrl;
-  try {
-    final uid = FirebaseAuth.instance.currentUser?.uid;
-    if (uid != null) {
-      final snap = await FirebaseFirestore.instance.collection('users').doc(uid).get();
-      customUrl = snap.data()?['emergencySoundUrl'] as String?;
-    }
-  } catch (_) {}
-
-  if (customUrl != null && customUrl.isNotEmpty) {
-    _sharedAlarmPlayer ??= AudioPlayer();
-    await _sharedAlarmPlayer!.setReleaseMode(ReleaseMode.loop);
-    await _sharedAlarmPlayer!.setVolume(1.0);
-    await _sharedAlarmPlayer!.play(UrlSource(customUrl));
-  } else {
-    FlutterRingtonePlayer().play(
-      fromAsset: "assets/audio/alarm.mp3",
-      looping: true,
-      volume: 1.0,
-      asAlarm: true,
-    );
-  }
+  await AlarmPlayer.start();
 }
 
 Future<void> _stopEmergencySound() async {
-  await _sharedAlarmPlayer?.stop();
-  await _sharedAlarmPlayer?.dispose();
-  _sharedAlarmPlayer = null;
-  FlutterRingtonePlayer().stop();
+  await AlarmPlayer.stop();
 }
+
 
 class MarkerGenerator {
   static Future<BitmapDescriptor> createCustomMarker(String name, Color color) async {

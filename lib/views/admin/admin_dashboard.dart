@@ -14,6 +14,7 @@ import 'reports_view.dart';
 import 'students_view.dart';
 import 'documents_view.dart';
 import 'teachers_view.dart';
+import '../../utils/school_context.dart';
 
 class AdminDashboard extends StatefulWidget {
   const AdminDashboard({super.key});
@@ -205,13 +206,20 @@ class _AdminDashboardState extends State<AdminDashboard> {
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          Text(
-            _getPageTitle(_selectedIndex),
-            style: const TextStyle(
-              fontSize: 24,
-              fontWeight: FontWeight.bold,
-              color: Color(0xFF1F2937),
-            ),
+          Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                _getPageTitle(_selectedIndex),
+                style: const TextStyle(
+                  fontSize: 22,
+                  fontWeight: FontWeight.bold,
+                  color: Color(0xFF1F2937),
+                ),
+              ),
+              const _SchoolNameLine(),
+            ],
           ),
           Row(
             mainAxisSize: MainAxisSize.min,
@@ -346,3 +354,50 @@ class _AdminProfileChip extends StatelessWidget {
   }
 }
 
+
+/// The school this console belongs to.
+///
+/// One deployment now hosts many schools, so the header has to say which one
+/// is on screen — an administrator who manages a second campus should never
+/// have to work that out from the data in front of them.
+class _SchoolNameLine extends StatelessWidget {
+  const _SchoolNameLine();
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<String?>(
+      future: SchoolContext.schoolId(),
+      builder: (context, idSnap) {
+        final id = idSnap.data;
+        if (id == null) return const SizedBox(height: 2);
+        final stream = SchoolContext.schoolStream(id);
+        if (stream == null) return const SizedBox(height: 2);
+        return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+          stream: stream,
+          builder: (context, snap) {
+            final name = (snap.data?.data()?['name'] ?? '').toString();
+            if (name.isEmpty) return const SizedBox(height: 2);
+            return Padding(
+              padding: const EdgeInsets.only(top: 1),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.apartment_rounded, size: 13, color: Colors.grey.shade500),
+                  const SizedBox(width: 5),
+                  Text(
+                    name,
+                    style: TextStyle(
+                      fontSize: 12.5,
+                      fontWeight: FontWeight.w500,
+                      color: Colors.grey.shade600,
+                    ),
+                  ),
+                ],
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+}

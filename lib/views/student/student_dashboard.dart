@@ -10,8 +10,8 @@ import 'package:geolocator/geolocator.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:battery_plus/battery_plus.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
-import 'package:flutter_ringtone_player/flutter_ringtone_player.dart';
 import '../../config/theme.dart';
+import '../../utils/alarm_player.dart';
 import '../../widgets/glass_emergency_button.dart';
 import '../../widgets/glass_nav_bar.dart';
 import '../../widgets/glass_nav_scaffold.dart';
@@ -163,12 +163,7 @@ class _StudentDashboardState extends State<StudentDashboard> {
             if (!mounted) return;
             if (!_dashIsOutOfBounds) {
               _dashIsOutOfBounds = true;
-              FlutterRingtonePlayer().play(
-                fromAsset: "assets/audio/alarm.mp3",
-                looping: true,
-                volume: 1.0,
-                asAlarm: true,
-              );
+              AlarmPlayer.start();
               _showDashboardOutOfBoundsWarning();
             }
             ScaffoldMessenger.of(context).showSnackBar(
@@ -268,16 +263,11 @@ class _StudentDashboardState extends State<StudentDashboard> {
     );
     if (distance > radius && !_dashIsOutOfBounds) {
       _dashIsOutOfBounds = true;
-      FlutterRingtonePlayer().play(
-        fromAsset: "assets/audio/alarm.mp3",
-        looping: true,
-        volume: 1.0,
-        asAlarm: true,
-      );
+      AlarmPlayer.start();
       if (mounted) _showDashboardOutOfBoundsWarning();
     } else if (distance <= radius && _dashIsOutOfBounds) {
       _dashIsOutOfBounds = false;
-      FlutterRingtonePlayer().stop();
+      AlarmPlayer.stop();
       final ctx = _warningCtx;
       if (ctx != null && ctx.mounted) {
         Navigator.pop(ctx);
