@@ -22,6 +22,12 @@ const geminiApiKey = defineString("GEMINI_API_KEY");
 // gemini-2.x has no free-tier quota on this project (limit: 0), so the default
 // is a 3.x flash model.
 const geminiModel = defineString("GEMINI_MODEL", { default: "gemini-3.6-flash" });
+// A second model to fall back to when the first answers 503. "High demand"
+// is a property of one model's capacity pool, not of the key, so the lighter
+// variant is usually free when the popular one is not. Verified against this
+// project's key: gemini-3.5-flash-lite, gemini-3.1-flash-lite,
+// gemini-3-flash-preview. Never a 2.x — those return quota limit 0 here.
+const geminiFallbackModel = defineString("GEMINI_MODEL_FALLBACK", { default: "gemini-3.5-flash-lite" });
 
 // Outgoing mail. For Gmail, SMTP_PASS must be a 16-character App Password
 // (myaccount.google.com/apppasswords), never the account's own password.
@@ -196,6 +202,7 @@ module.exports = {
   googleMapsKey,
   geminiApiKey,
   geminiModel,
+  geminiFallbackModel,
   smtpHost,
   smtpUser,
   smtpPass,

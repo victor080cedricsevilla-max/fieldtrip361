@@ -9,6 +9,7 @@ const {
   googleMapsKey,
   geminiApiKey,
   geminiModel,
+  geminiFallbackModel,
   semaphoreKey,
   semaphoreSender,
   sanitizeText,
@@ -2396,27 +2397,38 @@ exports.onDocumentSubmissionCreated = onDocumentCreated(
       if (!identity.name) {
         identity.name = sanitizeText(sub.studentName || "", 120);
       }
-      const model = geminiModel.value() || "gemini-3.6-flash";
+      // Two models, tried in order. Google answers 503 with "this model is
+      // currently experiencing high demand", and that demand belongs to one
+      // model's capacity pool rather than to the key — so when the popular
+      // model is full, the lighter one usually is not. Retrying the same model
+      // three times was not enough: it stayed busy for two days.
+      const primary = geminiModel.value() || "gemini-3.6-flash";
+      const fallback = geminiFallbackModel.value() || "";
+      const candidates = fallback && fallback !== primary ? [primary, fallback] : [primary];
+      let model = primary;
 
-      // Gemini answers 503 when it is busy, and this request is the heaviest
-      // the system makes — two files plus the prompt. One 503 used to mean the
-      // student was told their form could not be checked, so it is retried the
-      // same way the application extractor is.
       const transient = new Set([429, 500, 502, 503, 504]);
-      const withRetry = async (attempt) => {
-        for (let i = 0; ; i++) {
-          try {
-            return await attempt();
-          } catch (e) {
-            const code = e?.response?.status;
-            if (i >= 2 || !transient.has(code)) throw e;
-            await new Promise((r) => setTimeout(r, 2000 * (i + 1)));
+      const askGemini = async (send) => {
+        let lastErr;
+        for (const candidate of candidates) {
+          model = candidate;
+          for (let i = 0; i < 3; i++) {
+            try {
+              return await send(candidate);
+            } catch (e) {
+              lastErr = e;
+              const code = e?.response?.status;
+              if (!transient.has(code)) throw e;
+              if (i < 2) await new Promise((r) => setTimeout(r, 2000 * (i + 1)));
+            }
           }
+          console.warn("gemini busy, trying next model", { tried: candidate });
         }
+        throw lastErr;
       };
 
-      const response = await withRetry(() => axios.post(
-        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+      const response = await askGemini((useModel) => axios.post(
+        `https://generativelanguage.googleapis.com/v1beta/models/${useModel}:generateContent`,
         {
           contents: [
             {

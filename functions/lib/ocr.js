@@ -22,6 +22,7 @@ const {
   sanitizeText,
   geminiApiKey,
   geminiModel,
+  geminiFallbackModel,
   storageObjectAsBase64,
 } = require("./common");
 const { requireSuperAdmin } = require("./platform");
@@ -246,23 +247,33 @@ async function extractDocument(db, { applicationId, documentId }) {
    * unreadable, and giving up on the first one leaves the reviewer with a
    * failure notice for a file that would have read perfectly a second later.
    */
-  const withRetry = async (attempt) => {
+  const primary = geminiModel.value() || "gemini-3.6-flash";
+  const fallback = geminiFallbackModel.value() || "";
+  const candidates = fallback && fallback !== primary ? [primary, fallback] : [primary];
+
+  const askGemini = async (send) => {
     const transient = new Set([429, 500, 502, 503, 504]);
-    for (let i = 0; ; i++) {
-      try {
-        return await attempt();
-      } catch (e) {
-        const code = e?.response?.status;
-        if (i >= 2 || !transient.has(code)) throw e;
-        await new Promise((r) => setTimeout(r, 1500 * (i + 1)));
+    let lastErr;
+    for (const candidate of candidates) {
+      for (let i = 0; i < 3; i++) {
+        try {
+          return await send(candidate);
+        } catch (e) {
+          lastErr = e;
+          const code = e?.response?.status;
+          if (!transient.has(code)) throw e;
+          if (i < 2) await new Promise((r) => setTimeout(r, 1500 * (i + 1)));
+        }
       }
+      console.warn("gemini busy, trying next model", { tried: candidate });
     }
+    throw lastErr;
   };
 
   let parsed;
   try {
-    const response = await withRetry(() => axios.post(
-      `https://generativelanguage.googleapis.com/v1beta/models/${geminiModel.value() || "gemini-3.6-flash"}:generateContent`,
+    const response = await askGemini((useModel) => axios.post(
+      `https://generativelanguage.googleapis.com/v1beta/models/${useModel}:generateContent`,
       {
         contents: [
           {
