@@ -1,6 +1,8 @@
 import 'dart:typed_data';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
+
+import 'school_context.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter/material.dart';
@@ -99,6 +101,23 @@ class DocumentService {
 
   static Stream<QuerySnapshot<Map<String, dynamic>>> submissionsOfTrip(String tripId) =>
       _db.collection('documentSubmissions').where('tripId', isEqualTo: tripId).snapshots();
+
+  /// Submissions a facilitator may see: their own school's.
+  ///
+  /// The filter has to be schoolId even though the caller wants a few trips,
+  /// because Firestore checks a query against the rule rather than against the
+  /// documents it would return. The rule allows a read when schoolId matches,
+  /// so a query keyed on tripId is refused outright — and a refused stream
+  /// arrives as an empty list, which on screen is indistinguishable from every
+  /// student having uploaded nothing. Narrow to the wanted trips in the widget.
+  static Stream<QuerySnapshot<Map<String, dynamic>>> submissionsForFacilitator() {
+    return Stream.fromFuture(SchoolContext.schoolId()).asyncExpand((id) {
+      if (id == null) {
+        return const Stream<QuerySnapshot<Map<String, dynamic>>>.empty();
+      }
+      return submissionsOfSchool(id);
+    });
+  }
 
   static Stream<QuerySnapshot<Map<String, dynamic>>> submissionsOfStudent(String uid) =>
       _db.collection('documentSubmissions').where('studentId', isEqualTo: uid).snapshots();

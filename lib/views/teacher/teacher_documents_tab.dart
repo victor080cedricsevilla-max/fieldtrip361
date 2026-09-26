@@ -86,13 +86,33 @@ class _TeacherDocumentsTabState extends State<TeacherDocumentsTab> {
                 if (trips.isEmpty) return _empty();
 
                 return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-                  stream: FirebaseFirestore.instance
-                      .collection('documentSubmissions')
-                      .where('tripId', whereIn: trips.take(30).map((t) => t.id).toList())
-                      .snapshots(),
+                  // Scoped by school, not by trip: the security rule keys off
+                  // schoolId, and Firestore refuses a query it cannot prove
+                  // safe. The trips are narrowed just below.
+                  stream: DocumentService.submissionsForFacilitator(),
                   builder: (context, subSnap) {
+                    // A refused read used to fall through as an empty list, so
+                    // every student read "Not uploaded" whether they had
+                    // uploaded or not. Say which it is.
+                    if (subSnap.hasError) {
+                      return Center(
+                        child: Padding(
+                          padding: const EdgeInsets.all(32),
+                          child: Text(
+                            "Form statuses could not be loaded. Your account may not be "
+                            "linked to a school yet — ask your administrator.",
+                            textAlign: TextAlign.center,
+                            style: TextStyle(fontSize: 13, color: Colors.grey.shade600),
+                          ),
+                        ),
+                      );
+                    }
+                    final tripIds = trips.map((t) => t.id).toSet();
+                    final mine = (subSnap.data?.docs ?? const [])
+                        .where((d) => tripIds.contains(d.data()['tripId']))
+                        .toList();
                     final latest = DocumentService.latestByKey(
-                      subSnap.data?.docs ?? const [],
+                      mine,
                       (d) => '${d['tripId']}_${d['studentId']}_${d['type']}',
                     );
                     return ListView.separated(
