@@ -29,7 +29,12 @@ class AttendanceQrCard extends StatefulWidget {
 }
 
 class _AttendanceQrCardState extends State<AttendanceQrCard> {
-  static const _refreshEvery = Duration(seconds: 20);
+  /// How long before a code expires to fetch the next one.
+  ///
+  /// The interval itself comes from the server's ttlSeconds, so changing the
+  /// lifetime in one place cannot leave the card showing a code that has
+  /// already died. This is only the head start.
+  static const _renewBefore = 5;
 
   Timer? _refreshTimer;
   Timer? _countdownTimer;
@@ -52,10 +57,19 @@ class _AttendanceQrCardState extends State<AttendanceQrCard> {
     _tripId = tripId;
     _refreshTimer?.cancel();
     _issue();
-    _refreshTimer = Timer.periodic(_refreshEvery, (_) => _issue());
     _countdownTimer ??= Timer.periodic(
       const Duration(seconds: 1),
       (_) => mounted ? setState(() {}) : null,
+    );
+  }
+
+  /// Replaces any pending renewal with one [seconds] from now.
+  void _scheduleRenew(int seconds) {
+    _refreshTimer?.cancel();
+    if (!mounted || _tripId == null) return;
+    _refreshTimer = Timer(
+      Duration(seconds: seconds < 5 ? 5 : seconds),
+      _issue,
     );
   }
 
@@ -88,12 +102,18 @@ class _AttendanceQrCardState extends State<AttendanceQrCard> {
           (res['expiresAt'] as num).toInt(),
         );
       });
+      // Schedule the next one from the lifetime the server just gave us.
+      final ttl = (res['ttlSeconds'] as num?)?.toInt() ?? 25;
+      _scheduleRenew(ttl - _renewBefore);
     } catch (e) {
       if (!mounted) return;
       setState(() {
         _payload = null;
         _error = AttendanceService.describeError(e).message;
       });
+      // Keep trying: a student holding up a dead card while the bus waits is
+      // worse than a little extra traffic.
+      _scheduleRenew(5);
     } finally {
       if (mounted) setState(() => _loading = false);
     }

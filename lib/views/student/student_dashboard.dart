@@ -1,11 +1,9 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:ui' as ui;
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:qr_flutter/qr_flutter.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:battery_plus/battery_plus.dart';
@@ -1201,16 +1199,6 @@ class _StudentTripDetailsState extends State<StudentTripDetails>
 }
 
 // â"€â"€ Static identity QR â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
-String _computeStudentCode(String name, String lrn) {
-  final initials = name
-      .trim()
-      .split(RegExp(r'\s+'))
-      .where((w) => w.isNotEmpty)
-      .map((w) => w[0].toUpperCase())
-      .join();
-  final suffix = lrn.length >= 6 ? lrn.substring(lrn.length - 6) : lrn;
-  return '$initials-$suffix';
-}
 
 class StudentQRTab extends StatelessWidget {
   const StudentQRTab({super.key});
@@ -1239,17 +1227,6 @@ class StudentQRTab extends StatelessWidget {
           final data = snap.data!.data() as Map<String, dynamic>? ?? {};
           final String name = (data['name'] ?? '').toString();
           final String lrn  = (data['lrn']  ?? '').toString();
-          final String code = _computeStudentCode(name, lrn);
-          // Persist computed code so parents can look up by it.
-          if ((data['code'] ?? '') != code && code.isNotEmpty) {
-            FirebaseFirestore.instance.collection('users').doc(myUid).update({'code': code});
-          }
-          final String qrJson = jsonEncode({
-            'studentId': myUid,
-            'name': name,
-            'lrn': lrn,
-            'code': code,
-          });
 
           return Center(
             child: SingleChildScrollView(
@@ -1270,62 +1247,11 @@ class StudentQRTab extends StatelessWidget {
 
                   // Attendance is a separate, expiring code. It appears only
                   // while a trip is running and the bus has reached a stop.
+                  // The attendance code is the only code here now. The static
+                  // identity QR was removed: it recorded nothing, a photograph
+                  // of it stayed valid forever, and having two codes on one
+                  // screen invited scanning the wrong one.
                   AttendanceQrCard(myUid: myUid),
-                  Container(
-                    padding: const EdgeInsets.all(24),
-                    decoration: BoxDecoration(
-                      color: Colors.white,
-                      borderRadius: BorderRadius.circular(24),
-                      boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.08), blurRadius: 24, offset: const Offset(0, 8))],
-                    ),
-                    child: Column(
-                      children: [
-                        Container(
-                          padding: const EdgeInsets.all(12),
-                          decoration: BoxDecoration(
-                            color: Colors.white,
-                            border: Border.all(color: AppTheme.effectivePrimary.withValues(alpha: 0.2), width: 2),
-                            borderRadius: BorderRadius.circular(16),
-                          ),
-                          child: QrImageView(
-                            data: qrJson,
-                            version: QrVersions.auto,
-                            size: 220,
-                            backgroundColor: Colors.white,
-                            eyeStyle: const QrEyeStyle(eyeShape: QrEyeShape.square, color: Colors.black),
-                            dataModuleStyle: const QrDataModuleStyle(dataModuleShape: QrDataModuleShape.square, color: Colors.black),
-                          ),
-                        ),
-                        const SizedBox(height: 20),
-                        Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                          decoration: BoxDecoration(
-                            color: AppTheme.effectivePrimary.withValues(alpha: 0.08),
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                          child: Text(
-                            "Code: $code",
-                            style: TextStyle(
-                              fontSize: 20,
-                              fontWeight: FontWeight.bold,
-                              color: AppTheme.effectivePrimary,
-                              letterSpacing: 1.5,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(height: 20),
-                  // This code identifies the student. It is not what records
-                  // attendance — that is the expiring code above — and it is no
-                  // longer how a parent links, which happens with a code the
-                  // school issues.
-                  Text(
-                    "This is your student identity code. It does not record attendance.",
-                    textAlign: TextAlign.center,
-                    style: TextStyle(fontSize: 12, height: 1.5, color: Colors.grey.shade600),
-                  ),
                 ],
               ),
             ),

@@ -27,7 +27,10 @@ const SOURCE = { qr: "qr", manual: "manual" };
  * need more, and a tighter venue may want less.
  */
 const DEFAULTS = {
-  tokenTtlSeconds: 30,
+  // Short enough that a photographed code is worthless before it can be passed
+  // around, long enough that a facilitator scanning a queue does not have to
+  // wait for the next one mid-scan.
+  tokenTtlSeconds: 25,
   // A fix older than this cannot show where the student is *now*.
   locationMaxAgeSeconds: 120,
   // A fix this vague cannot be compared to a geofence at all.
