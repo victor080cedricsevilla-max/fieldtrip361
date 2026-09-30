@@ -589,16 +589,22 @@ final rosterCsvTemplate = RosterField.all.map((f) => f.csvHeader).join(',');
 /// Both rows are complete on purpose. A blank template invites an admin to
 /// guess at the date format and the mobile-number shape, which are the two
 /// things the importer is strictest about.
+///
+/// Both email columns are filled in both rows, which they did not used to be.
+/// An address is no longer merely a nice-to-have contact detail: it is where
+/// the registration code is sent, and it is the only way that student or that
+/// parent can get an account at all. A template showing a blank email column
+/// would be teaching the wrong lesson. The importer still accepts a row without
+/// one — a school may genuinely not have the address yet — and lists whoever is
+/// still waiting so a code can go out the moment it is added.
 final rosterCsvTemplateFile = [
   rosterCsvTemplate,
-  // The second row deliberately leaves the student email and parent email
-  // blank: both are optional, and seeing that in the file is clearer than
-  // reading it in a help dialog. A mobile number alone still reaches the parent.
   '2024-0001,Juan,Dela Cruz,Juan Dela Cruz,2010-05-14,Grade 10,St. Peter,'
       'juan.delacruz@student.edu.ph,Pedro Dela Cruz,Father,'
       'pedro.delacruz@gmail.com,09171234567',
-  '2024-0002,Maria,Santos,Maria Santos,2011-11-02,Grade 9,St. Paul,,'
-      'Ana Santos,Mother,,09281234567',
+  '2024-0002,Maria,Santos,Maria Santos,2011-11-02,Grade 9,St. Paul,'
+      'maria.santos@student.edu.ph,Ana Santos,Mother,'
+      'ana.santos@gmail.com,09281234567',
 ].join('\n');
 
 final rosterCsvExample = rosterCsvTemplateFile;

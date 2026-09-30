@@ -302,6 +302,17 @@ class _BulkImportViewState extends State<BulkImportView> {
         'Everything else may be left blank, and extra columns are ignored.',
         style: TextStyle(fontSize: 11.5, color: Colors.grey.shade600, height: 1.45),
       ),
+      const SizedBox(height: 6),
+      // Not a validation rule, so it is not phrased as one — but leaving these
+      // blank is the difference between a student who can sign in and one who
+      // cannot, and that is worth saying where the file is being built.
+      Text(
+        'Fill in the email columns wherever you can. A registration code is sent '
+        'to those addresses, and it is the only way a student or parent can '
+        'create an account. Rows without one import normally and are listed '
+        'afterwards, so you can add the address later and send the code then.',
+        style: TextStyle(fontSize: 11.5, color: Colors.grey.shade700, height: 1.45),
+      ),
     ]);
   }
 
