@@ -52,3 +52,7 @@ functions/node_modules/
 functions/.env*
 functions/functions.env
 .vercel
+
+# Survey exports carry respondents' names, email addresses and mobile numbers.
+# They belong on the researchers' machines, never in the repository history.
+docs/*.csv

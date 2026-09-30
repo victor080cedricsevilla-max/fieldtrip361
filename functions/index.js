@@ -2719,6 +2719,8 @@ exports.removeRosterEntry = onCall(async (request) => {
 const platform = require("./lib/platform");
 const applications = require("./lib/applications");
 const staff = require("./lib/staff");
+const enrollment = require("./lib/enrollment");
+const tripstops = require("./lib/tripstops");
 const ocr = require("./lib/ocr");
 const announcements = require("./lib/announcements");
 const support = require("./lib/support");
@@ -2734,6 +2736,19 @@ exports.inviteTeacher = staff.inviteTeacher;
 exports.revokeTeacherInvite = staff.revokeTeacherInvite;
 exports.redeemTeacherInvite = staff.redeemTeacherInvite;
 exports.removeTeacherFromSchool = staff.removeTeacherFromSchool;
+
+// Students and parents: enrolled by the school, never self-registered. The
+// code carries the role and the address, so the sign-up screen asks for
+// nothing but the code and a password.
+exports.issueEnrollmentCodes = enrollment.issueEnrollmentCodes;
+exports.revokeEnrollmentCode = enrollment.revokeEnrollmentCode;
+exports.redeemEnrollmentCode = enrollment.redeemEnrollmentCode;
+exports.addChildByCode = enrollment.addChildByCode;
+
+// Unscheduled stops logged by a bus facilitator. A stopover always reaches the
+// parents; an emergency always reaches the administrator, and reaches the
+// parents only when the facilitator says so.
+exports.logUnscheduledStop = tripstops.logUnscheduledStop;
 
 // Subscription applications.
 exports.saveSchoolApplication = applications.saveSchoolApplication;

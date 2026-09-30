@@ -1,13 +1,23 @@
 /**
  * Text extraction for school-verification documents.
  *
- * This module reads documents. It does not judge them.
+ * This module reads documents. It makes exactly one judgement about them:
+ * whether the file is a document at all.
  *
- * It never decides whether a school is genuine, never approves or rejects an
- * application, and never treats what it extracted as established fact. The
- * output is text and a handful of fields placed beside the original so a person
- * can compare them — plus "hints", which are differences computed in code, not
- * opinions produced by a model.
+ * That single refusal exists because nothing else was checking. A photograph of
+ * a dog uploaded as a permit used to sit in the queue looking like any other
+ * attachment, and only a reviewer opening it would find out. So a file the
+ * model positively identifies as something other than a document — a pet, a
+ * person, a landscape, a screenshot — is rejected here with what it actually
+ * shows. A dark or blurred scan of a real permit is not that: it is a document
+ * that was hard to read, and it goes through to a person.
+ *
+ * Beyond that, the module does not judge. It never decides whether a school is
+ * genuine, never approves or rejects an application on its merits, and never
+ * treats what it extracted as established fact. The output is text and a handful
+ * of fields placed beside the original so a person can compare them — plus
+ * "hints", which are differences computed in code, not opinions produced by a
+ * model.
  *
  * It is deliberately separate from the student-document verification in
  * index.js. That path renders a verdict and can reject a form; nothing in this
@@ -34,12 +44,24 @@ const OCR_STATUS = {
   unreadable: "unreadable",
   failed: "failed",
   skipped: "skipped",
+  // The file is not a document at all — a photograph of a pet, a person, a
+  // landscape, a screenshot. This is the one thing this module refuses.
+  notADocument: "not_a_document",
 };
 
-/** The only shape the extractor may return. There is no decision field. */
+/**
+ * The only shape the extractor may return.
+ *
+ * `isDocument` is the sole judgement in this file, and it is deliberately the
+ * narrowest one available: whether the file is a document at all. It says
+ * nothing about whether the document is genuine, current or acceptable, which
+ * remain entirely the reviewer's to decide.
+ */
 const EXTRACTION_SCHEMA = {
   type: "object",
   properties: {
+    isDocument: { type: "boolean" },
+    depicts: { type: "string" },
     documentReadable: { type: "boolean" },
     rawText: { type: "string" },
     institutionName: { type: "string" },
@@ -51,7 +73,7 @@ const EXTRACTION_SCHEMA = {
     containsEmbeddedInstructions: { type: "boolean" },
     notes: { type: "string" },
   },
-  required: ["documentReadable", "rawText"],
+  required: ["isDocument", "documentReadable", "rawText"],
 };
 
 function extractionPrompt() {
@@ -60,6 +82,16 @@ function extractionPrompt() {
     "printed on the attached document and pull out a few named values.",
     "",
     "Return:",
+    "- isDocument: true if the file is a document of any kind — a certificate,",
+    "  permit, letter, form, registration, licence, receipt, official page, or a",
+    "  photograph or scan of one. Set it false ONLY when the file is plainly",
+    "  something else: a photograph of an animal, a person, food, a landscape, a",
+    "  building exterior, a screenshot of an app or chat, a meme, or a blank or",
+    "  solid-coloured image. A dark, blurred, skewed or partly cut-off document",
+    "  is still a document — set isDocument true and report the difficulty in",
+    "  documentReadable instead.",
+    "- depicts: when isDocument is false, three to six words naming what the file",
+    "  actually shows (for example \"a photograph of a dog\"). Otherwise \"\".",
     "- rawText: everything legible on the page, in reading order. Keep the",
     "  original wording and spelling. Do not summarise, correct or add anything.",
     "- institutionName: the institution's name exactly as printed, or \"\".",
@@ -309,6 +341,38 @@ async function extractDocument(db, { applicationId, documentId }) {
     return { status: OCR_STATUS.failed };
   }
 
+  // The one refusal this module makes. A positive "this is not a document" is
+  // required: a missing or ambiguous value falls through to the ordinary path,
+  // so a model that cannot tell never rejects a school's genuine paperwork.
+  if (parsed.isDocument === false) {
+    const depicts = sanitizeText(parsed.depicts, 120);
+    await docRef.update({
+      ocr: {
+        status: OCR_STATUS.notADocument,
+        rawText: "",
+        fields: {},
+        depicts: depicts || null,
+        notes: sanitizeText(parsed.notes, 300),
+        containsEmbeddedInstructions: parsed.containsEmbeddedInstructions === true,
+        model: geminiModel.value() || "gemini-3.6-flash",
+        checkedAt: admin.firestore.FieldValue.serverTimestamp(),
+        error: null,
+      },
+      autoRejected: true,
+      autoRejectedReason: depicts
+        ? `This file is not a document — it shows ${depicts}.`
+        : "This file is not a document.",
+      reviewHints: [
+        depicts
+          ? `This upload was not accepted: it is ${depicts}, not a document. Ask the ` +
+            "school to upload the certificate or permit itself."
+          : "This upload was not accepted: it is not a document. Ask the school to " +
+            "upload the certificate or permit itself.",
+      ],
+    });
+    return { status: OCR_STATUS.notADocument };
+  }
+
   const readable = parsed.documentReadable === true;
   const fields = {
     institutionName: sanitizeText(parsed.institutionName, 200),
@@ -348,6 +412,10 @@ async function extractDocument(db, { applicationId, documentId }) {
       checkedAt: admin.firestore.FieldValue.serverTimestamp(),
       error: null,
     },
+    // A re-run after the school replaced the file must clear the earlier
+    // refusal, or a corrected upload would keep wearing the old rejection.
+    autoRejected: false,
+    autoRejectedReason: null,
     reviewHints: hints,
   });
 

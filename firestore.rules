@@ -315,6 +315,26 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    // ── Enrolment codes — how a student or parent account comes to exist ─────
+    // The administrator who issued them may see who is still outstanding, which
+    // is the whole point of the list. Nobody writes here from a client: codes
+    // are issued, revoked and redeemed by Cloud Functions, and the stored value
+    // is a hash, so a reader still cannot use one.
+    match /enrollmentCodes/{codeId} {
+      allow read: if isAdmin() && resource.data.schoolId == mySchoolId();
+      allow write: if false;
+    }
+
+    // ── Unscheduled stops logged by a bus facilitator ────────────────────────
+    // The record backs the trip report, so the school's own staff may read it.
+    // Parents receive the stop as a notification rather than by reading here,
+    // which keeps one bus's log from being a window onto the whole school.
+    // Written only by the Cloud Function, which decides who is told.
+    match /tripEvents/{eventId} {
+      allow read: if isTeacherOrAdmin() && resource.data.schoolId == mySchoolId();
+      allow write: if false;
+    }
+
     // ── Document submissions — filled forms students upload ─────────────────
     // Blank templates live on the trip document itself (trips/{id}.documents),
     // so there is no separate template collection. Students create their own
