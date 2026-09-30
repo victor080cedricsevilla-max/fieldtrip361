@@ -20,99 +20,6 @@ class AuthController {
   final FirebaseAuth _auth = FirebaseAuth.instance;
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
 
-  /// Why the activation code supplied at sign-up was not accepted, if it wasn't.
-  ///
-  /// Registration deliberately still succeeds in that case, so this is reported
-  /// separately from [registerUser]'s return value — which stays reserved for
-  /// failures that actually prevented the account from being created.
-  String? _lastActivationError;
-  String? get lastActivationError => _lastActivationError;
-
-  Future<String?> registerUser({
-    required String email,
-    required String password,
-    required String name,
-    required String role,
-    String? firstName,
-    String? surname,
-    String? lrn,
-    String? activationCode,
-    String? acceptedTermsVersion,
-  }) async {
-    try {
-      UserCredential userCredential = await _auth.createUserWithEmailAndPassword(
-        email: email,
-        password: password,
-      );
-
-      String uid = userCredential.user!.uid;
-
-      Map<String, dynamic> userData = {
-        'uid': uid,
-        'name': name,
-        if (firstName != null) 'firstName': firstName,
-        if (surname != null) 'surname': surname,
-        'email': email,
-        'role': role,
-        'status': 'approved',
-        'createdAt': FieldValue.serverTimestamp(),
-        // The consent record: which wording they agreed to, and when. An older
-        // version here is how you find who must accept a revised notice.
-        if (acceptedTermsVersion != null) ...{
-          'termsAcceptedVersion': acceptedTermsVersion,
-          'termsAcceptedAt': FieldValue.serverTimestamp(),
-        },
-      };
-
-      if (role == 'student' && lrn != null) {
-        userData['lrn'] = lrn;
-      }
-
-      await _firestore.collection('users').doc(uid).set(userData);
-
-      // Match this account against the roster their school uploaded. A student
-      // inherits their school (and any parent link the admin declared in the
-      // CSV); a parent is linked to the children listed under their email.
-      // Must run before signOut below — the callable needs an authenticated user.
-      if (role == 'student' || role == 'parent') {
-        await claimRosterRecord(uid);
-      }
-
-      // Redeem the school-issued code that names this parent's child. It has to
-      // run here, before the sign-out below, because the callable needs an
-      // authenticated caller. A bad code never blocks the sign-up — the account
-      // is already valid and the code can be entered again from the dashboard.
-      if (role == 'parent' && (activationCode ?? '').trim().isNotEmpty) {
-        _lastActivationError = null;
-        try {
-          await FirebaseFunctions.instance
-              .httpsCallable('activateGuardianCode')
-              .call(<String, dynamic>{'code': activationCode!.trim()});
-        } on FirebaseFunctionsException catch (e) {
-          _lastActivationError = e.message ?? 'That activation code could not be used.';
-        } catch (_) {
-          _lastActivationError =
-              'Your account was created, but the activation code could not be checked.';
-        }
-      }
-
-      // Send verification email so the user must confirm the address.
-      try {
-        await userCredential.user?.sendEmailVerification();
-      } catch (_) {
-        // Non-fatal: account is created; user can resend from the verify screen.
-      }
-
-      // Sign out: forbid auto-routing to a dashboard until the email is verified.
-      await _auth.signOut();
-
-      return null;
-    } on FirebaseAuthException catch (e) {
-      return e.message;
-    } catch (e) {
-      return "System Error";
-    }
-  }
   /// Matches this account against its school's roster, recording the outcome.
   ///
   /// This used to be fire-and-forget with a swallowed error, which meant a
@@ -147,31 +54,17 @@ class AuthController {
     }
   }
 
-  Future<String?> resendVerificationEmail({
-    required String email,
-    required String password,
-  }) async {
-    try {
-      final cred = await _auth.signInWithEmailAndPassword(email: email, password: password);
-      await cred.user?.reload();
-      if (cred.user?.emailVerified == true) {
-        await _auth.signOut();
-        return "Email is already verified. Please log in.";
-      }
-      await cred.user?.sendEmailVerification();
-      await _auth.signOut();
-      return null;
-    } on FirebaseAuthException catch (e) {
-      return e.message;
-    } catch (e) {
-      return "System Error";
-    }
-  }
-
+  /// Signs in and routes to the dashboard for the account's role.
+  ///
+  /// [clearStack] is for callers that sit on top of the sign-in screen, such as
+  /// the registration-code screen. Replacing only their own page would leave the
+  /// sign-in screen underneath, so the back button on a dashboard would land a
+  /// signed-in person on the login form.
   Future<String?> loginUser({
     required BuildContext context,
     required String email,
     required String password,
+    bool clearStack = false,
   }) async {
     try {
       UserCredential userCredential = await _auth.signInWithEmailAndPassword(
@@ -215,9 +108,11 @@ class AuthController {
         // Retry a roster claim that never landed — an app build predating the
         // claim call, or a transient failure, would otherwise leave this account
         // unlinked from its school forever.
+        // Students only. A parent is never matched by address — every parent↔child
+        // link comes from a school-issued code — so asking on each sign-in only
+        // wrote a "no match" note onto an account that was never meant to match.
         final existingSchool = (data['schoolId'] as String?)?.trim();
-        if ((role == 'student' || role == 'parent') &&
-            (existingSchool == null || existingSchool.isEmpty)) {
+        if (role == 'student' && (existingSchool == null || existingSchool.isEmpty)) {
           await claimRosterRecord(uid);
         }
 
@@ -237,7 +132,7 @@ class AuthController {
           if (!kIsWeb && (role == 'teacher' || role == 'student' || role == 'parent')) {
             unawaited(BackgroundLocationService.start(uid));
           }
-          _navigateToRole(role, context);
+          _navigateToRole(role, context, clearStack: clearStack);
           return null;
         } else {
           await _auth.signOut();
@@ -254,7 +149,7 @@ class AuthController {
     }
   }
 
-  void _navigateToRole(String role, BuildContext context) {
+  void _navigateToRole(String role, BuildContext context, {bool clearStack = false}) {
     Widget targetScreen;
 
     switch (role) {
@@ -280,12 +175,14 @@ class AuthController {
         return;
     }
 
-    Navigator.pushReplacement(
-      context,
-      MaterialPageRoute(builder: (_) => targetScreen),
-    );
+    final route = MaterialPageRoute(builder: (_) => targetScreen);
+    if (clearStack) {
+      Navigator.pushAndRemoveUntil(context, route, (_) => false);
+    } else {
+      Navigator.pushReplacement(context, route);
+    }
   }
-  
+
   Future<void> logout() async {
     if (!kIsWeb) {
       final prefs = await SharedPreferences.getInstance();

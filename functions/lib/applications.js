@@ -471,6 +471,41 @@ exports.submitSchoolApplication = onCall(async (request) => {
     );
   }
 
+  // A file that is not a document — a photograph of a pet, a person, a
+  // screenshot — is refused here rather than left in the queue for a reviewer to
+  // discover. The upload is kept, marked, and the school is told exactly which
+  // one and what it actually shows, so the fix is to replace that one file.
+  const current = docsSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
+  const refused = current.filter((d) => d.autoRejected === true);
+  if (refused.length) {
+    const list = refused
+      .map((d) => `${DOC_LABELS[d.type] || d.type}: ${d.autoRejectedReason || "not a document"}`)
+      .join(" ");
+    throw new HttpsError(
+      "failed-precondition",
+      `These uploads are not accepted — replace them and submit again. ${list}`
+    );
+  }
+
+  // The check runs a few seconds after an upload. Submitting inside that window
+  // would slip a file past it, so wait for a verdict — but only for a file that
+  // is genuinely still being checked. One whose check never ran is left to a
+  // human reviewer, as before, rather than blocking the school indefinitely.
+  const STILL_CHECKING_MS = 3 * 60 * 1000;
+  const checking = current.filter((d) => {
+    if (d.ocr?.status !== "pending") return false;
+    const at = d.uploadedAt?.toMillis?.();
+    return at && Date.now() - at < STILL_CHECKING_MS;
+  });
+  if (checking.length) {
+    throw new HttpsError(
+      "failed-precondition",
+      "We are still checking " +
+        checking.map((d) => DOC_LABELS[d.type] || d.type).join(", ") +
+        ". Give it a few seconds and submit again."
+    );
+  }
+
   const config = {
     ...(await getPlatformConfig(db, "review")),
     ...(await getPlatformConfig(db, "bankingCalendar")),

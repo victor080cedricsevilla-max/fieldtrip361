@@ -534,9 +534,9 @@ class _BulkImportViewState extends State<BulkImportView> {
           style: TextStyle(
               fontSize: 14, fontWeight: FontWeight.bold, color: AppTheme.secondaryColor)),
       const SizedBox(height: 10),
-      _summaryRow('Complete — activation code can be sent', '${r.guardianComplete}',
+      _summaryRow('Has an email — registration code will be sent', '${r.guardianComplete}',
           const Color(0xFF16A34A)),
-      _summaryRow('Partial — needs contact information', '${r.guardianPartial}',
+      _summaryRow('No valid email — waits until one is added', '${r.guardianPartial}',
           AppTheme.accentColor),
       _summaryRow('Not provided', '${r.guardianNone}', Colors.grey.shade500),
       if (r.issues.isNotEmpty) ...[
@@ -621,8 +621,9 @@ class _BulkImportViewState extends State<BulkImportView> {
           Text(
             '${r.guardianComplete} guardian '
             '${r.guardianComplete == 1 ? "record" : "records"} will be created with an '
-            'email on file, so activation codes can be sent right away. '
-            '${r.guardianPartial} will need contact details added first.',
+            'email on file, so their registration codes go out as soon as you import. '
+            '${r.guardianPartial} will need an email added first — a parent cannot '
+            'create an account without a code.',
             style: TextStyle(fontSize: 12.5, color: Colors.grey.shade700, height: 1.5),
           ),
         ]),

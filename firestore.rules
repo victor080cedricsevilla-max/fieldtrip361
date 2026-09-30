@@ -71,30 +71,6 @@ service cloud.firestore {
     // minors. This is the rule the privacy requirement rests on; hiding the UI
     // would not be enough.
 
-    function createdRoleIsSelfService() {
-      // Registration may only mint the three self-service roles. 'admin' is
-      // provisioned by an approved subscription and 'super_admin' by the
-      // trusted bootstrap — neither can be claimed from a client.
-      return request.resource.data.role in ['student', 'parent', 'teacher'];
-    }
-
-    function createIsUnprivileged() {
-      // Tenancy, approval and relationship fields are server-owned even on the
-      // very first write. Without this a new account could arrive pre-attached
-      // to a school, pre-approved, or already listing someone else's children.
-      return createdRoleIsSelfService()
-             && request.resource.data.get('status', 'approved') == 'approved'
-             && request.resource.data.get('accountStatus', 'active') == 'active'
-             && !('schoolId'   in request.resource.data)
-             && !('schoolIds'  in request.resource.data)
-             && !('rosterId'   in request.resource.data)
-             && !('children'   in request.resource.data)
-             && !('parentIds'  in request.resource.data)
-             && !('studentId'  in request.resource.data)
-             && !('disabledReason' in request.resource.data)
-             && request.resource.data.get('mustChangePassword', false) == false;
-    }
-
     match /users/{userId} {
       allow read: if isSignedIn() && (
                     // Your own record, whatever your role. Sign-in reads this
@@ -111,9 +87,16 @@ service cloud.firestore {
                         && myRole() in ['admin', 'teacher', 'student', 'parent'])
                   );
 
-      allow create: if isSignedIn()
-                    && request.auth.uid == userId
-                    && createIsUnprivileged();
+      // No client creates a user document — not even its own.
+      //
+      // This used to let anyone with a Firebase sign-in write themselves a
+      // student or parent record. That was the registration form, and it meant
+      // the school learned who had joined only after they had. An account now
+      // comes into being in exactly one place: a Cloud Function redeeming a code
+      // the school issued (redeemEnrollmentCode, redeemTeacherInvite), which
+      // writes the record with the school, role and relationships already set.
+      // A sign-in with no record behind it reads nothing and can do nothing.
+      allow create: if false;
 
       allow update: if isSignedIn() && (
                     // Owner updates their own doc with field-level restrictions.

@@ -68,11 +68,23 @@ function schoolCodePrefix(schoolName) {
   return (letters || "ST").slice(0, 3);
 }
 
-function generateInviteCode(schoolName) {
+/**
+ * The first letter says what the code opens: T for a teacher, to sit beside the
+ * S and P that student and parent codes begin with. The sign-up screen reads it
+ * to know which account it is creating, so nobody is asked to choose a role.
+ *
+ * Codes issued before this began with the school's initials. They still work —
+ * the screen sends any code it does not recognise down this path — but a school
+ * initial that happened to be S or P would have collided with the new letters,
+ * which is why the prefix changed rather than gaining a second meaning.
+ *
+ * `schoolName` is kept in the signature so callers did not have to change.
+ */
+function generateInviteCode(_schoolName) {
   const bytes = crypto.randomBytes(8);
   let body = "";
   for (let i = 0; i < 8; i++) body += CODE_ALPHABET[bytes[i] % CODE_ALPHABET.length];
-  return `${schoolCodePrefix(schoolName)}-${body.slice(0, 4)}-${body.slice(4)}`;
+  return `T-${body.slice(0, 4)}-${body.slice(4)}`;
 }
 
 /** Strips formatting so "nu 7k4p92xm" and "NU-7K4P-92XM" hash identically. */
@@ -123,7 +135,7 @@ function inviteEmail({ teacherName, schoolName, code }) {
     "",
     code,
     "",
-    "Open the FieldTrip360 app, choose \"I have an invitation code\", and enter it to",
+    "Open the FieldTrip360 app, choose \"I have a code\", and enter it to",
     "set your password and finish setting up your account.",
     "",
     `This code expires in ${INVITE_TTL_DAYS} days and can only be used once.`,
@@ -146,7 +158,7 @@ function inviteEmail({ teacherName, schoolName, code }) {
         <div style="font-size:24px;font-weight:700;letter-spacing:.12em;color:#111827;font-family:ui-monospace,Menlo,Consolas,monospace;">${escapeHtml(code)}</div>
       </div>
       <p style="margin:0 0 14px;font-size:14px;color:#4B5563;line-height:1.55;">
-        Open the FieldTrip360 app, choose <b>I have an invitation code</b>, and enter it to set
+        Open the FieldTrip360 app, choose <b>I have a code</b>, and enter it to set
         your password and finish setting up your account.
       </p>
       <p style="margin:0 0 14px;font-size:13px;color:#6B7280;">
@@ -329,6 +341,7 @@ exports.redeemTeacherInvite = onCall(async (request) => {
 
   const raw = sanitizeText(request.data?.code, 60);
   const password = typeof request.data?.password === "string" ? request.data.password : "";
+  const acceptedTermsVersion = sanitizeText(request.data?.acceptedTermsVersion, 20);
 
   if (normalizeCode(raw).length < 6) {
     throw new HttpsError("invalid-argument", "That does not look like an invitation code.");
@@ -400,6 +413,15 @@ exports.redeemTeacherInvite = onCall(async (request) => {
       schoolId,
       status: "approved",
       accountStatus: "active",
+      // Recorded when the screen sends it, which it always does now. Optional
+      // here only so a teacher on an older build is not locked out of a code
+      // that was valid when it was issued.
+      ...(acceptedTermsVersion
+        ? {
+            termsAcceptedVersion: acceptedTermsVersion,
+            termsAcceptedAt: admin.firestore.FieldValue.serverTimestamp(),
+          }
+        : {}),
       joinedSchoolAt: admin.firestore.FieldValue.serverTimestamp(),
       ...(existing.exists ? {} : { createdAt: admin.firestore.FieldValue.serverTimestamp() }),
     },
@@ -489,3 +511,4 @@ module.exports.INVITE_STATUS = INVITE_STATUS;
 module.exports.INVITE_TTL_DAYS = INVITE_TTL_DAYS;
 module.exports.normalizeCode = normalizeCode;
 module.exports.schoolCodePrefix = schoolCodePrefix;
+module.exports.generateInviteCode = generateInviteCode;

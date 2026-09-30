@@ -802,13 +802,15 @@ class _ParentProfileTabState extends State<ParentProfileTab> {
   final _codeController = TextEditingController();
   bool _isSearching = false;
 
-  /// Redeems a school-issued Parent Activation Code.
+  /// Adds another child from a school-issued registration code.
   ///
-  /// This used to search students by a `code` field on their own user document
-  /// and write the link straight from the client. A student knows their own
-  /// code, so they could register a fake "parent" and attach it to themselves.
-  /// Linking now happens only inside `activateGuardianCode`, which resolves the
-  /// school, student and guardian from a code the school issued and emailed.
+  /// A parent's first code creates their account; this is for every code after
+  /// it — one code per child, one account per parent. It used to search students
+  /// by a `code` field on their own user document and write the link straight
+  /// from the client, so a student could register a fake "parent" and attach it
+  /// to themselves. Linking now happens only on the server, in `addChildByCode`,
+  /// which resolves the school, student and guardian from a code the school
+  /// issued, and refuses one that was emailed to a different address.
   Future<void> _addStudentByCode() async {
     final code = _codeController.text.trim();
     if (code.isEmpty) return;
@@ -819,15 +821,20 @@ class _ParentProfileTabState extends State<ParentProfileTab> {
       if (!mounted) return;
       Navigator.pop(context);
       final childName = (result['studentName'] ?? 'Your child').toString();
+      // The code was valid and is now spent, but the child has not registered
+      // yet. Say so, or a parent looking at an empty list thinks it failed.
+      final waiting = result['childPending'] == true;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text("$childName is now linked to your account."),
+        content: Text(waiting
+            ? "Code accepted. $childName will appear here as soon as they register."
+            : "$childName is now linked to your account."),
         backgroundColor: Colors.green,
       ));
       _codeController.clear();
     } on FirebaseFunctionsException catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text(e.message ?? "That activation code could not be used."),
+        content: Text(e.message ?? "That registration code could not be used."),
         backgroundColor: Colors.red,
       ));
     } finally {
@@ -840,14 +847,15 @@ class _ParentProfileTabState extends State<ParentProfileTab> {
       context: context,
       builder: (dlgCtx) => AlertDialog(
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: const Text("Link a Child"),
+        title: const Text("Add a Child"),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             const Text(
-              "Your child's school sends you an activation code by email. Enter it here to "
-              "follow their trips and see their live location.",
+              "Your child's school emails you a registration code for each child — it "
+              "starts with P. Enter it here to follow their trips and see their live "
+              "location from this account.",
               style: TextStyle(fontSize: 13, height: 1.4, color: Colors.grey),
             ),
             const SizedBox(height: 16),
@@ -857,8 +865,8 @@ class _ParentProfileTabState extends State<ParentProfileTab> {
               textCapitalization: TextCapitalization.characters,
               autofocus: true,
               decoration: InputDecoration(
-                labelText: "Activation code",
-                hintText: "From the school's email",
+                labelText: "Registration code",
+                hintText: "e.g. P-7K4P-92XM",
                 border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
                 prefixIcon: const Icon(Icons.vpn_key_outlined),
               ),
@@ -876,7 +884,7 @@ class _ParentProfileTabState extends State<ParentProfileTab> {
               },
               child: _isSearching
                   ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
-                  : const Text("Link by Code"),
+                  : const Text("Add Child"),
             ),
           ),
         ],

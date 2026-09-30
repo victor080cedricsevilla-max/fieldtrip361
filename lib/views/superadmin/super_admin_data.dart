@@ -341,8 +341,15 @@ class OcrStatus {
   static const String failed = 'failed';
   static const String skipped = 'skipped';
 
+  /// The file is not a document at all — a photograph of a pet, a person, a
+  /// screenshot. The one thing the checker refuses outright; everything else,
+  /// however hard to read, still goes to a person.
+  static const String notADocument = 'not_a_document';
+
   static String label(String s) {
     switch (s) {
+      case notADocument:
+        return 'Not a document';
       case pending:
         return 'Extracting text…';
       case extracted:
@@ -368,6 +375,7 @@ class OcrStatus {
         return t.warning;
       case unreadable:
       case failed:
+      case notADocument:
         return t.danger;
       default:
         return t.neutral;

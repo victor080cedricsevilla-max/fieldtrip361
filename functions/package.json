@@ -8,7 +8,8 @@
     "deploy": "firebase deploy --only functions",
     "logs": "firebase functions:log",
     "test": "node --test test/*.test.js",
-    "test:rules": "firebase emulators:exec --only firestore,storage --project ft360-rules-test \"node --test test/rules/*.test.js\""
+    "test:rules": "firebase emulators:exec --only firestore,storage --project ft360-rules-test \"node --test test/rules/*.test.js\"",
+    "test:enrollment": "firebase emulators:exec --only auth,firestore,functions --project pildtrip360 \"node --test test/integration/*.it.js\""
   },
   "engines": {
     "node": "24"

@@ -1033,12 +1033,19 @@ exports.importRoster = onCall({ timeoutSeconds: 540 }, async (request) => {
 
   // Firestore caps a batch at 500 writes, and each student may add a guardian.
   const now = admin.firestore.Timestamp.now();
-  const createdGuardians = []; // { ref, data } for the codes sent below
+  const createdGuardians = []; // guardians a registration code is owed to
+  const createdStudents = []; // students a registration code is owed to
   for (let i = 0; i < toWrite.length; i += 200) {
     const batch = db.batch();
     for (const item of toWrite.slice(i, i + 200)) {
       const rosterRef = db.collection("roster").doc();
       batch.set(rosterRef, item.record);
+      createdStudents.push({
+        rosterId: rosterRef.id,
+        email: item.record.email,
+        recipientName: item.record.firstName || item.record.name,
+        studentName: item.record.name,
+      });
 
       if (item.guardian) {
         const guardianRef = db.collection("guardians").doc();
@@ -1060,9 +1067,13 @@ exports.importRoster = onCall({ timeoutSeconds: 540 }, async (request) => {
           updatedAt: now,
         };
         batch.set(guardianRef, guardianDoc);
-        if (guardianDoc.status === GUARDIAN_STATUS.activationReady) {
-          createdGuardians.push({ ref: guardianRef, data: guardianDoc });
-        }
+        createdGuardians.push({
+          guardianId: guardianRef.id,
+          rosterId: rosterRef.id,
+          email: guardianDoc.email,
+          recipientName: guardianDoc.name,
+          studentName: guardianDoc.studentName,
+        });
       }
     }
     await batch.commit();
@@ -1074,11 +1085,15 @@ exports.importRoster = onCall({ timeoutSeconds: 540 }, async (request) => {
     });
   }
 
-  // Send the codes straight away. Waiting for the admin to press a second
-  // button is the step that never happens on a busy day, and every guardian
-  // sitting on an unsent code is a parent who cannot see their child's trip.
-  const codes = await sendCodesForNewGuardians(db, {
+  // Send the codes straight away. Nobody can create an account without one, so
+  // waiting for the administrator to press a second button is waiting to let the
+  // school's own students and parents in — and it is the step that never
+  // happens on a busy day. A row with no email is not sent and not an error: it
+  // comes back in `codesMissingEmail` so the administrator can see who is waiting.
+  const codes = await enrollment.issueBatch(db, {
+    students: createdStudents,
     guardians: createdGuardians,
+    schoolId,
     schoolName: schoolSnap.get("name"),
     byUid: uid,
   });
@@ -1086,10 +1101,16 @@ exports.importRoster = onCall({ timeoutSeconds: 540 }, async (request) => {
   return {
     imported: toWrite.length,
     codesSent: codes.sent,
-    codesByEmail: codes.byEmail,
-    codesBySms: codes.bySms,
-    codesFailed: codes.failed,
+    codesStudents: codes.students,
+    codesParents: codes.parents,
+    codesByEmail: codes.sent, // delivery is by email alone now
+    codesBySms: 0,
+    codesFailed: codes.failed.length,
     codesRemaining: codes.remaining,
+    codesExpireInDays: codes.expiresInDays,
+    // Capped so a huge file cannot blow up the response payload.
+    codesMissingEmail: codes.missingEmail.slice(0, 100),
+    codesMissingEmailCount: codes.missingEmail.length,
     duplicates: skippedDuplicate.length,
     overCapacity: skippedOverCapacity.length,
     invalidCount: invalid.length,
@@ -1106,63 +1127,6 @@ exports.importRoster = onCall({ timeoutSeconds: 540 }, async (request) => {
     overCapacitySample: skippedOverCapacity.slice(0, 50),
   };
 });
-
-/**
- * Sends an activation code to each guardian an import just created.
- *
- * Best-effort by design: a mail server that is down, or a gateway that rejects
- * a number, must not fail the import — the students are already on the roster
- * and the admin can retry delivery from the roster screen. Capped per run so a
- * two-thousand-row file cannot sit past the function's timeout.
- */
-async function sendCodesForNewGuardians(db, { guardians, schoolName, byUid }) {
-  const empty = { sent: 0, byEmail: 0, bySms: 0, failed: 0, remaining: 0 };
-  if (!guardians.length) return empty;
-
-  const MAX_PER_IMPORT = 200;
-  const batch = guardians.slice(0, MAX_PER_IMPORT);
-
-  let transporter;
-  try {
-    transporter = createMailTransport();
-  } catch (_) {
-    // No SMTP configured. SMS may still carry the codes; if neither channel is
-    // available every attempt below simply reports a failure.
-  }
-
-  let sent = 0;
-  let byEmail = 0;
-  let bySms = 0;
-  let failed = 0;
-  for (const g of batch) {
-    try {
-      const issued = await issueActivationCode(db, {
-        guardianRef: g.ref,
-        guardian: g.data,
-        schoolName,
-        byUid,
-        transporter,
-      });
-      if (issued.delivery === "email") { sent++; byEmail++; }
-      else if (issued.delivery === "sms") { sent++; bySms++; }
-      else failed++;
-    } catch (err) {
-      console.error("import activation failed for", g.ref.id, err?.message || err);
-      failed++;
-    }
-  }
-  try {
-    if (transporter) transporter.close();
-  } catch (_) {/* pool already torn down */}
-
-  return {
-    sent,
-    byEmail,
-    bySms,
-    failed,
-    remaining: Math.max(0, guardians.length - batch.length),
-  };
-}
 
 /**
  * Writes the two-way link between a roster entry and a student account, and
@@ -1446,10 +1410,13 @@ function hashActivationCode(raw) {
     .digest("hex");
 }
 
-function guardianStatusFor(email, phone) {
-  // Reachable by either channel counts as ready — a guardian with only a mobile
-  // number is the common case on a Philippine roster, not an incomplete record.
-  return isValidEmail(normEmail(email)) || normalizePhMobile(phone)
+function guardianStatusFor(email, _phone) {
+  // Ready means a code can actually be sent, and a code is emailed: a parent
+  // cannot create an account without one. A mobile number used to be enough,
+  // when a code could go by SMS; now a phone-only guardian marked "ready" would
+  // sit in the send list and never receive anything. The number is still kept
+  // on the record.
+  return isValidEmail(normEmail(email))
     ? GUARDIAN_STATUS.activationReady
     : GUARDIAN_STATUS.pendingContact;
 }
@@ -1812,15 +1779,27 @@ exports.assignGuardian = onCall(async (request) => {
     });
   }
 
+  // A parent account can only come from a registration code, so this is the
+  // same code the import sends — not the older activation code, which assumed
+  // the parent had already registered themselves.
   let issued = null;
-  if (sendCode && guardian.status === GUARDIAN_STATUS.activationReady) {
+  if (sendCode && guardian.status === GUARDIAN_STATUS.activationReady && !guardian.parentUid) {
     const schoolName = (await db.collection("schools").doc(schoolId).get()).get("name");
-    issued = await issueActivationCode(db, {
-      guardianRef,
-      guardian,
+    const r = await enrollment.issueBatch(db, {
+      guardians: [
+        {
+          guardianId: guardianRef.id,
+          rosterId: studentId,
+          email: guardian.email,
+          recipientName: guardian.name,
+          studentName,
+        },
+      ],
+      schoolId,
       schoolName,
       byUid: uid,
     });
+    issued = r.sent > 0 ? { delivery: "email" } : null;
   }
 
   return {
@@ -2742,6 +2721,7 @@ exports.removeTeacherFromSchool = staff.removeTeacherFromSchool;
 // nothing but the code and a password.
 exports.issueEnrollmentCodes = enrollment.issueEnrollmentCodes;
 exports.revokeEnrollmentCode = enrollment.revokeEnrollmentCode;
+exports.setRosterEmail = enrollment.setRosterEmail;
 exports.redeemEnrollmentCode = enrollment.redeemEnrollmentCode;
 exports.addChildByCode = enrollment.addChildByCode;
 

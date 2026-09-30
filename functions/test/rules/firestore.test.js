@@ -142,12 +142,23 @@ test("a client cannot mint itself a super admin", async () => {
   );
 });
 
-test("a self-service role may register", async () => {
-  await assertSucceeds(
-    setDoc(doc(as("newStudent"), "users/newStudent"), {
-      role: "student", email: "new@s.test", name: "New",
-    })
-  );
+// Accounts come only from a code the school issued, redeemed by a Cloud
+// Function. The registration form that let anyone write their own student or
+// parent record is gone, and the rule behind it went with it — otherwise the
+// missing screen would be a courtesy and not a boundary.
+test("no role may register itself, including the self-service ones", async () => {
+  for (const role of ["student", "parent", "teacher"]) {
+    await assertFails(
+      setDoc(doc(as(`self_${role}`), `users/self_${role}`), {
+        role, email: `${role}@s.test`, name: "New",
+      })
+    );
+  }
+});
+
+test("a sign-in with no user record behind it reads nothing", async () => {
+  await assertFails(getDoc(doc(as("ghost"), "users/student1")));
+  await assertFails(getDoc(doc(as("ghost"), "roster/anything")));
 });
 
 test("a new account cannot arrive already attached to a school", async () => {

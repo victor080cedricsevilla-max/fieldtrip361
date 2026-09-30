@@ -16,7 +16,7 @@ enum RosterFilter {
   linked('Parent linked'),
   pending('Pending — code sent'),
   ready('Ready to send'),
-  noContact('No email/phone found'),
+  noContact('No email on file'),
   noGuardian('No guardian assigned');
 
   const RosterFilter(this.label);
@@ -248,6 +248,195 @@ class _StudentsViewState extends State<StudentsView> {
     }
   }
 
+  /// Emails one student their registration code, replacing any they already hold.
+  Future<void> _sendStudentCode(String rosterId, String name, String email) async {
+    setState(() => _busy = true);
+    try {
+      final r = await GuardianService.sendStudentCodes(rosterIds: [rosterId]);
+      if (!mounted) return;
+      if (((r['sent'] as num?)?.toInt() ?? 0) > 0) {
+        _toast('Registration code emailed to $name at $email.');
+      } else {
+        final failed = (r['failed'] as List?) ?? const [];
+        final reason = failed.isNotEmpty
+            ? Map<String, dynamic>.from(failed.first as Map)['reason']
+            : 'There is no valid email address on file for this student.';
+        _showMessageDialog('The code was not sent', '$reason', isError: true);
+      }
+    } on FirebaseFunctionsException catch (e) {
+      if (mounted) {
+        _showMessageDialog('Could not send the code', e.message ?? 'Please try again.',
+            isError: true);
+      }
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _withdrawStudentCode(String rosterId, String name) async {
+    setState(() => _busy = true);
+    try {
+      await GuardianService.revokeStudentCode(rosterId);
+      if (mounted) _toast("$name's registration code was withdrawn.");
+    } on FirebaseFunctionsException catch (e) {
+      if (mounted) {
+        _showMessageDialog('Could not withdraw the code', e.message ?? 'Please try again.',
+            isError: true);
+      }
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  /// Gives a waiting student the address their code will be sent to.
+  ///
+  /// An import may carry a student the school has no address for. That row is
+  /// kept, not refused, and this is how it stops waiting: the address is saved
+  /// and the code goes out in the same step.
+  Future<void> _addStudentEmail(String rosterId, String name) async {
+    final formKey = GlobalKey<FormState>();
+    final email = TextEditingController();
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: Text('Email for $name'),
+        content: SizedBox(
+          width: 400,
+          child: Form(
+            key: formKey,
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              Text(
+                'The registration code is sent to this address, and it is the account '
+                'the student will sign in with. Use one the student can open.',
+                style: TextStyle(fontSize: 12, color: Colors.grey.shade600, height: 1.5),
+              ),
+              const SizedBox(height: 14),
+              _dialogField(email, 'Student email', required: true, isEmail: true),
+            ]),
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: AppTheme.effectivePrimary),
+            onPressed: () {
+              if (formKey.currentState?.validate() ?? false) Navigator.pop(ctx, true);
+            },
+            child: const Text('Save and send code'),
+          ),
+        ],
+      ),
+    );
+    final address = email.text.trim();
+    email.dispose();
+    if (ok != true || !mounted) return;
+
+    setState(() => _busy = true);
+    try {
+      final r = await GuardianService.setStudentEmail(rosterId, address);
+      if (!mounted) return;
+      _toast(r['sent'] == true
+          ? 'Saved. Registration code emailed to $address.'
+          : 'Email saved, but the code could not be sent. Try the send button.');
+    } on FirebaseFunctionsException catch (e) {
+      if (mounted) {
+        _showMessageDialog('Could not save the email', e.message ?? 'Please try again.',
+            isError: true);
+      }
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  /// Emails every student who has an address and no account yet.
+  Future<void> _sendAllStudentCodes(int waiting) async {
+    final go = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Text('Send student codes?'),
+        content: Text(
+          '$waiting ${waiting == 1 ? "student has" : "students have"} an email address and '
+          'no account yet. Each gets one registration code, good for 30 days. '
+          'Anyone without an address is left out and stays marked "No email".',
+          style: const TextStyle(fontSize: 13.5, height: 1.5),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: AppTheme.effectivePrimary),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: Text('Send $waiting ${waiting == 1 ? "code" : "codes"}'),
+          ),
+        ],
+      ),
+    );
+    if (go != true || !mounted) return;
+
+    setState(() => _busy = true);
+    try {
+      final r = await GuardianService.sendStudentCodes();
+      if (!mounted) return;
+      int n(Object? v) => (v as num?)?.toInt() ?? 0;
+      final failed = (r['failed'] as List?) ?? const [];
+      final missing = n((r['missingEmail'] as List?)?.length);
+      _showMessageDialog(
+        n(r['sent']) > 0 ? 'Codes sent' : 'Nothing was sent',
+        [
+          '${n(r['sent'])} ${n(r['sent']) == 1 ? "code was" : "codes were"} emailed.',
+          if (failed.isNotEmpty) '${failed.length} could not be delivered.',
+          if (missing > 0) '$missing still need an email address.',
+          if (n(r['remaining']) > 0)
+            '${n(r['remaining'])} were not attempted — sending is capped per run. '
+                'Run this again to continue.',
+        ].join('\n'),
+        isError: n(r['sent']) == 0 && failed.isNotEmpty,
+      );
+    } on FirebaseFunctionsException catch (e) {
+      if (mounted) {
+        _showMessageDialog('Could not send codes', e.message ?? 'Please try again.',
+            isError: true);
+      }
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  /// Appears only when there is someone to send to — a permanently visible
+  /// button invites clicking with nothing to send.
+  Widget _sendStudentCodesButton() {
+    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+      stream: FirebaseFirestore.instance
+          .collection('roster')
+          .where('schoolId', isEqualTo: _schoolId)
+          .snapshots(),
+      builder: (context, snap) {
+        final docs = snap.data?.docs ?? const <QueryDocumentSnapshot<Map<String, dynamic>>>[];
+        final waiting = docs.where((d) {
+          final m = d.data();
+          return m['status'] != 'claimed' &&
+              (m['email'] ?? '').toString().contains('@') &&
+              m['codeStatus'] != 'sent';
+        }).length;
+        if (waiting == 0) return const SizedBox.shrink();
+        return Padding(
+          padding: const EdgeInsets.only(right: 10),
+          child: OutlinedButton.icon(
+            onPressed: _busy ? null : () => _sendAllStudentCodes(waiting),
+            icon: const Icon(Icons.forward_to_inbox_rounded, size: 18),
+            label: Text('Send student codes ($waiting)'),
+            style: OutlinedButton.styleFrom(
+              minimumSize: const Size(0, 42),
+              foregroundColor: AppTheme.accentColor,
+              side: BorderSide(color: AppTheme.accentColor),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
   Future<void> _remove(String rosterId, String name) async {
     final ok = await showDialog<bool>(
       context: context,
@@ -320,10 +509,13 @@ class _StudentsViewState extends State<StudentsView> {
     final remaining = d['remaining'] == null ? null : asInt(d['remaining']);
     final invalid = (d['invalid'] as List?) ?? const [];
     final codesSent = asInt(d['codesSent']);
-    final codesByEmail = asInt(d['codesByEmail']);
-    final codesBySms = asInt(d['codesBySms']);
+    final codesStudents = asInt(d['codesStudents']);
+    final codesParents = asInt(d['codesParents']);
     final codesFailed = asInt(d['codesFailed']);
     final codesRemaining = asInt(d['codesRemaining']);
+    final codesDays = asInt(d['codesExpireInDays']);
+    final missingCount = asInt(d['codesMissingEmailCount']);
+    final missing = (d['codesMissingEmail'] as List?) ?? const [];
 
     showDialog<void>(
       context: context,
@@ -351,19 +543,21 @@ class _StudentsViewState extends State<StudentsView> {
                   _resultRow('Skipped — over capacity', '$overCapacity', AppTheme.errorColor),
                 if (invalidCount > 0)
                   _resultRow('Skipped — invalid data', '$invalidCount', AppTheme.accentColor),
-                if (codesSent > 0 || codesFailed > 0) ...[
+                if (codesSent > 0 || codesFailed > 0 || missingCount > 0) ...[
                   const Divider(height: 24),
-                  Text('Activation codes',
+                  Text('Registration codes',
                       style: TextStyle(
                           fontWeight: FontWeight.w600,
                           fontSize: 12.5,
                           color: Colors.grey.shade800)),
                   const SizedBox(height: 6),
-                  _resultRow('Sent to guardians', '$codesSent', const Color(0xFF22C55E)),
+                  _resultRow('Codes emailed', '$codesSent', const Color(0xFF22C55E)),
                   if (codesSent > 0)
                     Padding(
                       padding: const EdgeInsets.only(left: 18, bottom: 4),
-                      child: Text('$codesByEmail by email · $codesBySms by SMS',
+                      child: Text(
+                          '$codesStudents to students · $codesParents to parents'
+                          '${codesDays > 0 ? ' · each expires in $codesDays days' : ''}',
                           style: TextStyle(fontSize: 11.5, color: Colors.grey.shade600)),
                     ),
                   if (codesFailed > 0)
@@ -371,10 +565,33 @@ class _StudentsViewState extends State<StudentsView> {
                   if (codesRemaining > 0)
                     _resultRow('Queued for the next run', '$codesRemaining',
                         AppTheme.accentColor),
+                  if (missingCount > 0) ...[
+                    _resultRow('Waiting for an email address', '$missingCount',
+                        AppTheme.accentColor),
+                    const SizedBox(height: 4),
+                    ...missing.take(6).map((e) {
+                      final m = Map<String, dynamic>.from(e as Map);
+                      final who = (m['kind'] == 'parent')
+                          ? 'Parent of ${m['studentName'] ?? 'a student'}'
+                          : '${m['studentName'] ?? m['name'] ?? 'A student'}';
+                      return Padding(
+                        padding: const EdgeInsets.only(left: 18, bottom: 2),
+                        child: Text('• $who',
+                            style: TextStyle(fontSize: 11.5, color: Colors.grey.shade700)),
+                      );
+                    }),
+                    if (missingCount > 6)
+                      Padding(
+                        padding: const EdgeInsets.only(left: 18),
+                        child: Text('…and ${missingCount - 6} more',
+                            style: TextStyle(fontSize: 11.5, color: Colors.grey.shade500)),
+                      ),
+                  ],
                   const SizedBox(height: 6),
                   Text(
-                    'Guardians with no email and no mobile number were skipped — add a '
-                    'contact from the roster and use "Send codes".',
+                    'Nobody can create an account without a code, and a code goes to an '
+                    'email address. Anyone listed as waiting was still imported — add '
+                    'their email from the roster and the code is sent right then.',
                     style: TextStyle(fontSize: 11.5, color: Colors.grey.shade600, height: 1.45),
                   ),
                 ],
@@ -705,6 +922,7 @@ class _StudentsViewState extends State<StudentsView> {
         ),
       ),
       const SizedBox(width: 10),
+      _sendStudentCodesButton(),
       _sendCodesButton(),
       OutlinedButton.icon(
         onPressed: _downloadTemplate,
@@ -848,15 +1066,16 @@ class _StudentsViewState extends State<StudentsView> {
 
         return AlertDialog(
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-          title: const Text('Send activation codes'),
+          title: const Text('Send registration codes'),
           content: SizedBox(
             width: 560,
             height: 460,
             child: Column(children: [
               Text(
-                'Each guardian is sent one code — by email when there is an address '
-                'on file, otherwise by SMS. A code sent to the wrong person cannot '
-                'be recalled, so check the list before sending.',
+                'Each guardian is emailed one code, which is how they create their '
+                'account. Sending again to someone who already has a code replaces '
+                'it — the old one stops working. A code sent to the wrong address '
+                'cannot be recalled by the person it reached, so check the list.',
                 style: TextStyle(fontSize: 12, color: Colors.grey.shade600, height: 1.5),
               ),
               const SizedBox(height: 12),
@@ -1249,23 +1468,66 @@ class _StudentsViewState extends State<StudentsView> {
           ]),
         ),
         const SizedBox(width: 10),
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-          decoration: BoxDecoration(
-            color: claimed
-                ? const Color(0xFF22C55E).withValues(alpha: 0.12)
-                : Colors.grey.withValues(alpha: 0.12),
-            borderRadius: BorderRadius.circular(999),
-          ),
-          child: Text(
-            claimed ? 'Registered' : 'Pending',
-            style: TextStyle(
-              fontSize: 11,
-              fontWeight: FontWeight.w600,
-              color: claimed ? const Color(0xFF16A34A) : Colors.grey.shade600,
+        Builder(builder: (context) {
+          // One word for where this student is. A student with no address is the
+          // one state that needs the admin to act — nothing can be sent — so it
+          // is the one that is not grey.
+          final codeSent = !claimed && m['codeStatus'] == 'sent';
+          final noEmail = !claimed && email.isEmpty;
+          final label = claimed
+              ? 'Registered'
+              : codeSent
+                  ? 'Code sent'
+                  : noEmail
+                      ? 'No email'
+                      : 'Ready to send';
+          final color = claimed
+              ? const Color(0xFF16A34A)
+              : codeSent
+                  ? AppTheme.accentColor
+                  : noEmail
+                      ? AppTheme.errorColor
+                      : Colors.grey.shade600;
+          return Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+            decoration: BoxDecoration(
+              color: color.withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(999),
+            ),
+            child: Text(
+              label,
+              style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: color),
+            ),
+          );
+        }),
+        // A student cannot register without a code, and a code needs an address.
+        if (!claimed && email.isEmpty)
+          TextButton.icon(
+            onPressed: _busy ? null : () => _addStudentEmail(doc.id, name),
+            icon: const Icon(Icons.alternate_email_rounded, size: 15),
+            label: const Text('Add email', style: TextStyle(fontSize: 12)),
+            style: TextButton.styleFrom(
+              minimumSize: const Size(0, 30),
+              padding: const EdgeInsets.symmetric(horizontal: 8),
+              foregroundColor: AppTheme.effectivePrimary,
             ),
           ),
-        ),
+        if (!claimed && email.isNotEmpty)
+          IconButton(
+            onPressed: _busy ? null : () => _sendStudentCode(doc.id, name, email),
+            icon: const Icon(Icons.mark_email_read_outlined, size: 20),
+            color: AppTheme.effectivePrimary,
+            tooltip: m['codeStatus'] == 'sent'
+                ? 'Send a new registration code to $email'
+                : 'Send a registration code to $email',
+          ),
+        if (!claimed && m['codeStatus'] == 'sent')
+          IconButton(
+            onPressed: _busy ? null : () => _withdrawStudentCode(doc.id, name),
+            icon: const Icon(Icons.block_rounded, size: 19),
+            color: AppTheme.errorColor,
+            tooltip: 'Withdraw this registration code',
+          ),
         // Recovery path when the automatic claim at registration never landed.
         if (!claimed && email.isNotEmpty)
           IconButton(
@@ -1440,8 +1702,8 @@ class _StudentsViewState extends State<StudentsView> {
               color: AppTheme.effectivePrimary,
               visualDensity: VisualDensity.compact,
               tooltip: g['activationStatus'] == 'sent'
-                  ? 'Resend activation code'
-                  : 'Send activation code',
+                  ? 'Send a new registration code'
+                  : 'Send registration code',
             ),
           if (g['activationStatus'] == 'sent')
             IconButton(
@@ -1449,7 +1711,7 @@ class _StudentsViewState extends State<StudentsView> {
               icon: const Icon(Icons.block_rounded, size: 16),
               color: AppTheme.errorColor,
               visualDensity: VisualDensity.compact,
-              tooltip: 'Revoke activation code',
+              tooltip: 'Withdraw registration code',
             ),
         ],
         IconButton(
@@ -1468,11 +1730,16 @@ class _StudentsViewState extends State<StudentsView> {
     try {
       switch (action) {
         case 'send':
-          await GuardianService.sendActivationCode(guardianId);
-          if (mounted) _toast('Activation code emailed to the guardian.');
+          final problem = await GuardianService.sendActivationCode(guardianId);
+          if (!mounted) break;
+          if (problem == null) {
+            _toast('Registration code emailed to the guardian.');
+          } else {
+            _showMessageDialog('The code was not sent', problem, isError: true);
+          }
         case 'revoke':
           await GuardianService.revokeActivationCode(guardianId);
-          if (mounted) _toast('Activation code revoked.');
+          if (mounted) _toast('Registration code withdrawn.');
         case 'remove':
           await GuardianService.remove(guardianId);
           if (mounted) _toast('Guardian removed.');
@@ -1546,11 +1813,12 @@ class _StudentsViewState extends State<StudentsView> {
                     contentPadding: EdgeInsets.zero,
                     controlAffinity: ListTileControlAffinity.leading,
                     activeColor: AppTheme.effectivePrimary,
-                    title: const Text('Email an activation code now',
+                    title: const Text('Email a registration code now',
                         style: TextStyle(fontSize: 12.5)),
                     subtitle: Text(
-                      'Only possible once a valid email is on file. Without one the '
-                      'guardian stays at "Pending Contact Information".',
+                      'The code is how this guardian creates an account, so it needs a '
+                      'valid email. Without one the guardian waits until an address '
+                      'is added.',
                       style: TextStyle(fontSize: 10.5, color: Colors.grey.shade600, height: 1.4),
                     ),
                   ),
@@ -1586,8 +1854,8 @@ class _StudentsViewState extends State<StudentsView> {
       if (!mounted) return;
       final delivered = res['delivery'] == 'email';
       _toast(delivered
-          ? 'Guardian saved and activation code emailed.'
-          : 'Guardian saved. Add an email to send an activation code.');
+          ? 'Guardian saved and registration code emailed.'
+          : 'Guardian saved. Add an email to send a registration code.');
     } on FirebaseFunctionsException catch (e) {
       if (mounted) {
         _showMessageDialog('Could not save guardian', e.message ?? 'Please try again.',

@@ -432,3 +432,97 @@ test("a co-teacher on bus 2 may record bus 2 students", () => {
   const found = requireOwnPassenger(TRIP, busIndex, "cara");
   assert.equal(found.passenger.name, "Cara");
 });
+
+// ─── Registration codes ───────────────────────────────────────────────────────
+//
+// The first letter of a code is what tells the sign-up screen which account it
+// is creating. There is no role picker, so a code that read as the wrong role —
+// or two roles that shared a letter — would be an account of the wrong kind.
+
+const enrollment = require("../lib/enrollment");
+const { generateInviteCode } = require("../lib/staff");
+
+test("a student code starts with S and reads back as a student", () => {
+  const { generateCode, roleFromCode } = enrollment._internal;
+  for (let i = 0; i < 200; i++) {
+    const code = generateCode("student");
+    assert.match(code, /^S-[A-Z0-9]{4}-[A-Z0-9]{4}$/);
+    assert.equal(roleFromCode(code), "student");
+  }
+});
+
+test("a parent code starts with P and reads back as a parent", () => {
+  const { generateCode, roleFromCode } = enrollment._internal;
+  for (let i = 0; i < 200; i++) {
+    const code = generateCode("parent");
+    assert.match(code, /^P-[A-Z0-9]{4}-[A-Z0-9]{4}$/);
+    assert.equal(roleFromCode(code), "parent");
+  }
+});
+
+test("a teacher code starts with T, whatever the school is called", () => {
+  for (const school of ["Sunrise Academy", "Pildtrip School", "NU Baliwag", ""]) {
+    assert.match(generateInviteCode(school), /^T-[A-Z0-9]{4}-[A-Z0-9]{4}$/);
+  }
+});
+
+test("a teacher code is never mistaken for a student or parent code", () => {
+  const { roleFromCode } = enrollment._internal;
+  for (let i = 0; i < 200; i++) {
+    assert.equal(roleFromCode(generateInviteCode("Sunrise Pines")), null);
+  }
+});
+
+test("a code is read the same however it is typed", () => {
+  const { normalizeCode, roleFromCode, hashCode } = enrollment._internal;
+  assert.equal(normalizeCode("s-7k4p-92xm"), "S7K4P92XM");
+  assert.equal(normalizeCode(" S 7K4P 92XM "), "S7K4P92XM");
+  assert.equal(roleFromCode("s 7k4p 92xm"), "student");
+  assert.equal(hashCode("s-7k4p-92xm"), hashCode("S7K4P92XM"));
+});
+
+test("a code's letters cannot be confused when read off an email", () => {
+  const { generateCode } = enrollment._internal;
+  // No O/0, I/1/L or U/V: the body alphabet leaves those out on purpose.
+  for (let i = 0; i < 500; i++) {
+    const body = generateCode("student").slice(2).replace("-", "");
+    assert.doesNotMatch(body, /[OILUVSZB012]/);
+  }
+});
+
+test("a student and a parent code for the same body hash differently from a teacher's", () => {
+  const { hashCode } = enrollment._internal;
+  // The prefix is part of what is hashed, so S-ABCD-EFGH and P-ABCD-EFGH are
+  // different codes and cannot be swapped for one another.
+  assert.notEqual(hashCode("S-ACDE-FGHJ"), hashCode("P-ACDE-FGHJ"));
+});
+
+test("the email says how many days the code lasts and the date it stops", () => {
+  const { codeEmail } = enrollment._internal;
+  const expiresAt = {
+    toDate: () => new Date("2026-10-31T00:00:00Z"),
+  };
+  for (const role of ["student", "parent"]) {
+    const { text, html } = codeEmail({
+      role,
+      recipientName: "Juan",
+      studentName: "Maria Santos",
+      schoolName: "NU Baliwag",
+      code: role === "student" ? "S-ACDE-FGHJ" : "P-ACDE-FGHJ",
+      expiresAt,
+    });
+    for (const body of [text, html]) {
+      assert.match(body, /30 days/);
+      assert.match(body, /31 October 2026/);
+      assert.match(body, /I have a code/);
+    }
+  }
+});
+
+test("only the parent's email mentions adding a further child", () => {
+  const { codeEmail } = enrollment._internal;
+  const expiresAt = { toDate: () => new Date("2026-10-31T00:00:00Z") };
+  const base = { recipientName: "x", studentName: "y", schoolName: "z", expiresAt };
+  assert.match(codeEmail({ ...base, role: "parent", code: "P-ACDE-FGHJ" }).text, /Add a child/);
+  assert.doesNotMatch(codeEmail({ ...base, role: "student", code: "S-ACDE-FGHJ" }).text, /Add a child/);
+});

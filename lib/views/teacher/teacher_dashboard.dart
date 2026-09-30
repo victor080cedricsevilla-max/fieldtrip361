@@ -26,6 +26,7 @@ import '../shared/chat_view.dart';
 import '../../utils/attendance_service.dart';
 import 'manual_attendance_sheet.dart';
 import 'teacher_documents_tab.dart';
+import 'unscheduled_stop_view.dart';
 import '../../utils/alarm_player.dart';
 
 /// The geofence and emergency alarm. Both run through AlarmPlayer so the
@@ -1128,6 +1129,28 @@ class _TeacherTripDetailsState extends State<TeacherTripDetails> {
                     ),
                   ],
                 ),
+
+                // Only while the bus is actually on the road, and only for a
+                // facilitator who has a bus — an unscheduled stop belongs to a
+                // journey in progress, and the server checks the bus anyway.
+                if (data['status'] == 'in_progress' && myBusIndex >= 0) ...[
+                  const SizedBox(height: 12),
+                  _WideActionButton(
+                    icon: Icons.add_road_rounded,
+                    label: "Unscheduled stop",
+                    hint: "Toilet break, fuel, or an emergency — the school and parents are told",
+                    onTap: () => Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => UnscheduledStopView(
+                          tripId: widget.tripId,
+                          tripTitle: (data['title'] ?? 'Trip').toString(),
+                          passengerCount: assignedStudents.length,
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
 
                 const SizedBox(height: 28),
 
@@ -2302,6 +2325,59 @@ class _ActionButton extends StatelessWidget {
             Text(label, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppTheme.secondaryColor)),
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// A full-width action, for the one that carries a sentence of explanation.
+class _WideActionButton extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final String hint;
+  final VoidCallback onTap;
+
+  const _WideActionButton({
+    required this.icon,
+    required this.label,
+    required this.hint,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(14),
+          boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.05), blurRadius: 10, offset: const Offset(0, 4))],
+        ),
+        child: Row(children: [
+          Container(
+            width: 44,
+            height: 44,
+            decoration: BoxDecoration(
+              color: AppTheme.accentColor.withValues(alpha: 0.14),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Icon(icon, color: AppTheme.accentColor, size: 22),
+          ),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text(label,
+                  style: const TextStyle(
+                      fontSize: 14, fontWeight: FontWeight.w700, color: AppTheme.secondaryColor)),
+              const SizedBox(height: 2),
+              Text(hint, style: TextStyle(fontSize: 11.5, height: 1.35, color: Colors.grey.shade600)),
+            ]),
+          ),
+          Icon(Icons.chevron_right_rounded, color: Colors.grey.shade400),
+        ]),
       ),
     );
   }

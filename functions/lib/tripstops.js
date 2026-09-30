@@ -25,6 +25,7 @@
  * the journey. They need different responses, so they are different records.
  */
 const admin = require("firebase-admin");
+const { Timestamp, FieldValue } = require("firebase-admin/firestore");
 const { onCall, HttpsError } = require("firebase-functions/v2/https");
 
 const { sanitizeText, checkRateLimit } = require("./common");
@@ -71,6 +72,8 @@ exports.logUnscheduledStop = onCall(async (request) => {
   const place = sanitizeText(request.data?.place, 200);
 
   // Only meaningful for an emergency; a stopover always reaches the parents.
+  // For an emergency it must be said outright — an absent or unclear value means
+  // "do not", because a message to forty families cannot be taken back.
   const notifyParents =
     kind === KIND.stopover ? true : request.data?.notifyParents === true;
 
@@ -82,6 +85,16 @@ exports.logUnscheduledStop = onCall(async (request) => {
   const tripSnap = await tripRef.get();
   if (!tripSnap.exists) throw new HttpsError("not-found", "Trip not found.");
   const trip = tripSnap.data();
+
+  // A stop belongs to a journey that is under way. Before departure there is no
+  // bus on the road to have stopped, and after it a late entry would tell
+  // parents something that is no longer true.
+  if (trip.status !== "in_progress") {
+    throw new HttpsError(
+      "failed-precondition",
+      "A stop can only be logged while the trip is in progress."
+    );
+  }
 
   const buses = trip.buses || [];
   const busIndex = teacherBusIndex(buses, uid);
@@ -96,7 +109,7 @@ exports.logUnscheduledStop = onCall(async (request) => {
   const busLabel = bus.busLabel ?? String(busIndex + 1);
   const passengers = (bus.passengers || []).map((p) => p && p.id).filter(Boolean);
 
-  const now = admin.firestore.Timestamp.now();
+  const now = Timestamp.now();
   const eventRef = db.collection("tripEvents").doc();
   await eventRef.set({
     tripId,

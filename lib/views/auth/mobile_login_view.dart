@@ -4,8 +4,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../../controllers/auth_controller.dart';
 import '../../config/theme.dart';
-import 'register_view.dart';
-import 'redeem_invite_view.dart';
+import 'redeem_code_view.dart';
 import 'forgot_password_dialog.dart';
 
 class MobileLoginView extends StatefulWidget {
@@ -220,35 +219,27 @@ class _MobileLoginViewState extends State<MobileLoginView> {
               ),
               const SizedBox(height: 20),
 
-              // Sign Up Link
+              // Nobody signs themselves up. A student, a parent or a teacher gets a
+              // code from their school, and this is where that code becomes an
+              // account — which is why it is the only door and not a second one.
               Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  Text("No account yet?"),
+                  const Text("First time here?"),
                   TextButton(
                     onPressed: () {
                       Navigator.push(
                         context,
-                        MaterialPageRoute(builder: (context) => const RegisterView()),
+                        MaterialPageRoute(builder: (context) => const RedeemCodeView()),
                       );
                     },
-                    child: Text("Sign Up", style: TextStyle(color: AppTheme.effectivePrimary, fontWeight: FontWeight.bold)),
+                    child: Text(
+                      "I have a code",
+                      style: TextStyle(
+                          color: AppTheme.effectivePrimary, fontWeight: FontWeight.bold),
+                    ),
                   ),
                 ],
-              ),
-
-              // Teachers do not sign up — their school invites them, and this is
-              // where that invitation becomes an account.
-              TextButton.icon(
-                onPressed: () {
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(builder: (context) => const RedeemInviteView()),
-                  );
-                },
-                icon: const Icon(Icons.vpn_key_outlined, size: 17),
-                label: const Text("I have an invitation code"),
-                style: TextButton.styleFrom(foregroundColor: Colors.grey.shade600),
               ),
             ],
           ),

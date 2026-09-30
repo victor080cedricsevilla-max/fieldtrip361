@@ -17,6 +17,7 @@
  * is. Anything about one student must pass a single-element array.
  */
 const admin = require("firebase-admin");
+const { FieldValue } = require("firebase-admin/firestore");
 
 if (!admin.apps.length) {
   admin.initializeApp();
@@ -112,7 +113,7 @@ async function writeUserNotifications(userIds, title, body, type, tripId) {
         type,
         tripId: tripId || null,
         read: false,
-        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        createdAt: FieldValue.serverTimestamp(),
       });
     }
     await batch.commit();

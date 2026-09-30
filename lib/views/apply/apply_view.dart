@@ -1035,7 +1035,17 @@ class _DocRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final t = ConsoleTokens.of(context);
-    final has = uploaded.isNotEmpty;
+
+    // A file the checker refused is not an upload in any useful sense: it does
+    // not satisfy the requirement and it will stop the application being
+    // submitted. So it must not wear the green tick of one that was accepted.
+    final rejected =
+        uploaded.where((d) => d.data()['autoRejected'] == true).toList();
+    final has = uploaded.isNotEmpty && rejected.isEmpty;
+    final checking = uploaded.any((d) {
+      final ocr = d.data()['ocr'];
+      return ocr is Map && ocr['status'] == 'pending';
+    });
 
     return Padding(
       padding: const EdgeInsets.only(bottom: Insets.sm),
@@ -1043,7 +1053,13 @@ class _DocRow extends StatelessWidget {
         padding: const EdgeInsets.all(Insets.md),
         decoration: BoxDecoration(
           color: t.surfaceMuted,
-          border: Border.all(color: has ? t.success.border : t.border),
+          border: Border.all(
+            color: rejected.isNotEmpty
+                ? t.danger.border
+                : has
+                    ? t.success.border
+                    : t.border,
+          ),
           borderRadius: Radii.control,
         ),
         child: Column(
@@ -1052,9 +1068,17 @@ class _DocRow extends StatelessWidget {
             Row(
               children: [
                 Icon(
-                  has ? Icons.check_circle_rounded : Icons.upload_file_outlined,
+                  rejected.isNotEmpty
+                      ? Icons.cancel_rounded
+                      : has
+                          ? Icons.check_circle_rounded
+                          : Icons.upload_file_outlined,
                   size: 20,
-                  color: has ? t.success.fg : t.textFaint,
+                  color: rejected.isNotEmpty
+                      ? t.danger.fg
+                      : has
+                          ? t.success.fg
+                          : t.textFaint,
                 ),
                 const SizedBox(width: Insets.md),
                 Expanded(
@@ -1082,14 +1106,41 @@ class _DocRow extends StatelessWidget {
                 ),
                 const SizedBox(width: Insets.md),
                 ConsoleButton(
-                  label: has ? 'Replace' : 'Upload',
+                  label: (has || rejected.isNotEmpty) ? 'Replace' : 'Upload',
                   icon: Icons.attach_file_rounded,
-                  kind: ConsoleButtonKind.secondary,
+                  kind: rejected.isNotEmpty
+                      ? ConsoleButtonKind.primary
+                      : ConsoleButtonKind.secondary,
                   busy: uploading,
                   onPressed: uploading ? null : onUpload,
                 ),
               ],
             ),
+            // Said in the sentence the server wrote, which names what the file
+            // actually shows ("a photograph of a dog") — far more useful to the
+            // person holding the wrong file than "invalid document".
+            for (final d in rejected)
+              Padding(
+                padding: const EdgeInsets.only(top: Insets.sm),
+                child: Text(
+                  '${(d.data()['autoRejectedReason'] ?? 'This file is not a document.')} '
+                  'Upload the certificate or permit itself.',
+                  style: TextStyle(
+                    fontSize: FontSizes.caption,
+                    height: 1.5,
+                    fontWeight: FontWeight.w600,
+                    color: t.danger.fg,
+                  ),
+                ),
+              ),
+            if (checking && rejected.isEmpty)
+              Padding(
+                padding: const EdgeInsets.only(top: Insets.sm),
+                child: Text(
+                  'Checking the file…',
+                  style: TextStyle(fontSize: FontSizes.caption, color: t.textMuted),
+                ),
+              ),
             if (uploading) ...[
               const SizedBox(height: Insets.sm),
               ClipRRect(

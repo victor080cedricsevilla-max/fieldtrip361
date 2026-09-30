@@ -507,31 +507,32 @@ ValidationReport validateMappedRows(
         rowIssues.add(RowIssue(lineNo, 'parentName',
             'Guardian contact details given without a name', blocking: false));
       }
-    } else if ((parentEmail.isNotEmpty && isValidEmailAddress(parentEmail)) ||
-        isPhMobile(parentPhone)) {
-      // Either channel makes the guardian contactable. Most Philippine rosters
-      // carry a mobile number and no email at all, so treating "no email" as
-      // incomplete would mark almost every guardian unreachable.
+    } else if (parentEmail.isNotEmpty && isValidEmailAddress(parentEmail)) {
+      // Only an email makes a guardian reachable now. A parent cannot create an
+      // account without a registration code, and the code is emailed. This used
+      // to count a mobile number as enough, back when a code could go by SMS;
+      // a phone-only guardian would now be reported "complete" and then never
+      // receive anything.
       completeness = GuardianCompleteness.complete;
-      if (parentEmail.isNotEmpty && !isValidEmailAddress(parentEmail)) {
-        rowIssues.add(RowIssue(lineNo, 'parentEmail',
-            'Invalid parent email "$parentEmail" — the code will go by SMS instead',
-            blocking: false));
-      }
     } else {
       completeness = GuardianCompleteness.partial;
       if (parentEmail.isNotEmpty) {
         rowIssues.add(RowIssue(lineNo, 'parentEmail',
-            'Invalid parent email "$parentEmail"', blocking: false));
-      } else if (parentPhone.isNotEmpty) {
-        rowIssues.add(RowIssue(lineNo, 'parentPhone',
-            'Contact number "$parentPhone" is not a valid PH mobile number',
+            'Invalid parent email "$parentEmail" — no code can be sent until it is fixed',
             blocking: false));
       } else {
         rowIssues.add(RowIssue(lineNo, 'parentEmail',
-            'Guardian has no email or mobile number — no way to send a code',
+            'Guardian has no email — the parent cannot register until one is added',
             blocking: false));
       }
+    }
+
+    // Not blocking either: the student is imported and waits. It is said here so
+    // the school learns it before the import, not after a student fails to get in.
+    if (email.isEmpty) {
+      rowIssues.add(RowIssue(lineNo, 'email',
+          'No student email — this student cannot register until one is added',
+          blocking: false));
     }
 
     issues.addAll(rowIssues);
