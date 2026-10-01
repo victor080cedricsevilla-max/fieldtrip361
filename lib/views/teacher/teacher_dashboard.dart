@@ -753,8 +753,35 @@ class _TeacherTripDetailsState extends State<TeacherTripDetails> {
     );
   }
 
+  /// The facilitator's own position, sent with each scan for the record. It is
+  /// read when the scanner opens, not per scan: no decision rests on it (that is
+  /// the student's device), so no scan should wait for a satellite fix.
+  Position? _facilitatorFix;
+
   void _openScannerModal(BuildContext context, int stopIndex, int myBusIndex) {
-    _scannerController = MobileScannerController();
+    // QR only. Told to look for every barcode format, the scanner spends most
+    // of each frame on formats that never appear here.
+    _scannerController = MobileScannerController(
+      formats: const [BarcodeFormat.qrCode],
+      detectionSpeed: DetectionSpeed.normal,
+      detectionTimeoutMs: 150,
+    );
+    _isProcessingQR = false;
+
+    // The last known position at once, a fresher one in the background.
+    // Neither is awaited by a scan.
+    Geolocator.getLastKnownPosition()
+        .then((p) => _facilitatorFix ??= p)
+        .catchError((_) => null);
+    AttendanceService.publishFreshFix(timeLimit: const Duration(seconds: 15))
+        .then((p) {
+      if (p != null) _facilitatorFix = p;
+    }).catchError((_) {});
+
+    // What the frame shows after a scan. It clears itself, so the next student
+    // can step up without anyone tapping "OK".
+    ({String text, Color color, IconData icon})? scanFlash;
+    Timer? flashTimer;
 
     showModalBottomSheet(
       context: context,
@@ -762,8 +789,16 @@ class _TeacherTripDetailsState extends State<TeacherTripDetails> {
       backgroundColor: Colors.transparent,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setModalState) {
+          void flash(String text, Color color, IconData icon) {
+            flashTimer?.cancel();
+            setModalState(() => scanFlash = (text: text, color: color, icon: icon));
+            flashTimer = Timer(const Duration(milliseconds: 1500), () {
+              if (ctx.mounted) setModalState(() => scanFlash = null);
+            });
+          }
+
           return Container(
-            height: MediaQuery.of(context).size.height * 0.75,
+            height: MediaQuery.of(context).size.height * 0.8,
             decoration: const BoxDecoration(
               color: Colors.white,
               borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
@@ -794,44 +829,115 @@ class _TeacherTripDetailsState extends State<TeacherTripDetails> {
                   ),
                 ),
                 Expanded(
-                  child: ClipRRect(
-                    borderRadius: BorderRadius.circular(12),
-                    child: MobileScanner(
-                      controller: _scannerController,
-                      onDetect: (capture) async {
-                        if (_isProcessingQR) return;
-                        for (final barcode in capture.barcodes) {
-                          if (barcode.rawValue != null) {
-                            setModalState(() => _isProcessingQR = true);
-                            await _processScannedQR(ctx, barcode.rawValue!, stopIndex, myBusIndex);
-                            if (mounted) setModalState(() => _isProcessingQR = false);
-                            break;
-                          }
-                        }
-                      },
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(16),
+                      child: LayoutBuilder(
+                        builder: (context, box) {
+                          // A square in the middle. Only a code inside it is
+                          // read, so a second phone held up behind the first is
+                          // not scanned by accident.
+                          final shortest = box.maxWidth < box.maxHeight ? box.maxWidth : box.maxHeight;
+                          final side = shortest * 0.72;
+                          final window = Rect.fromCenter(
+                            center: Offset(box.maxWidth / 2, box.maxHeight / 2),
+                            width: side,
+                            height: side,
+                          );
+                          final current = scanFlash;
+                          return Stack(
+                            fit: StackFit.expand,
+                            children: [
+                              MobileScanner(
+                                controller: _scannerController,
+                                scanWindow: window,
+                                onDetect: (capture) async {
+                                  if (_isProcessingQR || scanFlash != null) return;
+                                  String? raw;
+                                  for (final b in capture.barcodes) {
+                                    if (b.rawValue != null && b.rawValue!.isNotEmpty) {
+                                      raw = b.rawValue;
+                                      break;
+                                    }
+                                  }
+                                  if (raw == null) return;
+                                  setModalState(() => _isProcessingQR = true);
+                                  await _processScannedQR(ctx, raw, stopIndex, myBusIndex, flash);
+                                  if (ctx.mounted) setModalState(() => _isProcessingQR = false);
+                                },
+                              ),
+                              IgnorePointer(
+                                child: CustomPaint(
+                                  painter: _ScanFramePainter(
+                                    window: window,
+                                    color: current?.color ?? AppTheme.effectivePrimary,
+                                  ),
+                                ),
+                              ),
+                              if (_isProcessingQR && current == null)
+                                const Center(
+                                  child: SizedBox(
+                                    width: 48, height: 48,
+                                    child: CircularProgressIndicator(color: Colors.white, strokeWidth: 4),
+                                  ),
+                                ),
+                              if (current != null)
+                                Center(
+                                  child: Container(
+                                    width: side * 0.92,
+                                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 16),
+                                    decoration: BoxDecoration(
+                                      color: current.color.withValues(alpha: 0.94),
+                                      borderRadius: BorderRadius.circular(16),
+                                    ),
+                                    child: Column(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Icon(current.icon, color: Colors.white, size: 40),
+                                        const SizedBox(height: 8),
+                                        Text(
+                                          current.text,
+                                          textAlign: TextAlign.center,
+                                          style: const TextStyle(
+                                            color: Colors.white,
+                                            fontSize: 15,
+                                            fontWeight: FontWeight.w700,
+                                            height: 1.3,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                            ],
+                          );
+                        },
+                      ),
                     ),
                   ),
                 ),
                 Container(
-                  padding: const EdgeInsets.symmetric(vertical: 20),
-                  child: _isProcessingQR
-                      ? CircularProgressIndicator(color: AppTheme.effectivePrimary)
-                      : Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            Icon(Icons.qr_code_scanner, size: 18, color: Colors.grey.shade500),
-                            const SizedBox(width: 8),
-                            Text("Point camera at student's QR code",
-                                style: TextStyle(fontWeight: FontWeight.w500, color: Colors.grey.shade600)),
-                          ],
-                        ),
+                  padding: const EdgeInsets.symmetric(vertical: 18),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(Icons.center_focus_strong_rounded, size: 18, color: Colors.grey.shade500),
+                      const SizedBox(width: 8),
+                      Text("Fit the student's code inside the frame",
+                          style: TextStyle(fontWeight: FontWeight.w500, color: Colors.grey.shade600)),
+                    ],
+                  ),
                 ),
               ],
             ),
           );
         },
       ),
-    ).then((_) => _scannerController?.dispose());
+    ).then((_) {
+      flashTimer?.cancel();
+      _scannerController?.dispose();
+    });
   }
 
   /// Hands a scanned code to the server and shows what it says.
@@ -839,7 +945,17 @@ class _TeacherTripDetailsState extends State<TeacherTripDetails> {
   /// The app no longer writes attendance itself. It cannot check whether the
   /// code has already been used, whether it belongs to this stop, or where the
   /// student actually is — only the server can, so only the server decides.
-  Future<void> _processScannedQR(BuildContext ctx, String rawData, int stopIndex, int myBusIndex) async {
+  ///
+  /// Outcomes that need nothing from the facilitator are shown in the frame and
+  /// clear themselves ([flash]); only a refusal, which offers the manual path,
+  /// stops the line with a dialog.
+  Future<void> _processScannedQR(
+    BuildContext ctx,
+    String rawData,
+    int stopIndex,
+    int myBusIndex,
+    void Function(String text, Color color, IconData icon) flash,
+  ) async {
     String? tokenId;
     String? jti;
     try {
@@ -851,12 +967,9 @@ class _TeacherTripDetailsState extends State<TeacherTripDetails> {
         // failing with something cryptic.
         if (tokenId == null && decoded['studentId'] != null) {
           if (!ctx.mounted) return;
-          await _showResultDialog(
-            ctx,
-            "That is an identity code",
-            "Ask the student to open My QR during the trip — the attendance code "
-                "is the one that counts down.",
-            Colors.orange,
+          flash(
+            "That is an identity code.\nAsk the student to open My QR — the one that counts down.",
+            Colors.orange.shade700,
             Icons.qr_code_2_rounded,
           );
           return;
@@ -868,48 +981,27 @@ class _TeacherTripDetailsState extends State<TeacherTripDetails> {
 
     if (tokenId == null || tokenId.isEmpty) {
       if (!ctx.mounted) return;
-      await _showResultDialog(
-        ctx,
-        "Invalid QR",
-        "This is not a FieldTrip360 attendance code.",
-        Colors.red,
-        Icons.qr_code_scanner,
-      );
+      flash("Not a FieldTrip360 attendance code", Colors.red.shade600, Icons.qr_code_scanner);
       return;
     }
-
-    // The facilitator's own position is sent for the record. It is not what the
-    // decision rests on — that is the student's device.
-    final myPosition = await AttendanceService.publishFreshFix(
-      timeLimit: const Duration(seconds: 6),
-    );
 
     try {
       final res = await AttendanceService.recordScan(
         tripId: widget.tripId,
         tokenId: tokenId,
         jti: jti,
-        facilitatorPosition: myPosition,
+        facilitatorPosition: _facilitatorFix,
       );
       if (!ctx.mounted) return;
+      HapticFeedback.mediumImpact();
       final name = (res['studentName'] ?? 'Student').toString();
       if (res['already'] == true) {
-        await _showResultDialog(
-          ctx,
-          "Already scanned",
-          "$name was already marked present for this stop.",
-          Colors.orange,
-          Icons.info_outline,
-        );
+        flash("$name\nalready marked present", Colors.orange.shade700, Icons.info_outline);
       } else {
         final distance = res['distanceToStopM'];
-        await _showResultDialog(
-          ctx,
-          "Success",
-          distance is num
-              ? "Attendance recorded for $name — ${distance.round()} m from the destination."
-              : "Attendance recorded for $name.",
-          Colors.green,
+        flash(
+          distance is num ? "$name — present\n${distance.round()} m from the destination" : "$name — present",
+          Colors.green.shade600,
           Icons.check_circle,
         );
       }
@@ -1015,30 +1107,6 @@ class _TeacherTripDetailsState extends State<TeacherTripDetails> {
     }
   }
 
-  Future<void> _showResultDialog(BuildContext context, String title, String message, Color color, IconData icon) async {
-    return showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (ctx) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: Row(
-          children: [
-            Icon(icon, color: color, size: 28),
-            const SizedBox(width: 8),
-            Expanded(child: Text(title, style: TextStyle(color: color, fontWeight: FontWeight.bold, fontSize: 18))),
-          ],
-        ),
-        content: Text(message, style: const TextStyle(fontSize: 15)),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: Text("OK", style: TextStyle(color: AppTheme.secondaryColor)),
-          ),
-        ],
-      ),
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     return StreamBuilder<DocumentSnapshot>(
@@ -1133,6 +1201,10 @@ class _TeacherTripDetailsState extends State<TeacherTripDetails> {
                 // Only while the bus is actually on the road, and only for a
                 // facilitator who has a bus — an unscheduled stop belongs to a
                 // journey in progress, and the server checks the bus anyway.
+                if (myBusIndex >= 0)
+                  // A stop still open on this bus: "resume" sits right here, so
+                  // the school and parents hear how it ended.
+                  OpenStopBanner(tripId: widget.tripId, busIndex: myBusIndex),
                 if (data['status'] == 'in_progress' && myBusIndex >= 0) ...[
                   const SizedBox(height: 12),
                   _WideActionButton(
@@ -1146,6 +1218,7 @@ class _TeacherTripDetailsState extends State<TeacherTripDetails> {
                           tripId: widget.tripId,
                           tripTitle: (data['title'] ?? 'Trip').toString(),
                           passengerCount: assignedStudents.length,
+                          busIndex: myBusIndex,
                         ),
                       ),
                     ),
@@ -4232,4 +4305,66 @@ class _RosterTag extends StatelessWidget {
       ),
     );
   }
+}
+
+/// Dims the camera outside the scan window and draws a bordered frame with
+/// heavier corners, so the facilitator knows exactly where the code must sit.
+class _ScanFramePainter extends CustomPainter {
+  final Rect window;
+  final Color color;
+
+  _ScanFramePainter({required this.window, required this.color});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final frame = RRect.fromRectAndRadius(window, const Radius.circular(18));
+
+    final shade = Path()
+      ..fillType = PathFillType.evenOdd
+      ..addRect(Offset.zero & size)
+      ..addRRect(frame);
+    canvas.drawPath(shade, Paint()..color = Colors.black.withValues(alpha: 0.55));
+
+    canvas.drawRRect(
+      frame,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2
+        ..color = Colors.white.withValues(alpha: 0.85),
+    );
+
+    final corner = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 6
+      ..strokeCap = StrokeCap.round
+      ..color = color;
+    final len = window.width * 0.16;
+    const r = 18.0;
+    final l = window.left, t = window.top, rt = window.right, b = window.bottom;
+    final corners = Path()
+      // top-left
+      ..moveTo(l, t + len)
+      ..lineTo(l, t + r)
+      ..arcToPoint(Offset(l + r, t), radius: const Radius.circular(r))
+      ..lineTo(l + len, t)
+      // top-right
+      ..moveTo(rt - len, t)
+      ..lineTo(rt - r, t)
+      ..arcToPoint(Offset(rt, t + r), radius: const Radius.circular(r))
+      ..lineTo(rt, t + len)
+      // bottom-right
+      ..moveTo(rt, b - len)
+      ..lineTo(rt, b - r)
+      ..arcToPoint(Offset(rt - r, b), radius: const Radius.circular(r))
+      ..lineTo(rt - len, b)
+      // bottom-left
+      ..moveTo(l + len, b)
+      ..lineTo(l + r, b)
+      ..arcToPoint(Offset(l, b - r), radius: const Radius.circular(r))
+      ..lineTo(l, b - len);
+    canvas.drawPath(corners, corner);
+  }
+
+  @override
+  bool shouldRepaint(_ScanFramePainter old) => old.window != window || old.color != color;
 }

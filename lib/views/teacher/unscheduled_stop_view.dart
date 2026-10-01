@@ -32,11 +32,15 @@ class UnscheduledStopView extends StatefulWidget {
   /// "tell the parents" names the number of families it reaches.
   final int passengerCount;
 
+  /// The facilitator's own bus: only its stops can be resumed from here.
+  final int busIndex;
+
   const UnscheduledStopView({
     super.key,
     required this.tripId,
     required this.tripTitle,
     required this.passengerCount,
+    required this.busIndex,
   });
 
   @override
@@ -165,8 +169,10 @@ class _UnscheduledStopViewState extends State<UnscheduledStopView> {
         backgroundColor: _kind == _Kind.emergency ? AppTheme.errorColor : Colors.green,
         content: Text(
           parents
-              ? 'Logged. The school and $reached ${reached == 1 ? "parent" : "parents"} have been told.'
-              : 'Logged. The school has been told. Parents were not notified.',
+              ? 'Logged. The school and $reached ${reached == 1 ? "parent" : "parents"} have been told. '
+                  'Tap "Resume trip" when the bus moves again.'
+              : 'Logged. The school has been told. Parents were not notified. '
+                  'Tap "Resume trip" when the bus moves again.',
         ),
       ));
     } on FirebaseFunctionsException catch (e) {
@@ -358,7 +364,7 @@ class _UnscheduledStopViewState extends State<UnscheduledStopView> {
               ),
 
               const SizedBox(height: 28),
-              _RecentStops(tripId: widget.tripId),
+              _RecentStops(tripId: widget.tripId, busIndex: widget.busIndex),
             ],
           ),
         ),
@@ -422,59 +428,275 @@ class _UnscheduledStopViewState extends State<UnscheduledStopView> {
   }
 }
 
-/// What has already been logged on this trip, so a facilitator does not send the
-/// same stop twice and a co-facilitator's entries are visible.
+/// The trip's stops on this school's events, newest first.
 ///
 /// The query carries the school filter the security rule enforces as well as the
 /// trip, because a read is checked against its query, not its results — and it
 /// sorts in memory rather than ordering on the server, which would need an index.
-class _RecentStops extends StatelessWidget {
+Widget _tripEventsStream({
+  required String tripId,
+  required Widget Function(List<QueryDocumentSnapshot<Map<String, dynamic>>> docs) builder,
+}) {
+  return FutureBuilder<String?>(
+    future: SchoolContext.schoolId(),
+    builder: (context, school) {
+      final schoolId = school.data;
+      if (schoolId == null) return const SizedBox.shrink();
+      return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+        stream: FirebaseFirestore.instance
+            .collection('tripEvents')
+            .where('schoolId', isEqualTo: schoolId)
+            .where('tripId', isEqualTo: tripId)
+            .snapshots(),
+        builder: (context, snap) {
+          final docs = [...(snap.data?.docs ?? <QueryDocumentSnapshot<Map<String, dynamic>>>[])]
+            ..sort((a, b) {
+              final at = a.data()['createdAt'] as Timestamp?;
+              final bt = b.data()['createdAt'] as Timestamp?;
+              return (bt?.millisecondsSinceEpoch ?? 0)
+                  .compareTo(at?.millisecondsSinceEpoch ?? 0);
+            });
+          return builder(docs);
+        },
+      );
+    },
+  );
+}
+
+bool _isOpen(Map<String, dynamic> e) => e['resumedAt'] == null;
+
+/// Asks how the stop ended and sends "resumed" to whoever was told it began.
+///
+/// For an emergency the parents were spared, the facilitator may choose to tell
+/// them now — by this point the facts are settled, which was the reason for
+/// holding back.
+Future<void> showResumeStopDialog(
+  BuildContext context, {
+  required String eventId,
+  required Map<String, dynamic> event,
+}) async {
+  final emergency = event['kind'] == 'emergency';
+  final parentsWereTold = event['parentsNotified'] == true;
+  final note = TextEditingController();
+  bool tellParents = false;
+  bool busy = false;
+  String? error;
+
+  final messenger = ScaffoldMessenger.of(context);
+  final done = await showDialog<Map<String, dynamic>>(
+    context: context,
+    barrierDismissible: false,
+    builder: (ctx) => StatefulBuilder(
+      builder: (ctx, setState) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        icon: const Icon(Icons.play_circle_fill_rounded, color: Colors.green, size: 36),
+        title: Text(emergency ? 'Situation resolved?' : 'Resume the trip?'),
+        content: Column(mainAxisSize: MainAxisSize.min, children: [
+          Text(
+            parentsWereTold
+                ? 'The school and the parents will be told the bus is moving again.'
+                : 'The school will be told the bus is moving again.',
+            style: const TextStyle(fontSize: 13.5, height: 1.45),
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: note,
+            maxLines: 3,
+            minLines: 2,
+            maxLength: 300,
+            textCapitalization: TextCapitalization.sentences,
+            decoration: InputDecoration(
+              labelText: emergency ? 'How was it resolved? (optional)' : 'Note (optional)',
+              hintText: emergency ? 'e.g. Tire replaced, everyone is safe' : 'e.g. All students back on board',
+              border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+            ),
+          ),
+          if (emergency && !parentsWereTold)
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              value: tellParents,
+              onChanged: busy ? null : (v) => setState(() => tellParents = v),
+              title: const Text('Tell the parents now', style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600)),
+              subtitle: Text(
+                'They were not told about this emergency.',
+                style: TextStyle(fontSize: 11.5, color: Colors.grey.shade600),
+              ),
+            ),
+          if (error != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: Text(error!, style: const TextStyle(color: Color(0xFF9B2C20), fontSize: 12.5)),
+            ),
+        ]),
+        actions: [
+          TextButton(
+            onPressed: busy ? null : () => Navigator.pop(ctx),
+            child: const Text('Cancel'),
+          ),
+          FilledButton.icon(
+            style: FilledButton.styleFrom(backgroundColor: Colors.green.shade700),
+            onPressed: busy
+                ? null
+                : () async {
+                    setState(() {
+                      busy = true;
+                      error = null;
+                    });
+                    try {
+                      final res = await FirebaseFunctions.instance
+                          .httpsCallable('resumeUnscheduledStop')
+                          .call<Map<String, dynamic>>({
+                        'eventId': eventId,
+                        'note': note.text.trim(),
+                        'notifyParents': tellParents,
+                      });
+                      if (ctx.mounted) Navigator.pop(ctx, res.data);
+                    } on FirebaseFunctionsException catch (e) {
+                      setState(() {
+                        busy = false;
+                        error = e.message ?? 'That could not be sent.';
+                      });
+                    } catch (_) {
+                      setState(() {
+                        busy = false;
+                        error = 'Something went wrong. Check your connection and try again.';
+                      });
+                    }
+                  },
+            icon: busy
+                ? const SizedBox(
+                    width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                : const Icon(Icons.play_arrow_rounded),
+            label: const Text('Resume trip'),
+          ),
+        ],
+      ),
+    ),
+  );
+  note.dispose();
+  if (done == null) return;
+
+  final reached = (done['parentsReached'] as num?)?.toInt() ?? 0;
+  messenger.showSnackBar(SnackBar(
+    backgroundColor: Colors.green.shade700,
+    content: Text(
+      done['parentsNotified'] == true
+          ? 'Resumed after ${done['duration']}. The school and $reached ${reached == 1 ? "parent" : "parents"} have been told.'
+          : 'Resumed after ${done['duration']}. The school has been told.',
+    ),
+  ));
+}
+
+/// Shown on the trip screen while this facilitator's bus has a stop that has not
+/// been closed, so "resume" is one tap away from where the facilitator already is
+/// — not buried in the page they used to report it.
+class OpenStopBanner extends StatelessWidget {
   final String tripId;
-  const _RecentStops({required this.tripId});
+  final int busIndex;
+  const OpenStopBanner({super.key, required this.tripId, required this.busIndex});
 
   @override
   Widget build(BuildContext context) {
-    return FutureBuilder<String?>(
-      future: SchoolContext.schoolId(),
-      builder: (context, school) {
-        final schoolId = school.data;
-        if (schoolId == null) return const SizedBox.shrink();
-        return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-          stream: FirebaseFirestore.instance
-              .collection('tripEvents')
-              .where('schoolId', isEqualTo: schoolId)
-              .where('tripId', isEqualTo: tripId)
-              .snapshots(),
-          builder: (context, snap) {
-            final docs = (snap.data?.docs ?? [])
-              ..sort((a, b) {
-                final at = a.data()['createdAt'] as Timestamp?;
-                final bt = b.data()['createdAt'] as Timestamp?;
-                return (bt?.millisecondsSinceEpoch ?? 0)
-                    .compareTo(at?.millisecondsSinceEpoch ?? 0);
-              });
-            if (docs.isEmpty) return const SizedBox.shrink();
-
-            return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              const Text('Logged on this trip',
-                  style: TextStyle(
-                      fontSize: 13, fontWeight: FontWeight.bold, color: AppTheme.darkText)),
-              const SizedBox(height: 8),
-              for (final d in docs.take(6)) _row(d.data()),
-            ]);
-          },
-        );
+    return _tripEventsStream(
+      tripId: tripId,
+      builder: (docs) {
+        final open = docs.where((d) => _isOpen(d.data()) && d.data()['busIndex'] == busIndex).toList();
+        if (open.isEmpty) return const SizedBox.shrink();
+        return Column(children: [
+          for (final d in open) _banner(context, d.id, d.data()),
+        ]);
       },
     );
   }
 
-  Widget _row(Map<String, dynamic> e) {
+  Widget _banner(BuildContext context, String id, Map<String, dynamic> e) {
+    final emergency = e['kind'] == 'emergency';
+    final color = emergency ? AppTheme.errorColor : Colors.orange.shade800;
+    final at = (e['createdAt'] as Timestamp?)?.toDate();
+    final mins = at == null ? null : DateTime.now().difference(at).inMinutes;
+    final detail = [
+      if ((e['place'] ?? '').toString().isNotEmpty) e['place'],
+      if ((e['reason'] ?? '').toString().isNotEmpty) e['reason'],
+    ].join(' — ');
+    return Container(
+      margin: const EdgeInsets.only(top: 12),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: color.withValues(alpha: 0.6), width: 1.4),
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          Icon(emergency ? Icons.warning_amber_rounded : Icons.local_gas_station_outlined, color: color, size: 20),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              emergency ? 'Emergency in progress' : 'Bus is on an unscheduled stop',
+              style: TextStyle(fontWeight: FontWeight.bold, color: color, fontSize: 14),
+            ),
+          ),
+          if (mins != null)
+            Text(mins < 1 ? 'just now' : '$mins min',
+                style: TextStyle(fontSize: 12, color: Colors.grey.shade600)),
+        ]),
+        if (detail.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.only(top: 4, left: 28),
+            child: Text(detail, style: TextStyle(fontSize: 12.5, color: Colors.grey.shade700)),
+          ),
+        const SizedBox(height: 10),
+        SizedBox(
+          width: double.infinity,
+          child: FilledButton.icon(
+            style: FilledButton.styleFrom(
+              backgroundColor: Colors.green.shade700,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+            ),
+            onPressed: () => showResumeStopDialog(context, eventId: id, event: e),
+            icon: const Icon(Icons.play_arrow_rounded),
+            label: Text(emergency ? 'Resolved — resume trip' : 'Resume trip'),
+          ),
+        ),
+      ]),
+    );
+  }
+}
+
+/// What has already been logged on this trip, so a facilitator does not send the
+/// same stop twice and a co-facilitator's entries are visible.
+class _RecentStops extends StatelessWidget {
+  final String tripId;
+  final int busIndex;
+  const _RecentStops({required this.tripId, required this.busIndex});
+
+  @override
+  Widget build(BuildContext context) {
+    return _tripEventsStream(
+      tripId: tripId,
+      builder: (docs) {
+        if (docs.isEmpty) return const SizedBox.shrink();
+        return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          const Text('Logged on this trip',
+              style: TextStyle(
+                  fontSize: 13, fontWeight: FontWeight.bold, color: AppTheme.darkText)),
+          const SizedBox(height: 8),
+          for (final d in docs.take(6)) _row(context, d.id, d.data()),
+        ]);
+      },
+    );
+  }
+
+  String _hhmm(DateTime? at) => at == null
+      ? ''
+      : '${at.hour.toString().padLeft(2, '0')}:${at.minute.toString().padLeft(2, '0')}';
+
+  Widget _row(BuildContext context, String id, Map<String, dynamic> e) {
     final emergency = e['kind'] == 'emergency';
     final color = emergency ? AppTheme.errorColor : AppTheme.effectivePrimary;
-    final at = (e['createdAt'] as Timestamp?)?.toDate();
-    final time = at == null
-        ? ''
-        : '${at.hour.toString().padLeft(2, '0')}:${at.minute.toString().padLeft(2, '0')}';
+    final time = _hhmm((e['createdAt'] as Timestamp?)?.toDate());
+    final open = _isOpen(e);
+    final resumedAt = _hhmm((e['resumedAt'] as Timestamp?)?.toDate());
     final detail = [
       if ((e['place'] ?? '').toString().isNotEmpty) e['place'],
       if ((e['reason'] ?? '').toString().isNotEmpty) e['reason'],
@@ -486,7 +708,7 @@ class _RecentStops extends StatelessWidget {
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: const Color(0xFFE5E7EB)),
+        border: Border.all(color: open ? color.withValues(alpha: 0.5) : const Color(0xFFE5E7EB)),
       ),
       child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Icon(emergency ? Icons.warning_amber_rounded : Icons.local_gas_station_outlined,
@@ -512,8 +734,32 @@ class _RecentStops extends StatelessWidget {
                 style: TextStyle(fontSize: 11, color: Colors.grey.shade500),
               ),
             ),
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: open
+                  ? Text('Still stopped',
+                      style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.w700, color: Colors.orange.shade800))
+                  : Text(
+                      'Resumed${resumedAt.isEmpty ? '' : ' at $resumedAt'}'
+                      '${(e['resumeNote'] ?? '').toString().isEmpty ? '' : ' — ${e['resumeNote']}'}',
+                      style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.w600, color: Colors.green.shade700),
+                    ),
+            ),
           ]),
         ),
+        if (open && e['busIndex'] == busIndex)
+          Padding(
+            padding: const EdgeInsets.only(left: 8),
+            child: FilledButton(
+              style: FilledButton.styleFrom(
+                backgroundColor: Colors.green.shade700,
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                visualDensity: VisualDensity.compact,
+              ),
+              onPressed: () => showResumeStopDialog(context, eventId: id, event: e),
+              child: const Text('Resume'),
+            ),
+          ),
       ]),
     );
   }

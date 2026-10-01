@@ -19,6 +19,7 @@ import '../../utils/guardian_service.dart';
 import '../../utils/trip_queries.dart';
 import '../shared/settings_view.dart';
 import '../shared/notification_panel.dart';
+import '../shared/bus_teacher_card.dart';
 
 class MarkerGenerator {
   static Future<BitmapDescriptor> createCustomMarker(String name, Color color) async {
@@ -91,7 +92,7 @@ class ParentTripsTab extends StatelessWidget {
         titleSpacing: 24,
         title: const Text("My Children's Trips", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 22, color: AppTheme.secondaryColor)),
         actions: const [
-          NotificationBell(),
+          NotificationBell(announceTripEvents: true),
           SizedBox(width: 8),
         ],
       ),
@@ -274,6 +275,14 @@ class _ParentTripDetailsState extends State<ParentTripDetails>
   int _lastActiveStop = -2;
   bool _isFetchingRoute = false;
 
+  /// Where the children are, as last seen, so the map can frame them as soon as
+  /// it exists — and frame them once, so a parent who pans away is not dragged
+  /// back on every location update.
+  Map<String, LatLng> _childTargets = {};
+  LatLng? _fallbackFocus;
+  bool _framed = false;
+  bool _fallbackShown = false;
+
   @override
   void initState() {
     super.initState();
@@ -304,6 +313,53 @@ class _ParentTripDetailsState extends State<ParentTripDetails>
   void dispose() {
     _tracker.dispose();
     super.dispose();
+  }
+
+  /// Moves the camera onto the children: close in on one, fit the bounds of
+  /// several. With no child position yet, the bus or the destination stands in.
+  Future<void> _frameChildren({bool force = false}) async {
+    final c = _mapController;
+    if (c == null || (_framed && !force)) return;
+    final points = _childTargets.values.toList();
+    try {
+      if (points.length == 1) {
+        await c.animateCamera(CameraUpdate.newLatLngZoom(points.first, 17));
+      } else if (points.length > 1) {
+        double minLat = points.first.latitude, maxLat = minLat;
+        double minLng = points.first.longitude, maxLng = minLng;
+        for (final p in points) {
+          if (p.latitude < minLat) minLat = p.latitude;
+          if (p.latitude > maxLat) maxLat = p.latitude;
+          if (p.longitude < minLng) minLng = p.longitude;
+          if (p.longitude > maxLng) maxLng = p.longitude;
+        }
+        // Children standing together would give a zero-size box and a camera
+        // zoomed in as far as it goes; pad it to a street's width.
+        const pad = 0.0012;
+        if (maxLat - minLat < pad) { minLat -= pad / 2; maxLat += pad / 2; }
+        if (maxLng - minLng < pad) { minLng -= pad / 2; maxLng += pad / 2; }
+        await c.animateCamera(CameraUpdate.newLatLngBounds(
+          LatLngBounds(southwest: LatLng(minLat, minLng), northeast: LatLng(maxLat, maxLng)),
+          70,
+        ));
+      } else if (_fallbackFocus != null && (!_fallbackShown || force)) {
+        _fallbackShown = true;
+        await c.animateCamera(CameraUpdate.newLatLngZoom(_fallbackFocus!, 15));
+        return; // Not framed yet: the child's own position is still to come.
+      } else {
+        return;
+      }
+      _framed = true;
+    } catch (_) {
+      // The map may not have laid out yet; the next update tries again.
+    }
+  }
+
+  Future<void> _focusChild(String uid) async {
+    final pos = _tracker.current(uid) ?? _childTargets[uid];
+    if (pos == null || _mapController == null) return;
+    _framed = true;
+    await _mapController!.animateCamera(CameraUpdate.newLatLngZoom(pos, 18));
   }
 
   void _loadMarker(String id, String name, Color color) async {
@@ -417,13 +473,23 @@ class _ParentTripDetailsState extends State<ParentTripDetails>
                   targets[doc.id] = LatLng(rawLat.toDouble(), rawLng.toDouble());
                 }
               }
-              WidgetsBinding.instance.addPostFrameCallback((_) {
-                if (mounted) _tracker.setTargets(targets);
-              });
-
               Set<Circle> circles = {};
               int activeStop = currentTripData['activeStopIndex'] ?? -1;
               List stops = currentTripData['stops'] ?? [];
+
+              _childTargets = Map.of(targets);
+              LatLng? stopFocus;
+              if (activeStop >= 0 && activeStop < stops.length &&
+                  stops[activeStop]['lat'] is num && stops[activeStop]['lng'] is num) {
+                stopFocus = LatLng((stops[activeStop]['lat'] as num).toDouble(),
+                    (stops[activeStop]['lng'] as num).toDouble());
+              }
+              _fallbackFocus = teacherLoc ?? stopFocus;
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                if (!mounted) return;
+                _tracker.setTargets(targets);
+                _frameChildren();
+              });
 
               if (activeStop != -1 && activeStop < stops.length) {
                 var stop = stops[activeStop];
@@ -492,16 +558,44 @@ class _ParentTripDetailsState extends State<ParentTripDetails>
                           anchor: const Offset(0.5, 0.5),
                         ));
                       }
+                      final media = MediaQuery.of(ctx);
                       return GoogleMap(
-                        initialCameraPosition: const CameraPosition(
-                            target: LatLng(14.9543, 120.9008), zoom: 15),
+                        // Opens on the child when their position is already
+                        // known, rather than on a fixed point in Bulacan.
+                        initialCameraPosition: CameraPosition(
+                          target: targets.isNotEmpty
+                              ? targets.values.first
+                              : (_fallbackFocus ?? const LatLng(14.9543, 120.9008)),
+                          zoom: targets.isNotEmpty ? 17 : 15,
+                        ),
+                        // The app bar sits over the top and the sheet over the
+                        // bottom third; framing works inside what is visible.
+                        padding: EdgeInsets.only(
+                          top: media.padding.top + kToolbarHeight,
+                          bottom: media.size.height * 0.35,
+                        ),
                         markers: markers,
                         circles: circles,
                         polylines: _polylines,
                         myLocationButtonEnabled: false,
-                        onMapCreated: (c) => _mapController = c,
+                        onMapCreated: (c) {
+                          _mapController = c;
+                          _frameChildren();
+                        },
                       );
                     },
+                  ),
+                  Positioned(
+                    right: 16,
+                    top: MediaQuery.of(context).padding.top + kToolbarHeight + 12,
+                    child: FloatingActionButton.small(
+                      heroTag: 'frame_children',
+                      tooltip: 'Show my child',
+                      backgroundColor: Colors.white,
+                      foregroundColor: AppTheme.effectivePrimary,
+                      onPressed: () => _frameChildren(force: true),
+                      child: const Icon(Icons.my_location_rounded),
+                    ),
                   ),
                   DraggableScrollableSheet(
                     initialChildSize: 0.35,
@@ -565,11 +659,25 @@ class _ParentTripDetailsState extends State<ParentTripDetails>
                                       ],
                                     ),
                                   ),
+                                  // Who is responsible for the child on the road.
+                                  for (final assignment in busAssignmentsFor(
+                                    currentTripData['buses'],
+                                    widget.childrenIds.map((e) => e.toString()).toSet(),
+                                  )) ...[
+                                    const SizedBox(height: 10),
+                                    BusTeacherCard(
+                                      assignment: assignment,
+                                      childNames: assignment.passengerIds
+                                          .map((id) => _peopleInfo[id]?['name']?.toString() ?? '')
+                                          .where((n) => n.isNotEmpty)
+                                          .toList(),
+                                    ),
+                                  ],
                                 ],
                               ),
                             ),
                             const Divider(height: 32),
-                            
+
                             // Itinerary Section
                             const Padding(
                               padding: EdgeInsets.fromLTRB(20, 0, 20, 12),
@@ -694,7 +802,10 @@ class _ParentTripDetailsState extends State<ParentTripDetails>
                                   }
                                   final bool hasAnyAttendance = presentCount > 0;
 
-                                  return Padding(
+                                  return InkWell(
+                                    // Tapping a child takes the map to them.
+                                    onTap: () => _focusChild(personId),
+                                    child: Padding(
                                     padding: const EdgeInsets.symmetric(vertical: 10),
                                     child: Column(
                                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -773,6 +884,7 @@ class _ParentTripDetailsState extends State<ParentTripDetails>
                                         ],
                                       ],
                                     ),
+                                  ),
                                   );
                                 },
                               );

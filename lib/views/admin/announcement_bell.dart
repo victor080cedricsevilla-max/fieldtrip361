@@ -91,7 +91,7 @@ class _BellButton extends StatelessWidget {
       icon: Stack(
         clipBehavior: Clip.none,
         children: [
-          const Icon(Icons.notifications_none_rounded,
+          const Icon(Icons.campaign_outlined,
               color: Color(0xFF6B7280), size: 26),
           if (unread > 0)
             Positioned(

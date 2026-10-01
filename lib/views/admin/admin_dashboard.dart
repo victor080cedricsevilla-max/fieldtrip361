@@ -10,6 +10,7 @@ import 'create_trip_view.dart';
 import 'manage_trips_view.dart';
 import 'admin_overview.dart';
 import 'announcement_bell.dart';
+import '../shared/notification_panel.dart';
 import 'reports_view.dart';
 import 'students_view.dart';
 import 'documents_view.dart';
@@ -224,6 +225,9 @@ class _AdminDashboardState extends State<AdminDashboard> {
           Row(
             mainAxisSize: MainAxisSize.min,
             children: [
+              // Trip notices (unscheduled stops, resumed trips) land in the
+              // admin's inbox; announcements from the platform are separate.
+              const NotificationBell(announceTripEvents: true),
               const AnnouncementBell(),
               const SizedBox(width: 8),
               _AdminProfileChip(

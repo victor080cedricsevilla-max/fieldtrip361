@@ -38,8 +38,84 @@ class AppNotification {
 }
 
 /// Bell icon button with unread badge -- drop into any AppBar actions list.
-class NotificationBell extends StatelessWidget {
-  const NotificationBell({super.key});
+///
+/// With [announceTripEvents] the bell also raises what arrives while it is on
+/// screen: an emergency as a dialog, a stopover or a resumed trip as a snackbar.
+/// That is for the school administrator, whose dashboard runs in a browser that
+/// may hold no push token at all — the inbox document is the one delivery that
+/// is certain to reach them, so it is the one that is watched.
+class NotificationBell extends StatefulWidget {
+  final bool announceTripEvents;
+  const NotificationBell({super.key, this.announceTripEvents = false});
+
+  @override
+  State<NotificationBell> createState() => _NotificationBellState();
+}
+
+class _NotificationBellState extends State<NotificationBell> {
+  static const _liveTypes = {'trip_emergency', 'trip_stopover', 'trip_resumed'};
+
+  final _announced = <String>{};
+  // Anything created before the bell appeared is already in the inbox; only
+  // what arrives afterwards is worth interrupting for.
+  final _since = DateTime.now().subtract(const Duration(minutes: 2));
+
+  void _announce(List<DocumentChange> changes) {
+    if (!widget.announceTripEvents) return;
+    for (final change in changes) {
+      if (change.type != DocumentChangeType.added) continue;
+      if (_announced.contains(change.doc.id)) continue;
+      final n = AppNotification.fromDoc(change.doc);
+      if (!_liveTypes.contains(n.type)) continue;
+      if (n.createdAt != null && n.createdAt!.isBefore(_since)) continue;
+      _announced.add(n.id);
+      WidgetsBinding.instance.addPostFrameCallback((_) => _show(n));
+    }
+  }
+
+  void _show(AppNotification n) {
+    if (!mounted) return;
+    if (n.type == 'trip_emergency') {
+      showDialog<void>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          backgroundColor: Colors.red.shade50,
+          title: Row(children: [
+            const Icon(Icons.emergency_rounded, color: Colors.red, size: 28),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(n.title,
+                  style: const TextStyle(color: Colors.red, fontWeight: FontWeight.bold, fontSize: 17)),
+            ),
+          ]),
+          content: Text(n.body, style: const TextStyle(fontSize: 14.5, height: 1.45)),
+          actions: [
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(backgroundColor: Colors.red, foregroundColor: Colors.white),
+              onPressed: () {
+                FirebaseFirestore.instance
+                    .collection('users')
+                    .doc(FirebaseAuth.instance.currentUser?.uid)
+                    .collection('notifications')
+                    .doc(n.id)
+                    .update({'read': true}).catchError((_) {});
+                Navigator.pop(ctx);
+              },
+              child: const Text('Acknowledge'),
+            ),
+          ],
+        ),
+      );
+      return;
+    }
+    ScaffoldMessenger.maybeOf(context)?.showSnackBar(SnackBar(
+      behavior: SnackBarBehavior.floating,
+      duration: const Duration(seconds: 8),
+      backgroundColor: n.type == 'trip_resumed' ? Colors.green.shade700 : Colors.orange.shade800,
+      content: Text('${n.title}\n${n.body}', style: const TextStyle(height: 1.35)),
+    ));
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -54,6 +130,7 @@ class NotificationBell extends StatelessWidget {
           .where('read', isEqualTo: false)
           .snapshots(),
       builder: (context, snap) {
+        if (snap.hasData) _announce(snap.data!.docChanges);
         final unread = snap.data?.docs.length ?? 0;
         return Stack(
           clipBehavior: Clip.none,
@@ -120,7 +197,7 @@ class NotificationPanel extends StatelessWidget {
     return Material(
       color: Colors.transparent,
       child: Container(
-        width: MediaQuery.of(context).size.width * 0.88,
+        width: (MediaQuery.of(context).size.width * 0.88).clamp(0.0, 440.0),
         height: double.infinity,
         margin: const EdgeInsets.only(top: 0),
         decoration: const BoxDecoration(
@@ -336,6 +413,17 @@ class _NotifTile extends StatelessWidget {
         return Icons.flag_rounded;
       case 'geofence_alert':
         return Icons.warning_amber_rounded;
+      case 'trip_emergency':
+        return Icons.emergency_rounded;
+      case 'trip_stopover':
+        return Icons.local_gas_station_rounded;
+      case 'trip_resumed':
+        return Icons.play_circle_rounded;
+      case 'attendance_manual':
+        return Icons.how_to_reg_rounded;
+      case 'geofence_paused':
+      case 'geofence_resumed':
+        return Icons.location_searching_rounded;
       default:
         return Icons.notifications_rounded;
     }
@@ -353,6 +441,12 @@ class _NotifTile extends StatelessWidget {
         return Colors.green;
       case 'geofence_alert':
         return Colors.orange;
+      case 'trip_emergency':
+        return Colors.red;
+      case 'trip_stopover':
+        return Colors.orange;
+      case 'trip_resumed':
+        return Colors.green;
       default:
         return AppTheme.effectivePrimary;
     }

@@ -21,6 +21,8 @@ const { notifyGuardiansOfStudent } = require("./notify");
 
 const SOURCE = { qr: "qr", manual: "manual" };
 
+const db0 = () => admin.firestore();
+
 /**
  * Thresholds. Deliberately configurable: 100 m is a sensible floor for urban
  * Philippine GPS plus a bus queue, but a school with a large campus stop may
@@ -30,7 +32,7 @@ const DEFAULTS = {
   // Short enough that a photographed code is worthless before it can be passed
   // around, long enough that a facilitator scanning a queue does not have to
   // wait for the next one mid-scan.
-  tokenTtlSeconds: 25,
+  tokenTtlSeconds: 30,
   // A fix older than this cannot show where the student is *now*.
   locationMaxAgeSeconds: 120,
   // A fix this vague cannot be compared to a geofence at all.
@@ -337,10 +339,22 @@ exports.recordAttendanceScan = onCall(async (request) => {
     throw new HttpsError("invalid-argument", "tripId and tokenId are required.");
   }
 
-  const { uid, db, trip, tripRef, busIndex } = await requireTripFacilitator(request, tripId);
-  await checkRateLimit(uid, "attendance_scan", 120);
+  if (!request.auth?.uid) {
+    throw new HttpsError("unauthenticated", "Sign in first.");
+  }
 
-  const config = await attendanceConfig(db);
+  // Everything that does not depend on something else is fetched at once. A
+  // facilitator is scanning a queue, and run one after another these reads were
+  // most of the wait. The token is only *read* here — nothing is consumed until
+  // the facilitator check has passed — so that the student's location can be
+  // fetched alongside the transaction below rather than after it.
+  const tokenRef = db0().collection("qrTokens").doc(tokenId);
+  const [{ uid, db, trip, tripRef, busIndex }, , config, tokenPeek] = await Promise.all([
+    requireTripFacilitator(request, tripId),
+    checkRateLimit(request.auth.uid, "attendance_scan", 120),
+    attendanceConfig(db0()),
+    tokenRef.get(),
+  ]);
 
   if (trip.status !== "in_progress") {
     throw new HttpsError("failed-precondition", "This trip is not running right now.");
@@ -354,8 +368,14 @@ exports.recordAttendanceScan = onCall(async (request) => {
   }
 
   // 1. Consume the token. Single-use is enforced here, not by deletion alone,
-  //    so a replay after a partial failure is still refused.
-  const tokenRef = db.collection("qrTokens").doc(tokenId);
+  //    so a replay after a partial failure is still refused. The student's last
+  //    position is read at the same time: whose token it is never changes, so
+  //    the peek above is enough to know which location to fetch.
+  const peekStudent = tokenPeek.exists ? tokenPeek.get("studentId") : null;
+  const locPromise = peekStudent
+    ? db.collection("locations").doc(peekStudent).get()
+    : Promise.resolve(null);
+  locPromise.catch(() => {}); // awaited below; a refused token must not leave it unhandled
   const token = await db.runTransaction(async (tx) => {
     const snap = await tx.get(tokenRef);
     if (!snap.exists) {
@@ -420,8 +440,11 @@ exports.recordAttendanceScan = onCall(async (request) => {
   }
 
   // 4. The student's own last position.
-  const locSnap = await db.collection("locations").doc(studentId).get();
-  const loc = locSnap.exists ? locSnap.data() : null;
+  const locSnap =
+    peekStudent === studentId
+      ? await locPromise
+      : await db.collection("locations").doc(studentId).get();
+  const loc = locSnap && locSnap.exists ? locSnap.data() : null;
   const studentName = passenger.passenger.name || "Student";
 
   // 5. What the student's position can and cannot tell us. The ordering of

@@ -2729,6 +2729,7 @@ exports.addChildByCode = enrollment.addChildByCode;
 // parents; an emergency always reaches the administrator, and reaches the
 // parents only when the facilitator says so.
 exports.logUnscheduledStop = tripstops.logUnscheduledStop;
+exports.resumeUnscheduledStop = tripstops.resumeUnscheduledStop;
 
 // Subscription applications.
 exports.saveSchoolApplication = applications.saveSchoolApplication;

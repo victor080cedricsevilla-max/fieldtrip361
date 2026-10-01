@@ -22,6 +22,7 @@ import 'attendance_qr_card.dart';
 import '../shared/settings_view.dart';
 import '../shared/chat_view.dart';
 import '../shared/notification_panel.dart';
+import '../shared/bus_teacher_card.dart';
 import 'student_documents_tab.dart';
 
 class MarkerGenerator {
@@ -1058,6 +1059,14 @@ class _StudentTripDetailsState extends State<StudentTripDetails>
                                 ],
                               ),
                             ),
+
+                            // The teacher(s) on this bus — whom to go to.
+                            for (final assignment in busAssignmentsFor(
+                                currentTripData['buses'], {widget.myUid}))
+                              Padding(
+                                padding: const EdgeInsets.fromLTRB(20, 0, 20, 14),
+                                child: BusTeacherCard(assignment: assignment),
+                              ),
 
                             // People action button
                             Padding(

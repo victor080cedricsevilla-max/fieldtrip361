@@ -210,3 +210,71 @@ test("a stop cannot be logged before the trip has left", async () => {
   assert.match(res.error.message, /in progress/);
   assert.equal((await inbox(w.p1)).length, 0);
 });
+
+// ─── Resuming ─────────────────────────────────────────────────────────────────
+
+async function resume(uid, data) {
+  const res = await fetch(`${FN}/resumeUnscheduledStop`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${await tokenFor(uid)}`,
+    },
+    body: JSON.stringify({ data }),
+  });
+  const body = await res.json();
+  return body.error ? { error: body.error } : { result: body.result };
+}
+
+test("resuming a stopover tells the school and the parents who heard about it", async () => {
+  const w = await world();
+  const logged = await logStop(w.teacher, { tripId: w.tripId, kind: "stopover", place: "Petron" });
+  const res = await resume(w.teacher, { eventId: logged.result.eventId, note: "All back on board" });
+  assert.equal(res.error, undefined, JSON.stringify(res.error));
+  assert.equal(res.result.parentsReached, 2);
+
+  const adminInbox = await inbox(w.adminUid);
+  assert.equal(adminInbox.length, 2);
+  const p1 = await inbox(w.p1);
+  assert.equal(p1.length, 2);
+  const resumed = p1.find((x) => x.type === "trip_resumed");
+  assert.ok(resumed);
+  assert.match(resumed.body, /Petron/);
+  assert.match(resumed.body, /All back on board/);
+  assert.equal((await inbox(w.p3)).length, 0);
+
+  const ev = (await db.collection("tripEvents").doc(logged.result.eventId).get()).data();
+  assert.ok(ev.resumedAt);
+  assert.equal(ev.resumedBy, w.teacher);
+  assert.equal(ev.resumeNote, "All back on board");
+});
+
+test("an emergency the parents were spared stays with the school on resume, unless the facilitator says otherwise", async () => {
+  const w = await world();
+  const a = await logStop(w.teacher, { tripId: w.tripId, kind: "emergency", notifyParents: false });
+  const r1 = await resume(w.teacher, { eventId: a.result.eventId });
+  assert.equal(r1.error, undefined);
+  assert.equal(r1.result.parentsNotified, false);
+  assert.equal((await inbox(w.p1)).length, 0);
+  assert.equal((await inbox(w.adminUid)).filter((x) => x.type === "trip_resumed").length, 1);
+
+  const b = await logStop(w.teacher, { tripId: w.tripId, kind: "emergency", notifyParents: false });
+  const r2 = await resume(w.teacher, { eventId: b.result.eventId, notifyParents: true });
+  assert.equal(r2.result.parentsReached, 2);
+  assert.equal((await inbox(w.p1)).length, 1);
+  assert.equal((await inbox(w.p1))[0].type, "trip_resumed");
+});
+
+test("a stop is resumed once, and only by a facilitator of that bus", async () => {
+  const w = await world();
+  const logged = await logStop(w.teacher, { tripId: w.tripId, kind: "stopover" });
+  const other = await resume(w.stranger, { eventId: logged.result.eventId });
+  assert.ok(other.error);
+  assert.match(other.error.message, /bus that stopped/);
+
+  assert.equal((await resume(w.teacher, { eventId: logged.result.eventId })).error, undefined);
+  const again = await resume(w.teacher, { eventId: logged.result.eventId });
+  assert.ok(again.error);
+  assert.match(again.error.message, /already/);
+  assert.equal((await inbox(w.p1)).filter((x) => x.type === "trip_resumed").length, 1);
+});
