@@ -140,6 +140,12 @@ class ApplicationService {
         'accessKey': accessKey,
       });
 
+  /// Asks the server to check the PayMongo checkout for an approved
+  /// application. Returns `{state: active|unpaid|activating|…}`; the server
+  /// reads the payment from PayMongo, never from this browser.
+  static Future<Map<String, dynamic>> confirmPayment(String applicationId) =>
+      _call('confirmApplicationPayment', {'applicationId': applicationId});
+
   /// The application belonging to this session, live.
   static Stream<QuerySnapshot<Map<String, dynamic>>> mine() {
     final uid = FirebaseAuth.instance.currentUser?.uid;

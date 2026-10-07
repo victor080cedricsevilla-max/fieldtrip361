@@ -22,7 +22,12 @@ const EMAIL_TYPE = {
   approved: "approved",
   rejected: "rejected",
   credentials: "credentials",
+  paymentRequested: "payment_requested",
 };
+
+function peso(n) {
+  return `PHP ${Number(n || 0).toLocaleString("en-PH")}`;
+}
 
 function supportLine() {
   const addr = supportEmail.value() || smtpUser.value();
@@ -177,20 +182,112 @@ function rejectedEmail({ application, reason }) {
   return { subject: `Decision on your FieldTrip360 application (${application.reference})`, text, html };
 }
 
+function capacityLineFor(plan) {
+  return Number(plan.capacity) === 0
+    ? `${plan.tierLabel} plan (custom capacity)`
+    : `${plan.tierLabel} plan — up to ${plan.capacity} students`;
+}
+
+/**
+ * Sent on approval when payment is collected: the PayMongo checkout link.
+ * The account is created only after PayMongo confirms the payment.
+ */
+function paymentRequestEmail({ application, applicationId, checkoutUrl, amount, months }) {
+  const plan = application.plan || {};
+  const period = months === 12 ? "12 months (annual billing)" : "1 month";
+  const trackUrl = statusUrl(applicationId, application.accessKey);
+
+  const text = [
+    `Hello ${application.representative?.name || "there"},`,
+    "",
+    `Good news — application ${application.reference} for ${application.schoolName} has been approved.`,
+    "",
+    "To activate your subscription, complete the payment below. Your administrator account is created and the sign-in details are emailed to you as soon as the payment is confirmed.",
+    "",
+    `Plan: ${capacityLineFor(plan)}`,
+    `Covers: ${period}`,
+    `Amount due: ${peso(amount)}`,
+    "",
+    `Pay now: ${checkoutUrl}`,
+    "",
+    "TEST MODE: this payment page uses PayMongo's test environment. No real money is charged.",
+    "",
+    `Check your application status: ${trackUrl}`,
+    "",
+    supportLine(),
+  ].join("\n");
+
+  const html = emailShell({
+    heading: `${escapeHtml(application.schoolName)} is approved`,
+    bodyHtml: `
+      <p style="margin:0 0 20px;font-size:14px;line-height:1.7;color:#4B5563;">
+        Application <strong>${escapeHtml(application.reference)}</strong> has been approved. Complete
+        the payment below to activate your subscription — your administrator account is created and
+        the sign-in details are emailed to you as soon as the payment is confirmed.
+      </p>
+      <div style="background:#F9FAFB;border:1px solid #E5E7EB;border-radius:12px;padding:18px;margin-bottom:20px;">
+        <table style="width:100%;border-collapse:collapse;font-size:13px;color:#4B5563;">
+          <tr><td style="padding:4px 0;">Plan</td><td style="padding:4px 0;text-align:right;">${escapeHtml(capacityLineFor(plan))}</td></tr>
+          <tr><td style="padding:4px 0;">Covers</td><td style="padding:4px 0;text-align:right;">${escapeHtml(period)}</td></tr>
+          <tr><td style="padding:4px 0;font-weight:700;color:#1F2937;">Amount due</td><td style="padding:4px 0;text-align:right;font-weight:700;color:#1F2937;">${escapeHtml(peso(amount))}</td></tr>
+        </table>
+      </div>
+      <a href="${escapeHtml(checkoutUrl)}" style="display:inline-block;background:#00C4B4;color:#ffffff;text-decoration:none;padding:12px 22px;border-radius:10px;font-size:14px;font-weight:600;">Pay with PayMongo</a>
+      <div style="margin-top:18px;background:#FFFBEB;border:1px solid #FCD34D;border-radius:10px;padding:14px;">
+        <div style="font-size:12px;font-weight:700;color:#92400E;">TEST MODE</div>
+        <div style="font-size:12px;line-height:1.7;color:#92400E;margin-top:4px;">
+          This payment page uses PayMongo's test environment. No real money is charged.
+        </div>
+      </div>
+      <p style="margin:18px 0 0;font-size:13px;line-height:1.7;color:#6B7280;">
+        <a href="${escapeHtml(trackUrl)}" style="color:#0E7C8C;">Check your application status</a>
+      </p>
+      <p style="margin:12px 0 0;font-size:13px;line-height:1.7;color:#6B7280;">${escapeHtml(supportLine())}</p>`,
+  });
+
+  return { subject: `Complete your FieldTrip360 payment (${application.reference})`, text, html };
+}
+
 /**
  * Approval, credentials and the receipt in one message.
  *
- * The receipt is labelled as payment-bypassed test mode on its face — it must
- * never read as evidence that money changed hands.
+ * The receipt states on its face how the subscription was activated: paid
+ * through PayMongo's test environment, or payment-bypassed. It must never
+ * read as evidence that real money changed hands.
  */
 function approvalEmail({ application, adminEmail, tempPassword, receipt }) {
   const base = (appBaseUrl.value() || "").replace(/\/+$/, "");
   const loginUrl = `${base}/`;
   const plan = application.plan || {};
-  const capacityLine =
-    Number(plan.capacity) === 0
-      ? `${plan.tierLabel} plan (custom capacity)`
-      : `${plan.tierLabel} plan — up to ${plan.capacity} students`;
+  const capacityLine = capacityLineFor(plan);
+  const paid = receipt.paymentStatus === "paid_test_mode";
+
+  const statusLines = paid
+    ? [
+        `Amount paid: ${peso(receipt.amount)}`,
+        `Payment status: PAID — PAYMONGO TEST MODE (reference ${receipt.paymentReference || "—"}).`,
+        "Test-mode payments do not move real money.",
+      ]
+    : [
+        `Amount: PHP ${receipt.amount} (NOT COLLECTED)`,
+        "Payment status: BYPASSED — TEST MODE. No payment has been processed and no",
+        "payment is due from this receipt. It records the activation only.",
+      ];
+  const statusBox = paid
+    ? `<div style="margin-top:14px;background:#ECFDF5;border:1px solid #6EE7B7;border-radius:10px;padding:14px;">
+          <div style="font-size:12px;font-weight:700;color:#065F46;">PAID — PAYMONGO TEST MODE</div>
+          <div style="font-size:12px;line-height:1.7;color:#065F46;margin-top:4px;">
+            Payment reference ${escapeHtml(receipt.paymentReference || "—")}. Test-mode payments do not
+            move real money.
+          </div>
+        </div>`
+    : `<div style="margin-top:14px;background:#FFFBEB;border:1px solid #FCD34D;border-radius:10px;padding:14px;">
+          <div style="font-size:12px;font-weight:700;color:#92400E;">PAYMENT BYPASSED — TEST MODE</div>
+          <div style="font-size:12px;line-height:1.7;color:#92400E;margin-top:4px;">
+            No payment has been processed and no payment is due from this receipt. It records
+            the activation of your subscription only.
+          </div>
+        </div>`;
 
   const text = [
     `Congratulations — ${application.schoolName} is approved for FieldTrip360.`,
@@ -201,13 +298,11 @@ function approvalEmail({ application, adminEmail, tempPassword, receipt }) {
     "",
     "You will be asked to change this password the first time you sign in. Until you do, administration is locked.",
     "",
-    "— Subscription acknowledgement receipt —",
+    paid ? "— Subscription receipt —" : "— Subscription acknowledgement receipt —",
     `Receipt number: ${receipt.number}`,
     `Plan: ${capacityLine}`,
     `Billing: ${receipt.billingCycle}`,
-    `Amount: PHP ${receipt.amount} (NOT COLLECTED)`,
-    "Payment status: BYPASSED — TEST MODE. No payment has been processed and no",
-    "payment is due from this receipt. It records the activation only.",
+    ...statusLines,
     "",
     supportLine(),
   ].join("\n");
@@ -228,20 +323,14 @@ function approvalEmail({ application, adminEmail, tempPassword, receipt }) {
       <a href="${escapeHtml(loginUrl)}" style="display:inline-block;background:#00C4B4;color:#ffffff;text-decoration:none;padding:12px 22px;border-radius:10px;font-size:14px;font-weight:600;">Sign in</a>
 
       <div style="margin-top:28px;border-top:1px solid #E5E7EB;padding-top:22px;">
-        <div style="font-size:13px;font-weight:700;color:#1F2937;margin-bottom:12px;">Subscription acknowledgement receipt</div>
+        <div style="font-size:13px;font-weight:700;color:#1F2937;margin-bottom:12px;">${paid ? "Subscription receipt" : "Subscription acknowledgement receipt"}</div>
         <table style="width:100%;border-collapse:collapse;font-size:13px;color:#4B5563;">
           <tr><td style="padding:4px 0;">Receipt number</td><td style="padding:4px 0;text-align:right;font-family:ui-monospace,Menlo,Consolas,monospace;">${escapeHtml(receipt.number)}</td></tr>
           <tr><td style="padding:4px 0;">Plan</td><td style="padding:4px 0;text-align:right;">${escapeHtml(capacityLine)}</td></tr>
           <tr><td style="padding:4px 0;">Billing</td><td style="padding:4px 0;text-align:right;">${escapeHtml(receipt.billingCycle)}</td></tr>
-          <tr><td style="padding:4px 0;">Amount</td><td style="padding:4px 0;text-align:right;">PHP ${escapeHtml(String(receipt.amount))}</td></tr>
+          <tr><td style="padding:4px 0;">${paid ? "Amount paid" : "Amount"}</td><td style="padding:4px 0;text-align:right;">${escapeHtml(paid ? peso(receipt.amount) : `PHP ${receipt.amount}`)}</td></tr>
         </table>
-        <div style="margin-top:14px;background:#FFFBEB;border:1px solid #FCD34D;border-radius:10px;padding:14px;">
-          <div style="font-size:12px;font-weight:700;color:#92400E;">PAYMENT BYPASSED — TEST MODE</div>
-          <div style="font-size:12px;line-height:1.7;color:#92400E;margin-top:4px;">
-            No payment has been processed and no payment is due from this receipt. It records
-            the activation of your subscription only.
-          </div>
-        </div>
+        ${statusBox}
       </div>
       <p style="margin:22px 0 0;font-size:13px;line-height:1.7;color:#6B7280;">${escapeHtml(supportLine())}</p>`,
   });
@@ -295,6 +384,7 @@ module.exports = {
   documentsRequestedEmail,
   rejectedEmail,
   approvalEmail,
+  paymentRequestEmail,
   sendApplicationEmail,
   statusUrl,
 };

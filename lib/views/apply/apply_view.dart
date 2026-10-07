@@ -2,6 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../../config/console_theme.dart';
 import '../auth/brand_panel.dart';
@@ -116,7 +117,7 @@ class _ApplyViewState extends State<ApplyView> {
           if (current != null &&
               status != ApplicationStatus.draft &&
               status != ApplicationStatus.needsMoreDocuments) {
-            return _StatusPanel(data: current.data());
+            return _StatusPanel(applicationId: current.id, data: current.data());
           }
 
           return _ApplicationForm(
@@ -1313,8 +1314,9 @@ class _SubmittedPanel extends StatelessWidget {
 
 /// What an applicant sees once their application is with the reviewer.
 class _StatusPanel extends StatelessWidget {
+  final String applicationId;
   final Map<String, dynamic> data;
-  const _StatusPanel({required this.data});
+  const _StatusPanel({required this.applicationId, required this.data});
 
   @override
   Widget build(BuildContext context) {
@@ -1367,6 +1369,13 @@ class _StatusPanel extends StatelessWidget {
               color: t.textFaint,
             ),
           ),
+          if (status == ApplicationStatus.awaitingPayment && data['payment'] is Map) ...[
+            const SizedBox(height: Insets.lg),
+            _PaymentBox(
+              applicationId: applicationId,
+              payment: Map<String, dynamic>.from(data['payment'] as Map),
+            ),
+          ],
           if (status == ApplicationStatus.approved) ...[
             const SizedBox(height: Insets.lg),
             _Notice(
@@ -1379,6 +1388,110 @@ class _StatusPanel extends StatelessWidget {
           ],
         ],
       ),
+    );
+  }
+}
+
+/// Approved and waiting for payment: the amount, the PayMongo checkout, and a
+/// check that runs by itself when PayMongo sends the payer back here.
+class _PaymentBox extends StatefulWidget {
+  final String applicationId;
+  final Map<String, dynamic> payment;
+
+  const _PaymentBox({required this.applicationId, required this.payment});
+
+  @override
+  State<_PaymentBox> createState() => _PaymentBoxState();
+}
+
+class _PaymentBoxState extends State<_PaymentBox> {
+  bool _checking = false;
+  String? _note;
+
+  @override
+  void initState() {
+    super.initState();
+    // PayMongo returns the payer to this page with ?payment=success.
+    if (Uri.base.queryParameters['payment'] == 'success') _check();
+  }
+
+  Future<void> _check() async {
+    setState(() {
+      _checking = true;
+      _note = null;
+    });
+    try {
+      final res = await ApplicationService.confirmPayment(widget.applicationId);
+      if (!mounted) return;
+      setState(() {
+        _note = switch (res['state']) {
+          'active' => null, // the page switches to "Approved" on its own
+          'unpaid' => 'We have not received the payment yet. If you just paid, '
+              'wait a moment and check again.',
+          'activating' => 'Payment received — your account is being created.',
+          _ => null,
+        };
+      });
+    } catch (e) {
+      if (mounted) setState(() => _note = ApplicationService.describeError(e));
+    } finally {
+      if (mounted) setState(() => _checking = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final t = ConsoleTokens.of(context);
+    final p = widget.payment;
+    final url = (p['checkoutUrl'] ?? '').toString();
+    final months = (p['months'] as num?)?.toInt() ?? 1;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _Notice(
+          tone: t.info,
+          icon: Icons.payments_outlined,
+          text: 'Approved! Pay ${formatPeso(p['amount'] as num?)} '
+              '(${months == 12 ? '12 months, annual billing' : '1 month'}) to activate your '
+              'subscription. Your administrator account is created and emailed to you as '
+              'soon as the payment is confirmed.',
+        ),
+        const SizedBox(height: Insets.md),
+        Wrap(
+          spacing: Insets.sm,
+          runSpacing: Insets.sm,
+          children: [
+            ConsoleButton(
+              label: 'Pay with PayMongo',
+              icon: Icons.lock_outline_rounded,
+              onPressed: url.isEmpty
+                  ? null
+                  : () => launchUrl(Uri.parse(url), webOnlyWindowName: '_self'),
+              disabledReason: 'The payment link is being prepared — reload in a moment',
+            ),
+            ConsoleButton(
+              label: 'I have paid — check status',
+              icon: Icons.refresh_rounded,
+              kind: ConsoleButtonKind.secondary,
+              busy: _checking,
+              onPressed: _checking ? null : _check,
+            ),
+          ],
+        ),
+        const SizedBox(height: Insets.sm),
+        Text(
+          'Test mode: PayMongo\'s test environment is used, so no real money is charged.',
+          style: TextStyle(fontSize: FontSizes.caption, height: 1.5, color: t.textFaint),
+        ),
+        if (_note != null) ...[
+          const SizedBox(height: Insets.sm),
+          Text(
+            _note!,
+            style: TextStyle(fontSize: FontSizes.body, height: 1.5, color: t.textMuted),
+          ),
+        ],
+      ],
     );
   }
 }

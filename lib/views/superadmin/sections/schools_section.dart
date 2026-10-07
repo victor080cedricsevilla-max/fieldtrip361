@@ -325,6 +325,7 @@ class _SchoolCardState extends State<_SchoolCard> {
     final capacity = (s['capacity'] as num?)?.toInt() ?? 0;
     final students = (s['studentCount'] as num?)?.toInt() ?? 0;
     final testMode = s['paymentStatus'] == 'test_mode';
+    final paidTest = s['paymentStatus'] == 'paid_test_mode';
 
     return ConsoleCard(
       accent: disabled ? t.danger.border : null,
@@ -368,6 +369,13 @@ class _SchoolCardState extends State<_SchoolCard> {
                       label: 'Payment bypassed',
                       tone: t.warning,
                       icon: Icons.science_outlined,
+                      dense: true,
+                    ),
+                  if (paidTest)
+                    StatusBadge(
+                      label: 'Paid · PayMongo test',
+                      tone: t.info,
+                      icon: Icons.payments_outlined,
                       dense: true,
                     ),
                   StatusBadge(

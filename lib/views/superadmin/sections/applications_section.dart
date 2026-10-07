@@ -356,9 +356,15 @@ class _ApplicationReviewState extends State<_ApplicationReview> {
       );
       if (!mounted) return;
       final emailSent = res['emailSent'] == true;
+      final awaitingPayment = res['awaitingPayment'] == true;
       setState(() {
         _idempotencyKey = _newKey();
         _actionMessage = switch (decision) {
+          'approve' when awaitingPayment => emailSent
+              ? 'Approved. A PayMongo payment link (test mode) was emailed to the school. '
+                  'The school is created and its credentials sent once payment is confirmed.'
+              : 'Approved and the PayMongo payment link was created, but the email did not '
+                  'send (${res['emailError'] ?? 'unknown error'}). Resend it from the Payment panel.',
           'approve' => emailSent
               ? 'Approved. The school was provisioned and the credentials email was sent.'
               : 'Approved and the school was provisioned, but the credentials email '
@@ -434,7 +440,9 @@ class _ApplicationReviewState extends State<_ApplicationReview> {
 
         final status = (d['status'] ?? '').toString();
         final decided = status == ApplicationStatus.approved ||
-            status == ApplicationStatus.rejected;
+            status == ApplicationStatus.rejected ||
+            status == ApplicationStatus.awaitingPayment;
+        final payment = d['payment'] is Map ? Map<String, dynamic>.from(d['payment'] as Map) : null;
 
         return ConsolePage(
           maxWidth: 1320,
@@ -460,6 +468,14 @@ class _ApplicationReviewState extends State<_ApplicationReview> {
                   final right = Column(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
+                      if (payment != null) ...[
+                        _PaymentPanel(
+                          applicationId: widget.applicationId,
+                          status: status,
+                          payment: payment,
+                        ),
+                        const SizedBox(height: Insets.lg),
+                      ],
                       _ApplicantPanel(data: d, tokens: t),
                       const SizedBox(height: Insets.lg),
                       _HistoryPanel(applicationId: widget.applicationId),
@@ -748,9 +764,10 @@ class _ApplicantPanel extends StatelessWidget {
                 const SizedBox(width: Insets.sm),
                 Expanded(
                   child: Text(
-                    'Payment is bypassed in this build. Approving provisions the '
-                    'subscription and issues a receipt marked as test mode — no money '
-                    'is collected.',
+                    'Payment runs through PayMongo in test mode. Approving emails the '
+                    'school a payment link; the school is created once the payment is '
+                    'confirmed. No real money is charged. (With no PayMongo key '
+                    'configured, approval activates the school without payment.)',
                     style: TextStyle(
                       fontSize: FontSizes.caption,
                       height: 1.5,
@@ -761,6 +778,181 @@ class _ApplicantPanel extends StatelessWidget {
               ],
             ),
           ),
+        ],
+      ),
+    );
+  }
+}
+
+/// The PayMongo (test mode) payment behind an approval: what is due, whether it
+/// was paid, and the controls to check it or resend the link.
+class _PaymentPanel extends StatefulWidget {
+  final String applicationId;
+  final String status;
+  final Map<String, dynamic> payment;
+
+  const _PaymentPanel({
+    required this.applicationId,
+    required this.status,
+    required this.payment,
+  });
+
+  @override
+  State<_PaymentPanel> createState() => _PaymentPanelState();
+}
+
+class _PaymentPanelState extends State<_PaymentPanel> {
+  bool _busy = false;
+  String? _message;
+  bool _error = false;
+
+  Future<void> _run(Future<String> Function() action) async {
+    setState(() {
+      _busy = true;
+      _message = null;
+      _error = false;
+    });
+    try {
+      final msg = await action();
+      if (mounted) setState(() => _message = msg);
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _error = true;
+          _message = e is FirebaseFunctionsException ? (e.message ?? e.code) : e.toString();
+        });
+      }
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<String> _check() async {
+    final res = await PlatformActions.checkApplicationPayment(widget.applicationId);
+    return switch (res['state']) {
+      'active' => res['emailSent'] == false
+          ? 'Paid. The school was provisioned, but the credentials email did not send.'
+          : 'Paid. The school was provisioned and its credentials were emailed.',
+      'unpaid' => 'PayMongo has no completed payment for this link yet.',
+      'activating' => 'The payment is being processed — check again in a minute.',
+      _ => 'Status: ${res['state']}',
+    };
+  }
+
+  Future<String> _resend() async {
+    final res = await PlatformActions.retryApplicationEmail(
+      applicationId: widget.applicationId,
+      emailType: 'payment_requested',
+    );
+    return res['emailSent'] == true
+        ? 'The payment link was emailed again.'
+        : 'The email did not send (${res['emailError'] ?? 'unknown error'}).';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final t = ConsoleTokens.of(context);
+    final p = widget.payment;
+    final paid = p['status'] == 'paid';
+    final waiting = widget.status == ApplicationStatus.awaitingPayment;
+    final url = (p['checkoutUrl'] ?? '').toString();
+    final months = (p['months'] as num?)?.toInt() ?? 1;
+
+    final stateLabel = switch (p['status']) {
+      'paid' => 'Paid',
+      'pending' => 'Waiting for payment',
+      'creating' => 'Creating link',
+      'link_failed' => 'Link failed',
+      _ => (p['status'] ?? '—').toString(),
+    };
+
+    return ConsoleCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  'Payment',
+                  style: TextStyle(
+                    fontSize: FontSizes.bodyLg,
+                    fontWeight: FontWeight.w600,
+                    color: t.text,
+                  ),
+                ),
+              ),
+              StatusBadge(
+                label: stateLabel,
+                tone: paid ? t.success : (p['status'] == 'link_failed' ? t.danger : t.warning),
+                icon: paid ? Icons.check_circle_rounded : Icons.payments_outlined,
+                dense: true,
+              ),
+            ],
+          ),
+          const SizedBox(height: Insets.xs),
+          Text(
+            'PayMongo · test mode — no real money moves.',
+            style: TextStyle(fontSize: FontSizes.caption, color: t.textFaint),
+          ),
+          const SizedBox(height: Insets.lg),
+          _KeyValue(
+            label: paid ? 'Amount paid' : 'Amount due',
+            value: '${formatPeso((paid ? p['amountPaid'] : p['amount']) as num?)}'
+                ' · ${months == 12 ? '12 months (annual)' : '1 month'}',
+            tokens: t,
+          ),
+          if (paid) ...[
+            _KeyValue(
+              label: 'PayMongo payment',
+              value: '${p['paymentId'] ?? '—'}${p['method'] == null ? '' : ' · ${p['method']}'}',
+              tokens: t,
+            ),
+            _KeyValue(label: 'Paid', value: formatTimestamp(p['paidAt']), tokens: t),
+          ],
+          if ((p['error'] ?? '').toString().isNotEmpty && !paid)
+            _KeyValue(label: 'Last error', value: p['error'].toString(), tokens: t),
+          if (waiting) ...[
+            const SizedBox(height: Insets.sm),
+            Wrap(
+              spacing: Insets.sm,
+              runSpacing: Insets.sm,
+              children: [
+                ConsoleButton(
+                  label: 'Check payment',
+                  icon: Icons.refresh_rounded,
+                  busy: _busy,
+                  onPressed: _busy ? null : () => _run(_check),
+                ),
+                ConsoleButton(
+                  label: 'Open payment page',
+                  icon: Icons.open_in_new_rounded,
+                  kind: ConsoleButtonKind.secondary,
+                  onPressed: url.isEmpty
+                      ? null
+                      : () => launchUrl(Uri.parse(url), webOnlyWindowName: '_blank'),
+                  disabledReason: 'The payment link has not been created',
+                ),
+                ConsoleButton(
+                  label: 'Resend payment email',
+                  icon: Icons.forward_to_inbox_rounded,
+                  kind: ConsoleButtonKind.ghost,
+                  onPressed: _busy || url.isEmpty ? null : () => _run(_resend),
+                ),
+              ],
+            ),
+          ],
+          if (_message != null) ...[
+            const SizedBox(height: Insets.md),
+            Text(
+              _message!,
+              style: TextStyle(
+                fontSize: FontSizes.body,
+                height: 1.5,
+                color: _error ? t.danger.fg : t.success.fg,
+              ),
+            ),
+          ],
         ],
       ),
     );
@@ -804,6 +996,7 @@ class _HistoryPanel extends StatelessWidget {
     'resubmitted': 'Documents resubmitted',
     'documents_requested': 'More documents requested',
     'approved': 'Approved',
+    'payment_received': 'Payment received (PayMongo test)',
     'rejected': 'Rejected',
     'claimed': 'Taken for review',
     'override': 'Review warning overridden',
@@ -1663,8 +1856,9 @@ class _DecisionBar extends StatelessWidget {
           ),
           const SizedBox(height: Insets.xs),
           Text(
-            'Approving provisions the school and emails its administrator a temporary '
-            'password. Every outcome is recorded with your reason.',
+            'Approving emails the school a PayMongo payment link (test mode); once it '
+            'is paid, the school is provisioned and its administrator receives a '
+            'temporary password. Every outcome is recorded with your reason.',
             style: TextStyle(fontSize: FontSizes.body, height: 1.5, color: t.textMuted),
           ),
           const SizedBox(height: Insets.lg),
@@ -1684,9 +1878,10 @@ class _DecisionBar extends StatelessWidget {
                           ReasonDialog(
                             title: 'Approve this application?',
                             description:
-                                'A school and one administrator account are created, and '
-                                'the temporary password is emailed. The subscription is '
-                                'activated in payment-bypass mode, so no payment is taken.',
+                                'The school is emailed a PayMongo payment link (test mode — '
+                                'no real money). When the payment is confirmed, the school '
+                                'and one administrator account are created and the temporary '
+                                'password is emailed.',
                             confirmLabel: 'Approve & provision',
                             confirmIcon: Icons.verified_outlined,
                             reasonLabel: 'What did you verify?',

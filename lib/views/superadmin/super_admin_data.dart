@@ -19,6 +19,9 @@ class ApplicationStatus {
   static const String submitted = 'submitted';
   static const String underReview = 'under_review';
   static const String needsMoreDocuments = 'needs_more_documents';
+
+  /// Approved; the school is created once PayMongo confirms the payment.
+  static const String awaitingPayment = 'awaiting_payment';
   static const String approved = 'approved';
   static const String rejected = 'rejected';
 
@@ -26,10 +29,10 @@ class ApplicationStatus {
   static const List<String> awaitingReview = [submitted, underReview];
 
   /// Waiting on the applicant.
-  static const List<String> awaitingApplicant = [draft, needsMoreDocuments];
+  static const List<String> awaitingApplicant = [draft, needsMoreDocuments, awaitingPayment];
 
   static const List<String> all = [
-    draft, submitted, underReview, needsMoreDocuments, approved, rejected,
+    draft, submitted, underReview, needsMoreDocuments, awaitingPayment, approved, rejected,
   ];
 
   static String label(String status) {
@@ -42,6 +45,8 @@ class ApplicationStatus {
         return 'Under review';
       case needsMoreDocuments:
         return 'Needs documents';
+      case awaitingPayment:
+        return 'Awaiting payment';
       case approved:
         return 'Approved';
       case rejected:
@@ -61,6 +66,8 @@ class ApplicationStatus {
         return Icons.pending_actions_rounded;
       case needsMoreDocuments:
         return Icons.upload_file_rounded;
+      case awaitingPayment:
+        return Icons.payments_outlined;
       case approved:
         return Icons.check_circle_rounded;
       case rejected:
@@ -77,6 +84,7 @@ class ApplicationStatus {
       case rejected:
         return t.danger;
       case needsMoreDocuments:
+      case awaitingPayment:
         return t.warning;
       case submitted:
       case underReview:
@@ -508,6 +516,11 @@ class PlatformActions {
     required String reason,
   }) =>
       _call('resendAdminCredentials', {'schoolId': schoolId, 'reason': reason});
+
+  /// Asks PayMongo whether an approved application's checkout was paid and, if
+  /// so, activates the school. Returns `{state: active|unpaid|activating|…}`.
+  static Future<Map<String, dynamic>> checkApplicationPayment(String applicationId) =>
+      _call('confirmApplicationPayment', {'applicationId': applicationId});
 
   static Future<Map<String, dynamic>> publishAnnouncement({
     required String title,

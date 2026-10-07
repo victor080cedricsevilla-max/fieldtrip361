@@ -6,7 +6,7 @@
  * then is a school created. Payment bypass is a server-side setting that skips
  * *collecting money* — it never skips the review.
  */
-const { onCall, HttpsError } = require("firebase-functions/v2/https");
+const { onCall, onRequest, HttpsError } = require("firebase-functions/v2/https");
 const admin = require("firebase-admin");
 
 const {
@@ -32,17 +32,37 @@ const {
   documentsRequestedEmail,
   rejectedEmail,
   approvalEmail,
+  paymentRequestEmail,
   sendApplicationEmail,
+  statusUrl,
 } = require("./application_email");
+const paymongo = require("./paymongo");
 
 const STATUS = {
   draft: "draft",
   submitted: "submitted",
   underReview: "under_review",
   needsMoreDocuments: "needs_more_documents",
+  // Approved by a reviewer; the school is created once PayMongo confirms payment.
+  awaitingPayment: "awaiting_payment",
   approved: "approved",
   rejected: "rejected",
 };
+
+/**
+ * How an approval activates the school: "paymongo" collects the first payment
+ * through a PayMongo test-mode checkout before provisioning; "bypass" provisions
+ * at once. Bypass applies when no PayMongo test key is configured, when an
+ * operator has switched it on in platformConfig/billing, and to plans with no
+ * listed price (Enterprise is quoted by hand).
+ */
+async function paymentModeFor(db, plan) {
+  if (!paymongo.isConfigured()) return "bypass";
+  const billing = await getPlatformConfig(db, "billing");
+  if (billing.paymentBypassEnabled === true) return "bypass";
+  if (paymongo.chargeFor(plan).centavos < paymongo.MIN_CENTAVOS) return "bypass";
+  return "paymongo";
+}
 
 const DOC = {
   secRegistration: "sec_registration",
@@ -707,11 +727,15 @@ exports.claimApplicationForReview = onCall(async (request) => {
  * written to the application document, so a retry after a timeout resumes
  * rather than duplicating. Nothing here runs unless a decision to approve has
  * already been committed.
+ *
+ * `payment` is the confirmed PayMongo payment when the school paid before
+ * activation, or absent when payment was bypassed.
  */
-async function provisionSchool(db, { applicationRef, application, actorUid }) {
+async function provisionSchool(db, { applicationRef, application, actorUid, payment }) {
   const existing = application.provisioning || {};
   const plan = application.plan || {};
   const now = admin.firestore.FieldValue.serverTimestamp();
+  const paid = !!payment;
 
   // 1. School document.
   let schoolId = existing.schoolId || null;
@@ -730,10 +754,12 @@ async function provisionSchool(db, { applicationRef, application, actorUid }) {
       priceMonthly: plan.priceMonthly,
       studentCount: 0,
       status: "active",
-      // Payment is not wired. The flag is set here, by the server, and the
-      // client has no way to ask for it.
-      paymentStatus: "test_mode",
-      activationMode: "payment_bypass",
+      // Set here, by the server; the client has no way to ask for either.
+      // "paid_test_mode" means PayMongo's test environment confirmed the
+      // payment — no real money moved.
+      paymentStatus: paid ? "paid_test_mode" : "test_mode",
+      activationMode: paid ? "paymongo_test" : "payment_bypass",
+      ...(paid ? { paymongoPaymentId: payment.paymentId, paidThrough: "paymongo" } : {}),
       activatedAt: now,
       currentPeriodStart: now,
       createdAt: now,
@@ -795,9 +821,11 @@ async function provisionSchool(db, { applicationRef, application, actorUid }) {
   await admin.auth().revokeRefreshTokens(adminUid);
   await applicationRef.update({ "provisioning.adminUid": adminUid });
 
-  // 3. Receipt — an activation record, explicitly not a payment.
+  // 3. Receipt — a PayMongo test-mode payment, or an activation record that
+  //    says on its face that no payment was taken.
   let receiptId = existing.receiptId || null;
   let receiptNumber = existing.receiptNumber || null;
+  const receiptAmount = paid ? payment.amount : plan.priceMonthly;
   if (!receiptId) {
     receiptNumber = await nextCounter(db, "receipt", "RCPT");
     const receiptRef = db.collection("receipts").doc();
@@ -809,11 +837,24 @@ async function provisionSchool(db, { applicationRef, application, actorUid }) {
       tierLabel: plan.tierLabel,
       capacity: plan.capacity,
       billingCycle: plan.billingCycle,
-      amount: plan.priceMonthly,
+      amount: receiptAmount,
       currency: "PHP",
-      paymentStatus: "bypassed_test_mode",
-      amountCollected: 0,
-      note: "Payment bypassed — test mode. No payment was processed or is due.",
+      ...(paid
+        ? {
+            paymentStatus: "paid_test_mode",
+            amountCollected: payment.amount,
+            monthsCovered: payment.months,
+            provider: "paymongo",
+            paymongoPaymentId: payment.paymentId,
+            paymongoCheckoutSessionId: payment.checkoutSessionId,
+            paymentMethod: payment.method || null,
+            note: "Paid through PayMongo's test environment — no real money moved.",
+          }
+        : {
+            paymentStatus: "bypassed_test_mode",
+            amountCollected: 0,
+            note: "Payment bypassed — test mode. No payment was processed or is due.",
+          }),
       issuedAt: now,
       issuedBy: actorUid,
     });
@@ -831,11 +872,322 @@ async function provisionSchool(db, { applicationRef, application, actorUid }) {
     tempPassword,
     receipt: {
       number: receiptNumber,
-      amount: plan.priceMonthly,
+      amount: receiptAmount,
       billingCycle: plan.billingCycle,
+      paymentStatus: paid ? "paid_test_mode" : "bypassed_test_mode",
+      paymentReference: paid ? payment.paymentId : null,
     },
   };
 }
+
+// ─── PayMongo (test mode) ─────────────────────────────────────────────────────
+
+/** Where PayMongo sends the payer back: the applicant's own status page. */
+function paymentReturnUrl(applicationId, application, outcome) {
+  return statusUrl(applicationId, application.accessKey).replace(
+    "#/apply",
+    `&payment=${outcome}#/apply`
+  );
+}
+
+/**
+ * After an approval that collects payment: creates the PayMongo checkout once
+ * (a replay reuses it) and emails the link. The school is not created here —
+ * that waits for PayMongo to confirm the payment.
+ */
+async function requestApplicationPayment(db, { ref, applicationId, uid, actor, reason }) {
+  const application = (await ref.get()).data();
+  let payment = application.payment || {};
+  const now = admin.firestore.FieldValue.serverTimestamp();
+
+  if (!payment.checkoutSessionId || !payment.checkoutUrl) {
+    let session;
+    try {
+      session = await paymongo.createCheckoutSession({
+        applicationId,
+        application,
+        successUrl: paymentReturnUrl(applicationId, application, "success"),
+        cancelUrl: paymentReturnUrl(applicationId, application, "cancelled"),
+      });
+    } catch (e) {
+      await ref.update({
+        "payment.status": "link_failed",
+        "payment.error": String(e?.message || e).slice(0, 500),
+      });
+      throw new HttpsError(
+        "internal",
+        `Approved, but the PayMongo payment link could not be created: ${e?.message || e}. Retry to resume.`
+      );
+    }
+    payment = {
+      ...payment,
+      provider: "paymongo",
+      mode: "test",
+      status: "pending",
+      checkoutSessionId: session.id,
+      checkoutUrl: session.url,
+      amount: session.amount,
+      amountCentavos: session.centavos,
+      months: session.months,
+      currency: "PHP",
+      error: null,
+    };
+    await ref.update({ payment: { ...payment, createdAt: now }, updatedAt: now });
+
+    await writeAuditLog(db, {
+      action: AUDIT.applicationApproved,
+      actorUid: uid,
+      actorEmail: actor.email,
+      actorRole: ROLES.superAdmin,
+      targetType: "application",
+      targetId: applicationId,
+      reason,
+      metadata: { awaitingPayment: true, checkoutSessionId: session.id, amount: session.amount },
+    });
+  }
+
+  const email = await sendApplicationEmail(db, {
+    applicationRef: ref,
+    to: application.email,
+    type: EMAIL_TYPE.paymentRequested,
+    message: paymentRequestEmail({
+      application,
+      applicationId,
+      checkoutUrl: payment.checkoutUrl,
+      amount: payment.amount,
+      months: payment.months,
+    }),
+  });
+
+  return {
+    ok: true,
+    awaitingPayment: true,
+    checkoutUrl: payment.checkoutUrl,
+    amount: payment.amount,
+    emailSent: email.sent,
+    emailError: email.error || null,
+  };
+}
+
+/**
+ * Provisions an application whose PayMongo checkout has been paid.
+ *
+ * Called by the webhook and by "Check payment". Whether the session is paid is
+ * read back from PayMongo with the secret key — never taken from the browser or
+ * the webhook body — and a transaction lets only one caller provision, so a
+ * webhook and a button press arriving together create one school, one
+ * password and one email.
+ */
+async function finalizePaidApplication(db, applicationId, { source }) {
+  const ref = db.collection("schoolApplications").doc(applicationId);
+  const snap = await ref.get();
+  if (!snap.exists) throw new HttpsError("not-found", "Application not found.");
+  const app = snap.data();
+  const pay = app.payment || {};
+
+  if (app.status === STATUS.approved && app.provisioning?.status === "done") {
+    return { state: "active" };
+  }
+  if (!pay.checkoutSessionId) return { state: "no_payment" };
+  if (![STATUS.awaitingPayment, STATUS.approved].includes(app.status)) {
+    return { state: app.status };
+  }
+
+  const session = await paymongo.retrieveCheckoutSession(pay.checkoutSessionId);
+  const sessionApp = session?.attributes?.metadata?.applicationId;
+  if (sessionApp && sessionApp !== applicationId) {
+    throw new Error("The checkout session belongs to a different application.");
+  }
+  const paid = paymongo.paidPaymentFrom(session);
+  if (!paid) return { state: "unpaid" };
+  if (paid.livemode) throw new Error("A live-mode payment reached a test-mode build.");
+  const expected = Number(pay.amountCentavos || paymongo.chargeFor(app.plan).centavos);
+  if (paid.centavos < expected) {
+    throw new Error(`PayMongo reports ${paid.centavos} centavos paid; ${expected} were due.`);
+  }
+
+  const STALE_MS = 5 * 60 * 1000;
+  const claim = await db.runTransaction(async (tx) => {
+    const d = (await tx.get(ref)).data();
+    const prov = d.provisioning || {};
+    if (prov.status === "done") return "done";
+    const claimedAt = prov.claimedAt?.toMillis?.() || 0;
+    if (prov.status === "in_progress" && Date.now() - claimedAt < STALE_MS) return "busy";
+    tx.update(ref, {
+      status: STATUS.approved,
+      "payment.status": "paid",
+      "payment.paymentId": paid.paymentId,
+      "payment.method": paid.method,
+      "payment.amountPaid": paid.centavos / 100,
+      "payment.paidAt": paid.paidAtSeconds
+        ? admin.firestore.Timestamp.fromMillis(paid.paidAtSeconds * 1000)
+        : admin.firestore.Timestamp.now(),
+      "payment.confirmedBy": source,
+      "provisioning.status": "in_progress",
+      "provisioning.claimedAt": admin.firestore.Timestamp.now(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+    return d.payment?.status === "paid" ? "resumed" : "claimed";
+  });
+  if (claim === "done") return { state: "active" };
+  if (claim === "busy") return { state: "activating" };
+
+  const actorUid = app.decision?.by || null;
+  const actorEmail = app.decision?.byEmail || null;
+  if (claim === "claimed") {
+    await ref.collection("events").add({
+      type: "payment_received",
+      actorUid,
+      actorEmail,
+      reason: `PayMongo test payment ${paid.paymentId} (${paid.method || "unknown method"}), PHP ${paid.centavos / 100}.`,
+      at: admin.firestore.FieldValue.serverTimestamp(),
+    });
+  }
+
+  const fresh = (await ref.get()).data();
+  let provisioned;
+  try {
+    provisioned = await provisionSchool(db, {
+      applicationRef: ref,
+      application: fresh,
+      actorUid,
+      payment: {
+        paymentId: paid.paymentId,
+        amount: paid.centavos / 100,
+        months: pay.months || paymongo.chargeFor(app.plan).months,
+        method: paid.method,
+        checkoutSessionId: pay.checkoutSessionId,
+      },
+    });
+    await ref.update({
+      "provisioning.status": "done",
+      "provisioning.completedAt": admin.firestore.FieldValue.serverTimestamp(),
+    });
+  } catch (e) {
+    await ref.update({
+      "provisioning.status": "failed",
+      "provisioning.error": String(e?.message || e).slice(0, 500),
+    });
+    throw e;
+  }
+
+  const email = await sendApplicationEmail(db, {
+    applicationRef: ref,
+    to: provisioned.adminEmail,
+    type: EMAIL_TYPE.credentials,
+    message: approvalEmail({
+      application: fresh,
+      adminEmail: provisioned.adminEmail,
+      tempPassword: provisioned.tempPassword,
+      receipt: provisioned.receipt,
+    }),
+  });
+
+  await writeAuditLog(db, {
+    action: AUDIT.schoolProvisioned,
+    actorUid,
+    actorEmail,
+    actorRole: ROLES.superAdmin,
+    targetType: "school",
+    targetId: provisioned.schoolId,
+    metadata: {
+      applicationId,
+      receipt: provisioned.receipt.number,
+      paymongoPaymentId: paid.paymentId,
+      confirmedBy: source,
+      emailSent: email.sent,
+    },
+  });
+
+  return { state: "active", schoolId: provisioned.schoolId, emailSent: email.sent };
+}
+
+/**
+ * "Check payment" — asks PayMongo whether the checkout was paid and, if so,
+ * activates the school. For the applicant on their status page and for super
+ * admins; it works without the webhook, so a missed webhook never strands a
+ * paid school.
+ */
+exports.confirmApplicationPayment = onCall({ timeoutSeconds: 120 }, async (request) => {
+  if (!request.auth) {
+    throw new HttpsError("unauthenticated", "Your session expired. Reload the page and try again.");
+  }
+  const db = admin.firestore();
+  const uid = request.auth.uid;
+  const applicationId = sanitizeText(request.data?.applicationId, 64);
+  if (!applicationId) throw new HttpsError("invalid-argument", "applicationId is required.");
+
+  const snap = await db.collection("schoolApplications").doc(applicationId).get();
+  if (!snap.exists) throw new HttpsError("not-found", "Application not found.");
+  if (snap.get("applicantUid") !== uid) await requireSuperAdmin(request);
+  await checkRateLimit(uid, "confirm_payment", 20);
+
+  try {
+    return await finalizePaidApplication(db, applicationId, { source: "check" });
+  } catch (e) {
+    if (e instanceof HttpsError) throw e;
+    console.error("confirmApplicationPayment failed:", applicationId, e?.message || e);
+    throw new HttpsError("internal", `The payment could not be confirmed: ${e?.message || e}`);
+  }
+});
+
+/**
+ * PayMongo webhook (checkout_session.payment.paid).
+ *
+ * Accepted only with a valid test-mode signature. The event says *which*
+ * application to look at; whether it was paid is then read from PayMongo
+ * itself, so a forged or replayed body cannot activate anything.
+ */
+exports.paymongoWebhook = onRequest(
+  { cors: false, region: "us-central1", timeoutSeconds: 120 },
+  async (req, res) => {
+    if (req.method !== "POST") {
+      res.status(405).send("Method not allowed");
+      return;
+    }
+    if (!paymongo.verifyWebhookSignature(req.rawBody, req.get("Paymongo-Signature"))) {
+      res.status(401).send("Invalid signature");
+      return;
+    }
+
+    const event = req.body?.data;
+    const type = event?.attributes?.type;
+    if (type !== "checkout_session.payment.paid") {
+      res.status(200).json({ received: true, ignored: type || null });
+      return;
+    }
+    const session = event.attributes.data;
+    const applicationId = sanitizeText(session?.attributes?.metadata?.applicationId, 64);
+    if (!applicationId) {
+      res.status(200).json({ received: true, ignored: "no applicationId" });
+      return;
+    }
+
+    const db = admin.firestore();
+    const eventRef = db.collection("paymentEvents").doc(sanitizeText(String(event.id || ""), 80) || db.collection("paymentEvents").doc().id);
+    await eventRef.set(
+      {
+        provider: "paymongo",
+        type,
+        applicationId,
+        checkoutSessionId: session?.id || null,
+        receivedAt: admin.firestore.FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    );
+
+    try {
+      const result = await finalizePaidApplication(db, applicationId, { source: "webhook" });
+      await eventRef.set({ result: result.state, processedAt: admin.firestore.FieldValue.serverTimestamp() }, { merge: true });
+      res.status(200).json({ received: true, state: result.state });
+    } catch (e) {
+      console.error("paymongoWebhook failed:", applicationId, e?.message || e);
+      await eventRef.set({ error: String(e?.message || e).slice(0, 500) }, { merge: true });
+      // A 5xx makes PayMongo retry later.
+      res.status(500).json({ error: "processing failed" });
+    }
+  }
+);
 
 /**
  * Approve, reject, or ask for more documents.
@@ -888,6 +1240,12 @@ exports.decideSchoolApplication = onCall({ timeoutSeconds: 120 }, async (request
   const ref = db.collection("schoolApplications").doc(applicationId);
   const now = admin.firestore.FieldValue.serverTimestamp();
 
+  // Whether approval collects a PayMongo payment first. Decided on the server
+  // from configuration, never from the request.
+  const pre = await ref.get();
+  if (!pre.exists) throw new HttpsError("not-found", "Application not found.");
+  const mode = decision === "approve" ? await paymentModeFor(db, pre.get("plan") || {}) : null;
+
   // Claim the decision. A replay of the same key is allowed through so a
   // half-finished approval can be resumed.
   const { application, replay } = await db.runTransaction(async (tx) => {
@@ -899,7 +1257,7 @@ exports.decideSchoolApplication = onCall({ timeoutSeconds: 120 }, async (request
     if (prior.idempotencyKey && prior.idempotencyKey === idempotencyKey) {
       return { application: data, replay: true };
     }
-    if ([STATUS.approved, STATUS.rejected].includes(data.status)) {
+    if ([STATUS.approved, STATUS.rejected, STATUS.awaitingPayment].includes(data.status)) {
       throw new HttpsError(
         "failed-precondition",
         "This application has already been decided."
@@ -913,7 +1271,7 @@ exports.decideSchoolApplication = onCall({ timeoutSeconds: 120 }, async (request
     }
 
     const nextStatus = decision === "approve"
-      ? STATUS.approved
+      ? (mode === "paymongo" ? STATUS.awaitingPayment : STATUS.approved)
       : decision === "reject"
         ? STATUS.rejected
         : STATUS.needsMoreDocuments;
@@ -933,7 +1291,11 @@ exports.decideSchoolApplication = onCall({ timeoutSeconds: 120 }, async (request
       reviewerNotes: reviewerNote || data.reviewerNotes || null,
       requestedDocTypes: decision === "request_documents" ? requestedDocTypes : null,
       updatedAt: now,
-      ...(decision === "approve" ? { "provisioning.status": "in_progress" } : {}),
+      ...(decision === "approve"
+        ? mode === "paymongo"
+          ? { "payment.provider": "paymongo", "payment.mode": "test", "payment.status": "creating" }
+          : { "provisioning.status": "in_progress" }
+        : {}),
     });
     return { application: { ...data, status: nextStatus }, replay: false };
   });
@@ -969,6 +1331,11 @@ exports.decideSchoolApplication = onCall({ timeoutSeconds: 120 }, async (request
         reason: overrideReason,
       });
     }
+  }
+
+  // ── Approve with payment: send the PayMongo link; provisioning waits. ──────
+  if (decision === "approve" && application.status === STATUS.awaitingPayment) {
+    return requestApplicationPayment(db, { ref, applicationId, uid, actor, reason });
   }
 
   // ── Approve: provision, then email the credentials. ────────────────────────
@@ -1102,6 +1469,20 @@ exports.retryApplicationEmail = onCall(async (request) => {
         docLabels: DOC_LABELS,
       });
       break;
+    case EMAIL_TYPE.paymentRequested: {
+      const payment = application.payment || {};
+      if (application.status !== STATUS.awaitingPayment || !payment.checkoutUrl) {
+        throw new HttpsError("failed-precondition", "This application is not waiting for payment.");
+      }
+      message = paymentRequestEmail({
+        application,
+        applicationId,
+        checkoutUrl: payment.checkoutUrl,
+        amount: payment.amount,
+        months: payment.months,
+      });
+      break;
+    }
     case EMAIL_TYPE.credentials:
       throw new HttpsError(
         "failed-precondition",
@@ -1185,6 +1566,8 @@ exports.resendAdminCredentials = onCall(async (request) => {
         number: receiptSnap.docs[0].get("number"),
         amount: receiptSnap.docs[0].get("amount"),
         billingCycle: receiptSnap.docs[0].get("billingCycle"),
+        paymentStatus: receiptSnap.docs[0].get("paymentStatus") || null,
+        paymentReference: receiptSnap.docs[0].get("paymongoPaymentId") || null,
       };
 
   const email = await sendApplicationEmail(db, {

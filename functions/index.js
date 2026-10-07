@@ -2742,6 +2742,8 @@ exports.claimApplicationForReview = applications.claimApplicationForReview;
 exports.decideSchoolApplication = applications.decideSchoolApplication;
 exports.retryApplicationEmail = applications.retryApplicationEmail;
 exports.resendAdminCredentials = applications.resendAdminCredentials;
+exports.confirmApplicationPayment = applications.confirmApplicationPayment;
+exports.paymongoWebhook = applications.paymongoWebhook;
 exports.updateBankingCalendar = applications.updateBankingCalendar;
 
 // Document text extraction (never a decision — see lib/ocr.js).

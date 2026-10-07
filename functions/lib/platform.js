@@ -147,8 +147,11 @@ async function writeAuditLog(db, {
 const CONFIG_DEFAULTS = {
   billing: {
     // Server-controlled. The client never chooses this: a request that asked
-    // for "bypass" would otherwise be a request to skip paying.
-    paymentBypassEnabled: true,
+    // for "bypass" would otherwise be a request to skip paying. Payment is
+    // collected through PayMongo (test mode) whenever a PayMongo test key is
+    // configured; with no key, or with this set to true in
+    // platformConfig/billing, approval activates the school without payment.
+    paymentBypassEnabled: false,
     currency: "PHP",
   },
   review: {

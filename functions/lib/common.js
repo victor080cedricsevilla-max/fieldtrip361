@@ -56,6 +56,13 @@ const activationPepper = defineString("ACTIVATION_PEPPER", { default: "" });
 // default, which disables the endpoint entirely.
 const superAdminSetupToken = defineString("SUPERADMIN_SETUP_TOKEN", { default: "" });
 
+// PayMongo (paymongo.com) — subscription payments. Test keys only: a live key
+// (sk_live_…) is refused in code. With no key configured, approval keeps the
+// payment-bypass behaviour. The webhook secret (whsk_…) is shown once when the
+// webhook is created in the PayMongo dashboard.
+const paymongoSecretKey = defineString("PAYMONGO_SECRET_KEY", { default: "" });
+const paymongoWebhookSecret = defineString("PAYMONGO_WEBHOOK_SECRET", { default: "" });
+
 // ─── Input sanitization ───────────────────────────────────────────────────────
 
 function sanitizeText(text, maxLen = 2000) {
@@ -213,6 +220,8 @@ module.exports = {
   supportEmail,
   superAdminSetupToken,
   activationPepper,
+  paymongoSecretKey,
+  paymongoWebhookSecret,
   // helpers
   sanitizeText,
   normEmail,
