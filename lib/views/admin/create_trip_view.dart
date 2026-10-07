@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/cupertino.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:http/http.dart' as http;
@@ -14,6 +13,7 @@ import '../../utils/firestore_utils.dart';
 import '../../utils/school_context.dart';
 import '../../models/directions_model.dart';
 import '../../repositories/directions_repository.dart';
+import 'time_picker_popover.dart';
 
 /// A blank form the admin picked in the trip form but that has not been
 /// uploaded yet — the upload waits until the trip has an id to file it under.
@@ -232,64 +232,6 @@ class _CreateTripViewState extends State<CreateTripView> {
       setState(() => _dateController.text =
           "${picked.year}-${picked.month.toString().padLeft(2, '0')}-${picked.day.toString().padLeft(2, '0')}");
     }
-  }
-
-  // ── Time Picker ────────────────────────────────────────────────────────────
-  Future<TimeOfDay?> _pickTime15(BuildContext context) async {
-    TimeOfDay initialTime = TimeOfDay.now();
-    int minute = initialTime.minute;
-    int roundedMinute = (minute / 15).round() * 15;
-    if (roundedMinute == 60) roundedMinute = 0;
-    DateTime initialDateTime = DateTime(2023, 1, 1, initialTime.hour, roundedMinute);
-    TimeOfDay? selectedTime;
-
-    return await showDialog<TimeOfDay>(
-      context: context,
-      builder: (ctx) {
-        return Dialog(
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-          child: SizedBox(
-            height: 300,
-            child: Column(
-              children: [
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      GestureDetector(
-                        onTap: () => Navigator.pop(ctx),
-                        child: Text("Cancel", style: TextStyle(color: Colors.grey.shade500, fontWeight: FontWeight.w500)),
-                      ),
-                      const Text(
-                        "Select Time",
-                        style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15, color: AppTheme.secondaryColor),
-                      ),
-                      GestureDetector(
-                        onTap: () {
-                          selectedTime ??= TimeOfDay.fromDateTime(initialDateTime);
-                          Navigator.pop(ctx, selectedTime);
-                        },
-                        child: Text("Done", style: TextStyle(color: AppTheme.effectivePrimary, fontWeight: FontWeight.bold)),
-                      ),
-                    ],
-                  ),
-                ),
-                Divider(color: Colors.grey.shade100, height: 1),
-                Expanded(
-                  child: CupertinoDatePicker(
-                    mode: CupertinoDatePickerMode.time,
-                    minuteInterval: 15,
-                    initialDateTime: initialDateTime,
-                    onDateTimeChanged: (dt) => selectedTime = TimeOfDay.fromDateTime(dt),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        );
-      },
-    );
   }
 
   // ── Location Picker ────────────────────────────────────────────────────────
@@ -1725,21 +1667,27 @@ class _CreateTripViewState extends State<CreateTripView> {
                                   ),
                                   const SizedBox(width: 12),
                                   Expanded(
-                                    child: TextFormField(
-                                      controller: _stops[i]["time"],
-                                      readOnly: true,
-                                      onTap: () async {
-                                        final t = await _pickTime15(context);
-                                        if (t != null && mounted) {
-                                          setState(() => _stops[i]['time'].text = t.format(context));
-                                        }
-                                      },
-                                      decoration: const InputDecoration(
-                                        labelText: "Time",
-                                        prefixIcon: Icon(Icons.access_time_rounded),
-                                        suffixIcon: Icon(Icons.arrow_drop_down_rounded),
+                                    child: Builder(
+                                      // Its own context, so the picker opens right under this field.
+                                      builder: (fieldContext) => TextFormField(
+                                        controller: _stops[i]["time"],
+                                        readOnly: true,
+                                        onTap: () async {
+                                          final t = await showTimePickerPopover(
+                                            anchorContext: fieldContext,
+                                            initial: parseTime12(_stops[i]['time'].text),
+                                          );
+                                          if (t != null && mounted) {
+                                            setState(() => _stops[i]['time'].text = formatTime12(t));
+                                          }
+                                        },
+                                        decoration: const InputDecoration(
+                                          labelText: "Time",
+                                          hintText: "HH:MM AM",
+                                          prefixIcon: Icon(Icons.access_time_rounded),
+                                        ),
+                                        validator: (v) => v!.isEmpty ? "Required" : null,
                                       ),
-                                      validator: (v) => v!.isEmpty ? "Required" : null,
                                     ),
                                   ),
                                 ],
